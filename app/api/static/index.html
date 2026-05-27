@@ -1,0 +1,67 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>Smart Hospital Portal</title>
+    <link rel="stylesheet" href="/static/styles.css" />
+  </head>
+  <body>
+    <main class="shell">
+      <section class="workspace" aria-label="Patient triage chat">
+        <header class="topbar">
+          <div>
+            <h1>Smart Hospital Portal</h1>
+            <p>AI triage, doctor selection, and appointment booking</p>
+          </div>
+          <div class="status" id="status">Ready</div>
+        </header>
+
+        <section class="content">
+          <aside class="panel" aria-label="Current triage state">
+            <h2>Case</h2>
+            <dl>
+              <div>
+                <dt>Severity</dt>
+                <dd id="severity">-</dd>
+              </div>
+              <div>
+                <dt>Department</dt>
+                <dd id="department">-</dd>
+              </div>
+              <div>
+                <dt>Next step</dt>
+                <dd id="awaiting">Describe symptoms</dd>
+              </div>
+            </dl>
+            <button class="secondary" id="resetBtn" type="button">Reset case</button>
+          </aside>
+
+          <section class="chat">
+            <div class="messages" id="messages" aria-live="polite">
+              <div class="message assistant">
+                Describe your symptoms. I will estimate severity, recommend a department, show available doctors, then help you choose a slot.
+              </div>
+            </div>
+
+            <div class="quick-actions" id="quickActions"></div>
+
+            <form class="composer" id="chatForm">
+              <input
+                id="messageInput"
+                name="message"
+                type="text"
+                autocomplete="off"
+                placeholder="Type symptoms, doctor choice, slot choice, or no"
+                required
+              />
+              <button type="submit">Send</button>
+            </form>
+          </section>
+        </section>
+      </section>
+    </main>
+
+    <script src="/static/app.js"></script>
+  </body>
+</html>
