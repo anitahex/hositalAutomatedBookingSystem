@@ -1,7 +1,7 @@
 from app.agents import remedy_agent
 
 
-def test_remedy_agent_fallback_is_specific_for_rash(monkeypatch):
+def test_remedy_agent_uses_generic_clinical_safety_fallback(monkeypatch):
     monkeypatch.setattr(remedy_agent, "generate_text", lambda _: "not json")
 
     state = remedy_agent.remedy_agent_node(
@@ -14,11 +14,21 @@ def test_remedy_agent_fallback_is_specific_for_rash(monkeypatch):
     )
 
     assert state["awaiting"] == "remedy_check"
-    assert "skin rash" in state["final_response"]
-    assert "cool compress" in state["final_response"]
+    assert "trouble generating tailored care advice" in state["final_response"]
+    assert "seek medical care" in state["final_response"]
 
 
-def test_remedy_agent_treats_not_better_as_persisting():
+def test_remedy_agent_uses_llm_follow_up_classification(monkeypatch):
+    def fake_generate_text(_: str) -> str:
+        return """
+        {
+            "patient_status": "persisting_or_worsening",
+            "reason": "Patient says symptoms are not improving and wants doctor help."
+        }
+        """
+
+    monkeypatch.setattr(remedy_agent, "generate_text", fake_generate_text)
+
     state = remedy_agent.remedy_agent_node(
         {
             "awaiting": "remedy_check",

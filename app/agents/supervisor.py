@@ -7,19 +7,6 @@ from app.inference.llm import generate_router_text
 
 parser = PydanticOutputParser(pydantic_object=SupervisorDecision)
 
-EXIT_WORDS = {
-    "bye",
-    "goodbye",
-    "end",
-    "end chat",
-    "exit",
-    "quit",
-    "stop",
-    "done",
-    "that's all",
-    "thats all",
-}
-
 
 def _route(next_agent: str, **updates):
     return {
@@ -31,11 +18,6 @@ def _route(next_agent: str, **updates):
 
 def _clean_json(raw_output: str) -> str:
     return raw_output.replace("```json", "").replace("```", "").strip()
-
-
-def _patient_wants_exit(state: GraphState) -> bool:
-    user_input = (state.get("user_input") or "").strip().lower()
-    return user_input in EXIT_WORDS
 
 
 def _dynamic_route(state: GraphState) -> dict | None:
@@ -144,6 +126,14 @@ Return only JSON:
             }
         )
 
+    if next_agent == "finish":
+        updates.update(
+            {
+                "awaiting": None,
+                "final_response": "Take care. You can come back anytime if you need help.",
+            }
+        )
+
     return _route(next_agent, **updates)
 
 
@@ -159,13 +149,6 @@ def supervisor_node(state: GraphState):
 
     if state.get("final_response"):
         return _route("finish")
-
-    if _patient_wants_exit(state):
-        return _route(
-            "finish",
-            awaiting=None,
-            final_response="Take care. You can come back anytime if you need help.",
-        )
 
     dynamic_route = _dynamic_route(state)
     if dynamic_route:
@@ -222,16 +205,30 @@ def _conversation_complete(state: GraphState) -> bool:
     questions_asked = state.get("questions_asked") or []
 
     has_duration = bool(collected.get("duration"))
+    has_location = bool(collected.get("location"))
+    has_pattern = bool(collected.get("severity_pattern") or collected.get("pattern"))
     has_cause = bool(
         collected.get("cause")
         or collected.get("trigger")
         or collected.get("onset")
     )
+    has_context = any(
+        collected.get(key)
+        for key in (
+            "associated_symptoms",
+            "existing_conditions",
+            "medications",
+            "allergies",
+            "lifestyle",
+            "daily_activity",
+            "history",
+        )
+    )
 
-    if len(questions_asked) >= 3:
+    if len(questions_asked) >= 8:
         return True
 
-    return has_duration and has_cause
+    return has_duration and has_location and has_pattern and has_cause and has_context
 
 
 def route_from_supervisor(state: GraphState):

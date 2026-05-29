@@ -1,65 +1,19 @@
 from collections import defaultdict
 from dataclasses import dataclass
 
+from langchain_core.output_parsers import PydanticOutputParser
+
+from app.agents.schemas import DepartmentDecision
+from app.inference.llm import generate_text
 from app.services.embeddings import embed_query
 from app.services.vector_store import search_clinical_knowledge
+
 
 DEFAULT_DEPARTMENT = "General Physician"
 RAG_MATCH_LIMIT = 5
 MIN_CONFIDENT_SCORE = 0.65
-KEYWORD_BOOST = 0.2
 
-# Hardcoded keyword fallback dictionary for safety guardrails
-DEPARTMENT_KEYWORDS = {
-    "Cardiology": {
-        "chest pain",
-        "chest tightness",
-        "heart",
-        "palpitation",
-        "shortness of breath",
-    },
-    "Pulmonology": {
-        "breath",
-        "breathlessness",
-        "cough",
-        "wheezing",
-        "asthma",
-    },
-    "Neurology": {
-        "dizziness",
-        "headache",
-        "migraine",
-        "seizure",
-        "stroke",
-        "numbness",
-    },
-    "Orthopedics": {
-        "fall",
-        "fell",
-        "injury",
-        "fracture",
-        "sprain",
-        "back pain",
-        "joint pain",
-        "knees",
-        "knee",
-        "hurt too",
-    },
-    "Dermatology": {
-        "rash",
-        "itch",
-        "allergy",
-        "skin",
-        "hives",
-    },
-    "Gastroenterology": {
-        "nausea",
-        "vomiting",
-        "stomach",
-        "abdominal",
-        "diarrhea",
-    },
-}
+department_parser = PydanticOutputParser(pydantic_object=DepartmentDecision)
 
 
 @dataclass
@@ -71,26 +25,177 @@ class DepartmentMatch:
     reason: str = ""
 
 
-def _keyword_department(symptoms: list[str]) -> str | None:
-    """
-    Fallback method that uses exact string matching to find a department
-    if Qdrant vector search is unavailable or returns no hits.
-    """
-    symptom_text = " ".join(symptoms).lower()
-    for department, keywords in DEPARTMENT_KEYWORDS.items():
-        if any(keyword in symptom_text for keyword in keywords):
-            print(f"[RAG Fallback] Keyword matched department: '{department}'")
-            return department
+def _clean_json(raw_output: str) -> str:
+    return raw_output.replace("```json", "").replace("```", "").strip()
+
+
+def _flatten_context(symptoms: list[str], collected_info: dict | None = None) -> str:
+    parts = list(symptoms)
+    for value in (collected_info or {}).values():
+        if isinstance(value, list):
+            parts.extend(str(item) for item in value)
+        elif value is not None:
+            parts.append(str(value))
+    return " ".join(parts).lower()
+
+
+def _heuristic_department(
+    symptoms: list[str],
+    collected_info: dict | None = None,
+) -> DepartmentMatch | None:
+    text = _flatten_context(symptoms, collected_info)
+
+    if not text.strip():
+        return None
+
+    if any(
+        term in text
+        for term in (
+            "chest pain",
+            "chest tightness",
+            "palpitation",
+            "heart",
+            "left arm pain",
+        )
+    ):
+        return DepartmentMatch(
+            department="Cardiology",
+            confidence=0.85,
+            source="heuristic",
+            reason="Symptoms suggest a heart or chest-related concern.",
+        )
+
+    if any(term in text for term in ("rash", "itch", "skin", "hives", "acne")):
+        return DepartmentMatch(
+            department="Dermatology",
+            confidence=0.85,
+            source="heuristic",
+            reason="Symptoms suggest a skin-related concern.",
+        )
+
+    if any(
+        term in text
+        for term in (
+            "back pain",
+            "lower back",
+            "spine",
+            "joint",
+            "knee",
+            "shoulder",
+            "fracture",
+            "sprain",
+            "lifting",
+            "gym",
+            "muscle pain",
+        )
+    ):
+        return DepartmentMatch(
+            department="Orthopedics",
+            confidence=0.82,
+            source="heuristic",
+            reason="Symptoms suggest a musculoskeletal or spine-related concern.",
+        )
+
+    if any(
+        term in text
+        for term in (
+            "weakness in legs",
+            "numbness",
+            "tingling",
+            "seizure",
+            "loss of speech",
+            "paralysis",
+            "migraine",
+            "severe headache",
+        )
+    ):
+        return DepartmentMatch(
+            department="Neurology",
+            confidence=0.82,
+            source="heuristic",
+            reason="Symptoms suggest a nerve or neurological concern.",
+        )
+
+    if any(
+        term in text
+        for term in (
+            "stomach",
+            "abdominal",
+            "vomiting",
+            "diarrhea",
+            "constipation",
+            "loss of appetite",
+            "nausea",
+        )
+    ):
+        return DepartmentMatch(
+            department="Gastroenterology",
+            confidence=0.82,
+            source="heuristic",
+            reason="Symptoms suggest a digestive concern.",
+        )
+
+    if any(term in text for term in ("cough", "breath", "asthma", "wheezing", "lungs")):
+        return DepartmentMatch(
+            department="Pulmonology",
+            confidence=0.82,
+            source="heuristic",
+            reason="Symptoms suggest a breathing or lung-related concern.",
+        )
+
     return None
 
 
-def _department_keyword_match(department: str, symptom_text: str) -> bool:
-    return any(keyword in symptom_text for keyword in DEPARTMENT_KEYWORDS.get(department, set()))
+def _llm_department(
+    symptoms: list[str],
+    vector_context: list[dict] | None = None,
+    collected_info: dict | None = None,
+) -> DepartmentMatch:
+    prompt = f"""
+You are a hospital department routing assistant.
+
+Choose the most appropriate department from the symptoms and any retrieved clinical
+context. Use clinical meaning, not hardcoded keyword matching. Prefer a specific
+department when the symptoms clearly point there; otherwise ask for clarification.
+
+Symptoms: {symptoms}
+Collected patient context: {collected_info or {}}
+Retrieved clinical context: {vector_context or []}
+Default fallback department: {DEFAULT_DEPARTMENT}
+
+Return only JSON:
+{department_parser.get_format_instructions()}
+""".strip()
+
+    raw_output = generate_text(prompt)
+    clean_json = _clean_json(raw_output)
+    print(f"Department decision JSON: {clean_json}")
+
+    try:
+        decision = department_parser.parse(clean_json)
+    except Exception as exc:
+        print(f"Department decision parser failed: {exc}")
+        return DepartmentMatch(
+            department=None,
+            confidence=0,
+            source="llm_parse_error",
+            needs_clarification=True,
+            reason="Could not parse department decision.",
+        )
+
+    return DepartmentMatch(
+        department=decision.department,
+        confidence=decision.confidence,
+        source="llm",
+        needs_clarification=decision.needs_clarification,
+        reason=decision.reason,
+    )
 
 
-def _vector_department(matches, symptom_text: str) -> DepartmentMatch:
+def _vector_department(matches) -> DepartmentMatch:
     department_scores = defaultdict(float)
     best_scores = defaultdict(float)
+    has_scores = False
 
     for match in matches:
         payload = match.payload or {}
@@ -98,14 +203,15 @@ def _vector_department(matches, symptom_text: str) -> DepartmentMatch:
         if not department:
             continue
 
-        score = getattr(match, "score", 0) or 0
-        score = float(score)
+        raw_score = getattr(match, "score", None)
+        if raw_score is None:
+            score = 1.0
+        else:
+            score = float(raw_score or 0)
+            has_scores = True
+
         department_scores[department] += score
         best_scores[department] = max(best_scores[department], score)
-
-    for department in list(department_scores):
-        if department != DEFAULT_DEPARTMENT and _department_keyword_match(department, symptom_text):
-            department_scores[department] += KEYWORD_BOOST
 
     if not department_scores:
         return DepartmentMatch(
@@ -118,24 +224,42 @@ def _vector_department(matches, symptom_text: str) -> DepartmentMatch:
 
     department = max(department_scores, key=department_scores.get)
     confidence = best_scores[department]
-    keyword_supported = department != DEFAULT_DEPARTMENT and _department_keyword_match(
-        department, symptom_text
+    reason = (
+        f"Best vector score was {confidence:.2f}."
+        if has_scores
+        else "Vector result had a department payload but no explicit score."
     )
 
     return DepartmentMatch(
         department=department,
         confidence=confidence,
-        source="vector_rerank",
-        needs_clarification=confidence < MIN_CONFIDENT_SCORE and not keyword_supported,
-        reason=f"Best vector score was {confidence:.2f}.",
+        source="vector",
+        needs_clarification=confidence < MIN_CONFIDENT_SCORE,
+        reason=reason,
     )
 
 
-def match_department_details(symptoms: list[str]) -> DepartmentMatch:
+def _vector_context(matches) -> list[dict]:
+    context = []
+    for match in matches:
+        payload = match.payload or {}
+        context.append(
+            {
+                "department": payload.get("department"),
+                "text": payload.get("chunk_text") or payload.get("text"),
+                "score": float(getattr(match, "score", 0) or 0),
+            }
+        )
+    return context
+
+
+def match_department_details(
+    symptoms: list[str],
+    collected_info: dict | None = None,
+) -> DepartmentMatch:
     """
-    Takes a list of symptoms, formats them to match the database chunk schema,
-    performs a 384-dimension vector similarity search in Qdrant, and returns 
-    the matched hospital department.
+    Uses vector retrieval first, then asks the LLM to reason over the symptoms and
+    retrieved context when confidence is low or vector search is unavailable.
     """
     if not symptoms:
         return DepartmentMatch(
@@ -146,101 +270,47 @@ def match_department_details(symptoms: list[str]) -> DepartmentMatch:
             reason="No symptoms were provided.",
         )
 
-    # Normalize symptom strings (lowercase and strip whitespace)
-    cleaned_symptoms = [s.strip().lower() for s in symptoms]
-    symptom_text = " ".join(cleaned_symptoms)
-    keyword_department = _keyword_department(cleaned_symptoms)
+    cleaned_symptoms = [s.strip() for s in symptoms if s and s.strip()]
+    heuristic_match = _heuristic_department(cleaned_symptoms, collected_info)
 
     try:
-        # FIX: Formatted to mirror your Qdrant 'chunk_text' layout exactly:
-        # Example output string: "- symp: headache, knee pain"
-        query_string = f"- symp: {', '.join(cleaned_symptoms)}"
-
-        # Generate the 384-dimensional embedding vector
+        query_parts = [f"symptoms: {', '.join(cleaned_symptoms)}"]
+        if collected_info:
+            query_parts.append(f"context: {collected_info}")
+        query_string = " | ".join(query_parts)
         query_vector = embed_query(query_string)
-
-        # Search the 'clinical_knowledge_base' collection via your vector store service
         matches = search_clinical_knowledge(query_vector, limit=RAG_MATCH_LIMIT)
-
     except Exception as exc:
         print(f"[RAG Error] Vector search connection failed: {exc}")
-        if keyword_department:
-            return DepartmentMatch(
-                department=keyword_department,
-                confidence=1,
-                source="keyword_after_vector_error",
-                reason="Vector search failed, keyword fallback matched.",
-            )
-        return DepartmentMatch(
-            department=None,
-            confidence=0,
-            source="vector_error",
-            needs_clarification=True,
-            reason="Vector search failed and no keyword fallback matched.",
-        )
+        return heuristic_match or _llm_department(cleaned_symptoms, collected_info=collected_info)
 
-    # Handle cases where Qdrant returned an empty list of results
     if not matches:
-        print("[RAG Notice] Qdrant returned 0 matches. Trying keyword fallback...")
-        if keyword_department:
-            return DepartmentMatch(
-                department=keyword_department,
-                confidence=1,
-                source="keyword_after_no_vector_matches",
-                reason="Vector returned no matches, keyword fallback matched.",
-            )
-        return DepartmentMatch(
-            department=None,
-            confidence=0,
-            source="no_vector_matches",
-            needs_clarification=True,
-            reason="Vector returned no matches and no keyword fallback matched.",
-        )
+        print("[RAG Notice] Qdrant returned 0 matches. Asking LLM for department routing.")
+        return heuristic_match or _llm_department(cleaned_symptoms, collected_info=collected_info)
 
-    match = _vector_department(matches, symptom_text)
+    vector_match = _vector_department(matches)
+    context = _vector_context(matches)
 
-    # If vector retrieval did not produce a usable specialist, try keyword fallback.
-    if not match.department:
-        print("[RAG Notice] Vector matched, but payload field 'department' was empty.")
-        if keyword_department:
-            return DepartmentMatch(
-                department=keyword_department,
-                confidence=1,
-                source="keyword_after_empty_payload",
-                reason="Vector payload was empty, keyword fallback matched.",
-            )
-        return match
+    if (
+        not vector_match.department
+        or vector_match.needs_clarification
+        or vector_match.department == DEFAULT_DEPARTMENT
+    ):
+        print("[RAG Notice] Vector confidence low. Asking LLM to reason over context.")
+        llm_match = _llm_department(cleaned_symptoms, context, collected_info)
+        if llm_match.department and not llm_match.needs_clarification:
+            return llm_match
+        if heuristic_match:
+            return heuristic_match
+        return llm_match
 
-    if match.department == DEFAULT_DEPARTMENT and keyword_department:
-        print(
-            f"[RAG Notice] Vector returned broad department '{DEFAULT_DEPARTMENT}'. "
-            f"Using keyword fallback '{keyword_department}'."
-        )
-        return DepartmentMatch(
-            department=keyword_department,
-            confidence=1,
-            source="keyword_over_broad_vector",
-            reason="Vector returned General Physician, keyword fallback matched a specialist.",
-        )
-
-    if match.needs_clarification and not keyword_department:
-        print(
-            f"[RAG Notice] Low-confidence vector match '{match.department}' "
-            f"({match.confidence:.2f}). Asking for clarification."
-        )
-        return DepartmentMatch(
-            department=None,
-            confidence=match.confidence,
-            source=match.source,
-            needs_clarification=True,
-            reason=match.reason,
-        )
-
-    # Successfully extracted department value from Qdrant vector context
-    print(f"[RAG Success] Vector matched to: '{match.department}' (Score: {match.confidence:.2f})")
-    return match
+    print(
+        f"[RAG Success] Vector matched to: '{vector_match.department}' "
+        f"(Score: {vector_match.confidence:.2f})"
+    )
+    return vector_match
 
 
-def match_department(symptoms: list[str]) -> str:
-    match = match_department_details(symptoms)
+def match_department(symptoms: list[str], collected_info: dict | None = None) -> str:
+    match = match_department_details(symptoms, collected_info)
     return match.department or DEFAULT_DEPARTMENT

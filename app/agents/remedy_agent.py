@@ -8,12 +8,13 @@ If still persisting, supervisor routes to medical_rag then booking.
 
 from langchain_core.output_parsers import PydanticOutputParser
 
-from app.agents.schemas import RemedyResponse
+from app.agents.schemas import RemedyFollowUpDecision, RemedyResponse
 from app.agents.state import GraphState
 from app.inference.llm import generate_text
 
 
 parser = PydanticOutputParser(pydantic_object=RemedyResponse)
+follow_up_parser = PydanticOutputParser(pydantic_object=RemedyFollowUpDecision)
 
 REMEDY_FOLLOW_UP = (
     "Please try these suggestions - they may help relieve your symptoms. "
@@ -21,69 +22,40 @@ REMEDY_FOLLOW_UP = (
     "please let me know."
 )
 
-PERSISTING_WORDS = {
-    "no", "not better", "still", "worse", "worsening", "persisting", "persist",
-    "same", "no improvement", "not improving", "not helping", "didn't help",
-    "doesnt help", "doesn't help", "bad", "getting worse", "no change",
-    "doctor", "appointment", "book", "hospital", "clinic", "specialist",
-}
-
-IMPROVING_WORDS = {
-    "yes", "better", "improving", "improved", "good", "fine", "okay", "ok",
-    "feeling better", "much better", "great", "relief", "relieved", "helped",
-    "it helped", "working", "it worked",
-}
+def _clean_json(raw_output: str) -> str:
+    return raw_output.replace("```json", "").replace("```", "").strip()
 
 
-def patient_is_persisting(text: str) -> bool:
-    normalized = text.strip().lower()
-    return any(word in normalized for word in PERSISTING_WORDS)
+def _classify_follow_up(state: GraphState, user_text: str) -> RemedyFollowUpDecision | None:
+    prompt = f"""
+You are a hospital assistant interpreting a patient's reply after remedy advice.
 
+Use meaning and context, not keyword matching.
 
-def patient_is_improving(text: str) -> bool:
-    normalized = text.strip().lower()
-    return any(word in normalized for word in IMPROVING_WORDS)
+Confirmed booking: {state.get("confirmed_booking")}
+Previous remedy: {state.get("remedy_text")}
+Latest patient reply: {user_text}
 
+Classify the reply:
+- improving: patient says the remedy helped or they feel better.
+- persisting_or_worsening: patient says symptoms continue, worsened, did not improve, or they want doctor help now.
+- agrees_to_forward_note: patient agrees to forward new symptoms to the booked doctor.
+- declines_forward_note: patient declines forwarding the note.
+- unclear: not enough information.
 
-def patient_agrees(text: str) -> bool:
-    normalized = text.strip().lower()
-    return normalized in {"yes", "y", "sure", "ok", "okay", "please do", "do it"}
+Return only JSON:
+{follow_up_parser.get_format_instructions()}
+""".strip()
 
+    raw_output = generate_text(prompt)
+    clean_json = _clean_json(raw_output)
+    print(f"Remedy follow-up JSON: {clean_json}")
 
-def patient_declines_note(text: str) -> bool:
-    normalized = text.strip().lower()
-    return normalized in {"no", "nope", "not now", "don't", "dont"}
-
-
-def _fallback_remedy(symptoms: list[str]) -> str:
-    symptom_text = " ".join(symptoms).lower()
-
-    if any(word in symptom_text for word in ["rash", "skin", "itch", "hives", "allergy"]):
-        return (
-            "For the skin rash, avoid scratching and avoid any new soaps, creams, foods, "
-            "or medicines that may have triggered it. Use a cool compress and keep the "
-            "area clean and dry. If you develop swelling of the lips or face, breathing "
-            "trouble, fever, spreading redness, pus, or severe pain, seek urgent medical care."
-        )
-
-    if any(word in symptom_text for word in ["leg pain", "knee pain", "joint pain", "sprain", "injury"]):
-        return (
-            "For the pain, rest the affected area, avoid putting strain on it, and use a "
-            "cold pack wrapped in cloth for 15-20 minutes at a time. If there is severe "
-            "pain, swelling, deformity, numbness, or you cannot bear weight, please see a doctor urgently."
-        )
-
-    if any(word in symptom_text for word in ["chest pain", "heart pain", "chest tightness"]):
-        return (
-            "Chest pain or tightness should be checked urgently. Please avoid exertion and "
-            "seek medical care right away, especially if there is sweating, breathlessness, "
-            "dizziness, pain spreading to the arm or jaw, or worsening discomfort."
-        )
-
-    return (
-        "Based on your symptoms, I recommend rest, staying well hydrated, and avoiding "
-        "any activities that aggravate the problem. Monitor closely for any worsening."
-    )
+    try:
+        return follow_up_parser.parse(clean_json)
+    except Exception as exc:
+        print(f"Remedy follow-up parser failed: {exc}")
+        return None
 
 
 def remedy_agent_node(state: GraphState):
@@ -98,7 +70,10 @@ def remedy_agent_node(state: GraphState):
         updated_history.append({"role": "patient", "text": user_text})
         confirmed_booking = state.get("confirmed_booking")
 
-        if confirmed_booking and patient_agrees(user_text):
+        decision = _classify_follow_up(state, user_text)
+        patient_status = decision.patient_status if decision else "unclear"
+
+        if confirmed_booking and patient_status == "agrees_to_forward_note":
             response = (
                 f"Done, I have noted these symptoms for {confirmed_booking.get('doctor', 'your doctor')} "
                 "so they can review them with your appointment details."
@@ -111,7 +86,7 @@ def remedy_agent_node(state: GraphState):
                 "final_response": response,
             }
 
-        if confirmed_booking and patient_declines_note(user_text):
+        if confirmed_booking and patient_status == "declines_forward_note":
             response = "No problem, I will keep the appointment as it is."
             updated_history.append({"role": "assistant", "text": response})
             return {
@@ -121,7 +96,7 @@ def remedy_agent_node(state: GraphState):
                 "final_response": response,
             }
 
-        if patient_is_persisting(user_text):
+        if patient_status == "persisting_or_worsening":
             bridge = (
                 "I am sorry to hear the remedy has not helped. "
                 "Since your symptoms are persisting, let me find the right doctor for you."
@@ -133,7 +108,7 @@ def remedy_agent_node(state: GraphState):
                 "persisting": True,
             }
 
-        if patient_is_improving(user_text):
+        if patient_status == "improving":
             closing = (
                 "That is great to hear! I am glad you are feeling better. "
                 "Do take care of yourself, stay hydrated, and rest well. "
@@ -187,7 +162,8 @@ def remedy_agent_node(state: GraphState):
         }
 
     prompt = f"""
-You are a medical assistant agent. Review the user's new symptom and provide 2 brief care tips.
+You are a compassionate medical assistant agent. Review the patient's symptoms and context,
+then provide 2 brief, personalised care tips.
 
 Look closely at the 'Confirmed Booking' context below.
 - If 'Confirmed Booking' is empty/None, ask the user if they want to book an appointment for these new symptoms.
@@ -211,7 +187,11 @@ Return only JSON with no extra text:
         follow_up = remedy.follow_up_question
     except Exception as exc:
         print(f"Remedy parser failed: {exc}")
-        remedy_text = _fallback_remedy(symptoms)
+        remedy_text = (
+            "I am having trouble generating tailored care advice right now. Please avoid "
+            "anything that worsens your symptoms, rest if you can, and seek medical care "
+            "promptly if symptoms are severe, unusual, or getting worse."
+        )
         if confirmed_booking:
             follow_up = (
                 "Would you like me to forward these new symptoms as a clinical note "

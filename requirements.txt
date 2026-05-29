@@ -1,6 +1,7 @@
 fastapi
+huggingface-hub
 langchain-core
-langchain-openai
+langchain-huggingface
 langgraph
 minio
 pandas

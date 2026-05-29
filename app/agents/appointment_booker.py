@@ -6,6 +6,9 @@ Remedy logic lives in remedy_agent.py.
 """
 
 from app.agents.state import GraphState
+from app.agents.schemas import BookingMenuDecision
+from app.inference.llm import generate_text
+from langchain_core.output_parsers import PydanticOutputParser
 from app.services.appointments import (
     available_doctors_for_department,
     available_slots_for_doctor,
@@ -13,26 +16,11 @@ from app.services.appointments import (
 )
 
 
-DECLINE_WORDS = {"no", "nope", "deny", "decline", "cancel", "not now", "later"}
-REMEDY_REQUEST_WORDS = {
-    "remedy",
-    "remedies",
-    "suggestion",
-    "suggestions",
-    "relief",
-    "home care",
-    "what can i do",
-}
+menu_parser = PydanticOutputParser(pydantic_object=BookingMenuDecision)
 
 
-def patient_declined(text: str) -> bool:
-    normalized = text.strip().lower()
-    return any(word in normalized for word in DECLINE_WORDS)
-
-
-def patient_wants_remedy(text: str) -> bool:
-    normalized = text.strip().lower()
-    return any(word in normalized for word in REMEDY_REQUEST_WORDS)
+def _clean_json(raw_output: str) -> str:
+    return raw_output.replace("```json", "").replace("```", "").strip()
 
 
 def format_numbered_options(items: list[dict], label_key: str, extra_keys: list[str]):
@@ -59,6 +47,36 @@ def choose_option(user_input: str, options: list[dict], id_key: str, name_key: s
             return option
 
     return None
+
+
+def classify_booking_menu_reply(state: GraphState, menu_type: str) -> BookingMenuDecision | None:
+    prompt = f"""
+You are an appointment booking assistant interpreting the patient's latest reply.
+
+Use meaning and the displayed options, not keyword matching.
+
+Current menu: {menu_type}
+Doctor options: {state.get("doctor_options") or []}
+Slot options: {state.get("slot_options") or []}
+Latest patient reply: {state.get("user_input", "")}
+
+Decide whether the patient selected an option, declined booking, requested symptom
+care/remedy instead, or gave an unclear reply. If they selected an option, copy the
+number, id, name, or time they used into selected_value.
+
+Return only JSON:
+{menu_parser.get_format_instructions()}
+""".strip()
+
+    raw_output = generate_text(prompt)
+    clean_json = _clean_json(raw_output)
+    print(f"Booking menu decision JSON: {clean_json}")
+
+    try:
+        return menu_parser.parse(clean_json)
+    except Exception as exc:
+        print(f"Booking menu parser failed: {exc}")
+        return None
 
 
 def ask_symptom_follow_up(state: GraphState):
@@ -237,31 +255,37 @@ def appointment_booker_node(state: GraphState):
     if awaiting == "symptom_follow_up":
         return capture_symptom_follow_up(state)
 
-    if awaiting in {"doctor_selection", "slot_selection"} and patient_wants_remedy(state["user_input"]):
-        return {
-            "awaiting": None,
-            "booking_active": False,
-            "intent": "triage_symptoms",
-            "remedy_requested": True,
-            "doctor_options": [],
-            "slot_options": [],
-        }
+    if awaiting in {"doctor_selection", "slot_selection"}:
+        decision = classify_booking_menu_reply(state, awaiting)
 
-    if awaiting in {"doctor_selection", "slot_selection"} and patient_declined(state["user_input"]):
-        department = state.get("target_department") or "a relevant specialist"
-        return {
-            "awaiting": None,
-            "booking_active": False,
-            "intent": "triage_symptoms",
-            "booking_declined": True,
-            "doctor_options": [],
-            "slot_options": [],
-            "final_response": (
-                "No appointment has been booked. "
-                f"If symptoms continue or worsen, please see a {department} doctor. "
-                "If you change your mind, feel free to come back. Take care of yourself!"
-            ),
-        }
+        if decision and decision.action == "request_remedy":
+            return {
+                "awaiting": None,
+                "booking_active": False,
+                "intent": "triage_symptoms",
+                "remedy_requested": True,
+                "doctor_options": [],
+                "slot_options": [],
+            }
+
+        if decision and decision.action == "decline_booking":
+            department = state.get("target_department") or "a relevant specialist"
+            return {
+                "awaiting": None,
+                "booking_active": False,
+                "intent": "triage_symptoms",
+                "booking_declined": True,
+                "doctor_options": [],
+                "slot_options": [],
+                "final_response": (
+                    "No appointment has been booked. "
+                    f"If symptoms continue or worsen, please see a {department} doctor. "
+                    "If you change your mind, feel free to come back. Take care of yourself!"
+                ),
+            }
+
+        if decision and decision.action == "select_option" and decision.selected_value:
+            state = {**state, "user_input": decision.selected_value}
 
     if awaiting == "doctor_selection":
         return ask_preferred_slot(state)

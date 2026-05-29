@@ -4,7 +4,7 @@ from pydantic import BaseModel, Field
 
 
 class PatientExtraction(BaseModel):
-    intent: Literal["triage_symptoms", "direct_booking"] = Field(
+    intent: Literal["greeting", "triage_symptoms", "direct_booking", "unclear"] = Field(
         description="Goal of the patient."
     )
     symptoms: list[str] = Field(
@@ -16,6 +16,10 @@ class PatientExtraction(BaseModel):
 
 
 class ConversationDecision(BaseModel):
+    intent: Optional[Literal["continue_intake", "direct_booking"]] = Field(
+        default="continue_intake",
+        description="Whether the patient wants to keep answering intake questions or switch to booking.",
+    )
     has_enough_info: bool = Field(
         description=(
             "True only when you know: symptoms, approximate duration, cause/trigger "
@@ -55,6 +59,38 @@ class RemedyResponse(BaseModel):
             "Are your symptoms improving, or are they persisting/worsening?'"
         )
     )
+
+
+class RemedyFollowUpDecision(BaseModel):
+    patient_status: Literal[
+        "improving",
+        "persisting_or_worsening",
+        "agrees_to_forward_note",
+        "declines_forward_note",
+        "unclear",
+    ] = Field(description="The intent/status in the patient's reply to the remedy follow-up.")
+    reason: str = Field(description="Brief explanation for the classification.")
+
+
+class BookingMenuDecision(BaseModel):
+    action: Literal["select_option", "decline_booking", "request_remedy", "unclear"] = Field(
+        description="What the patient is trying to do while viewing booking options."
+    )
+    selected_value: Optional[str] = Field(
+        default=None,
+        description="The doctor/slot number, id, name, or time the patient selected, if any.",
+    )
+    reason: str = Field(description="Brief explanation for the classification.")
+
+
+class DepartmentDecision(BaseModel):
+    department: Optional[str] = Field(
+        default=None,
+        description="Best hospital department for the symptoms, or None if unclear.",
+    )
+    confidence: float = Field(description="Confidence from 0.0 to 1.0.")
+    needs_clarification: bool = Field(description="True if more symptom detail is needed.")
+    reason: str = Field(description="Brief clinical routing explanation.")
 
 
 class SupervisorDecision(BaseModel):

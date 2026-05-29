@@ -42,14 +42,15 @@ def test_triage_router_uses_llm_for_body_part_pain_and_urgency(monkeypatch):
     assert state["severity"] == "severe"
 
 
-def test_triage_router_falls_back_to_fast_extract_on_bad_llm_output(monkeypatch):
+def test_triage_router_clarifies_on_bad_llm_output(monkeypatch):
     monkeypatch.setattr(triage_router, "generate_text", lambda _: "not json")
 
     state = triage_router.triage_router_node({"user_input": "severe leg pain"})
 
-    assert state["intent"] == "triage_symptoms"
-    assert state["symptoms"] == ["leg pain"]
-    assert state["severity"] == "severe"
+    assert state["intent"] == "unclear"
+    assert state["symptoms"] == []
+    assert state["severity"] == "mild"
+    assert "could not reliably understand" in state["final_response"].lower()
 
 
 def test_triage_router_returns_clarification_when_llm_and_fast_extract_fail(monkeypatch):
@@ -57,7 +58,7 @@ def test_triage_router_returns_clarification_when_llm_and_fast_extract_fail(monk
 
     state = triage_router.triage_router_node({"user_input": "help"})
 
-    assert state["intent"] == "triage_symptoms"
+    assert state["intent"] == "unclear"
     assert state["symptoms"] == []
-    assert state["severity"] == "moderate"
+    assert state["severity"] == "mild"
     assert "could not reliably understand" in state["final_response"]

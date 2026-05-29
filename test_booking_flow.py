@@ -1,4 +1,5 @@
 from app.agents import appointment_booker
+from app.agents import conversation_agent
 
 
 def test_booker_asks_empathetic_symptom_follow_up_before_doctors():
@@ -60,6 +61,15 @@ def test_booker_recommends_doctors_and_asks_for_preference(monkeypatch):
 def test_booker_shows_slots_after_doctor_selection(monkeypatch):
     monkeypatch.setattr(
         appointment_booker,
+        "classify_booking_menu_reply",
+        lambda state, menu_type: appointment_booker.BookingMenuDecision(
+            action="select_option",
+            selected_value="1",
+            reason="Selected by number.",
+        ),
+    )
+    monkeypatch.setattr(
+        appointment_booker,
         "available_slots_for_doctor",
         lambda doctor_id, limit: [
             {
@@ -87,6 +97,15 @@ def test_booker_shows_slots_after_doctor_selection(monkeypatch):
 def test_booker_books_selected_slot(monkeypatch):
     monkeypatch.setattr(
         appointment_booker,
+        "classify_booking_menu_reply",
+        lambda state, menu_type: appointment_booker.BookingMenuDecision(
+            action="select_option",
+            selected_value="1",
+            reason="Selected by number.",
+        ),
+    )
+    monkeypatch.setattr(
+        appointment_booker,
         "book_selected_slot",
         lambda slot_id, patient_id: {
             "slot_id": slot_id,
@@ -110,7 +129,16 @@ def test_booker_books_selected_slot(monkeypatch):
     assert "Your appointment is booked" in state["final_response"]
 
 
-def test_booker_gives_remedies_when_patient_declines():
+def test_booker_gives_remedies_when_patient_declines(monkeypatch):
+    monkeypatch.setattr(
+        appointment_booker,
+        "classify_booking_menu_reply",
+        lambda state, menu_type: appointment_booker.BookingMenuDecision(
+            action="decline_booking",
+            selected_value=None,
+            reason="Patient declined booking.",
+        ),
+    )
     state = appointment_booker.appointment_booker_node(
         {
             "awaiting": "slot_selection",
@@ -123,3 +151,44 @@ def test_booker_gives_remedies_when_patient_declines():
     assert state["awaiting"] is None
     assert "No appointment has been booked" in state["final_response"]
     assert "please see a Cardiology doctor" in state["final_response"]
+
+
+def test_conversation_stops_when_structured_intake_is_sufficient(monkeypatch):
+    monkeypatch.setattr(
+        conversation_agent,
+        "generate_text",
+        lambda _: """
+        {
+            "intent": "continue_intake",
+            "has_enough_info": false,
+            "next_question": "Can you tell me more about your gym routine?",
+            "collected_info": {
+                "duration": "few months",
+                "location": "lower back",
+                "severity_pattern": "sharp, comes and goes",
+                "cause": "lifting something",
+                "associated_symptoms": "weakness in legs",
+                "existing_conditions": "low B12 and D3",
+                "lifestyle": "sitting on a chair almost 8 hours a day",
+                "daily_activity": "gym"
+            }
+        }
+        """,
+    )
+
+    state = conversation_agent.conversation_agent_node(
+        {
+            "awaiting": "conversation",
+            "user_input": "gym",
+            "symptoms": ["back pain"],
+            "severity": "moderate",
+            "questions_asked": [
+                "How long has this been happening?",
+                "Where exactly is the pain?",
+                "What triggers it?",
+            ],
+        }
+    )
+
+    assert state["awaiting"] is None
+    assert "final_response" not in state
