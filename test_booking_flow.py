@@ -1,5 +1,7 @@
 from app.agents import appointment_booker
 from app.agents import conversation_agent
+from app.agents.graph import run_patient_chat
+from app.agents.supervisor import supervisor_node
 
 
 def test_booker_asks_empathetic_symptom_follow_up_before_doctors():
@@ -124,9 +126,146 @@ def test_booker_books_selected_slot(monkeypatch):
         }
     )
 
-    assert state["awaiting"] is None
+    assert state["awaiting"] == "end_confirmation"
     assert state["selected_slot_id"] == "slot-1"
+    assert state["confirmed_bookings"][0]["slot_id"] == "slot-1"
     assert "Your appointment is booked" in state["final_response"]
+    assert "should we end the chat" in state["final_response"]
+
+
+def test_supervisor_ends_chat_when_patient_confirms_end_prompt():
+    state = supervisor_node(
+        {
+            "awaiting": "end_confirmation",
+            "user_input": "yes",
+            "symptoms": ["sharp ear pain"],
+            "target_department": "Otolaryngology",
+        }
+    )
+
+    assert state["next_agent"] == "finish"
+    assert state["awaiting"] is None
+    assert state["chat_closed"] is True
+    assert "Take care" in state["final_response"]
+
+
+def test_closed_chat_does_not_continue_old_medical_flow():
+    state = run_patient_chat(
+        "sure",
+        state={
+            "chat_closed": True,
+            "symptoms": ["chest pain"],
+            "target_department": "Cardiology",
+            "awaiting": None,
+        },
+    )
+
+    assert state["next_agent"] == "finish"
+    assert state["chat_closed"] is True
+    assert state["awaiting"] is None
+    assert "closed" in state["final_response"]
+
+
+def test_supervisor_keeps_unclear_end_confirmation_in_confirmation_state(monkeypatch):
+    monkeypatch.setattr(
+        "app.agents.supervisor.generate_router_text",
+        lambda _: '{"next_agent":"continue_current","intent":null,"reason":"unclear confirmation"}',
+    )
+
+    state = supervisor_node(
+        {
+            "awaiting": "end_confirmation",
+            "user_input": "maybe",
+            "symptoms": ["sharp ear pain"],
+            "target_department": "Otolaryngology",
+        }
+    )
+
+    assert state["next_agent"] == "finish"
+    assert state["awaiting"] == "end_confirmation"
+    assert state["chat_closed"] is False
+    assert "reply yes to end" in state["final_response"]
+
+
+def test_booker_keeps_multiple_confirmed_bookings(monkeypatch):
+    monkeypatch.setattr(
+        appointment_booker,
+        "classify_booking_menu_reply",
+        lambda state, menu_type: appointment_booker.BookingMenuDecision(
+            action="select_option",
+            selected_value="1",
+            reason="Selected by number.",
+        ),
+    )
+    monkeypatch.setattr(
+        appointment_booker,
+        "book_selected_slot",
+        lambda slot_id, patient_id: {
+            "booking_id": f"booking-{slot_id}",
+            "slot_id": slot_id,
+            "doctor_name": "Dr. B",
+            "department": "Dermatology",
+            "start_time": "2026-05-22T10:00:00",
+        },
+    )
+
+    state = appointment_booker.appointment_booker_node(
+        {
+            "awaiting": "slot_selection",
+            "user_input": "1",
+            "slot_options": [{"slot_id": "slot-2", "start_time": "2026-05-22T10:00:00"}],
+            "confirmed_bookings": [{"booking_id": "booking-slot-1", "slot_id": "slot-1"}],
+            "patient_id": "patient-1",
+        }
+    )
+
+    assert len(state["confirmed_bookings"]) == 2
+    assert state["confirmed_booking"]["slot_id"] == "slot-2"
+
+
+def test_booker_cancels_selected_appointment(monkeypatch):
+    monkeypatch.setattr(
+        appointment_booker,
+        "cancel_booking",
+        lambda reference, patient_id: {
+            "booking_id": reference,
+            "slot_id": "slot-1",
+            "doctor": "Dr. A",
+            "department": "Cardiology",
+            "time": "2026-05-21 09:00:00",
+            "end_time": "2026-05-21 09:30:00",
+        },
+    )
+
+    state = appointment_booker.appointment_booker_node(
+        {
+            "awaiting": "cancellation_selection",
+            "user_input": "1",
+            "patient_id": "patient-1",
+            "cancellation_options": [
+                {
+                    "booking_id": "booking-1",
+                    "slot_id": "slot-1",
+                    "doctor": "Dr. A",
+                    "department": "Cardiology",
+                    "time": "2026-05-21 09:00:00",
+                }
+            ],
+            "confirmed_bookings": [
+                {
+                    "booking_id": "booking-1",
+                    "slot_id": "slot-1",
+                    "doctor": "Dr. A",
+                    "department": "Cardiology",
+                    "time": "2026-05-21 09:00:00",
+                }
+            ],
+        }
+    )
+
+    assert state["awaiting"] == "end_confirmation"
+    assert state["confirmed_bookings"] == []
+    assert "has been cancelled" in state["final_response"]
 
 
 def test_booker_gives_remedies_when_patient_declines(monkeypatch):

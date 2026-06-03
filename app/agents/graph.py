@@ -61,6 +61,14 @@ def run_patient_chat(
     if patient_id is not None:
         current_state["patient_id"] = patient_id
 
+    if current_state.get("chat_closed"):
+        return {
+            **current_state,
+            "next_agent": "finish",
+            "awaiting": None,
+            "final_response": "This chat is closed. Please start a new chat to continue.",
+        }
+
     # Clear output fields so supervisor doesn't short-circuit on stale data
     current_state.pop("final_response", None)
     current_state.pop("next_agent", None)

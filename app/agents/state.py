@@ -5,11 +5,14 @@ class GraphState(TypedDict, total=False):
     # Core input
     user_input: str
     patient_id: Optional[str]
+    patient_profile: Optional[dict]
+    active_appointments: Optional[list[dict]]
 
     # Routing
     next_agent: Optional[str]
     awaiting: Optional[str]
     supervisor_checked_input: Optional[bool]
+    chat_closed: Optional[bool]
 
     # Triage extraction
     intent: Optional[str]
@@ -45,6 +48,8 @@ class GraphState(TypedDict, total=False):
     selected_slot_id: Optional[str]
     booking_active: Optional[bool]
     confirmed_booking: Optional[dict[str, str]]
+    confirmed_bookings: Optional[list[dict[str, str]]]
+    cancellation_options: Optional[list[dict[str, str]]]
     note_forwarded: Optional[bool]
 
     # Final output

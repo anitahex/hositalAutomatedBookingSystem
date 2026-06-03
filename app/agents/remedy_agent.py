@@ -33,6 +33,7 @@ You are a hospital assistant interpreting a patient's reply after remedy advice.
 Use meaning and context, not keyword matching.
 
 Confirmed booking: {state.get("confirmed_booking")}
+Patient profile: {state.get("patient_profile") or "Unknown"}
 Previous remedy: {state.get("remedy_text")}
 Latest patient reply: {user_text}
 
@@ -170,6 +171,8 @@ Look closely at the 'Confirmed Booking' context below.
 - If 'Confirmed Booking' contains data, DO NOT offer a new booking. Instead, close your response by asking if they would like you to forward these new symptoms as a clinical note to their upcoming doctor.
 
 Confirmed Booking Context: {confirmed_booking}
+Patient profile from hospital records: {state.get("patient_profile") or "Unknown"}
+Active appointments: {state.get("active_appointments") or state.get("confirmed_bookings") or []}
 Current Symptoms: {state['symptoms']}
 Collected Context: {collected_info}
 

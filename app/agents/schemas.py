@@ -73,7 +73,13 @@ class RemedyFollowUpDecision(BaseModel):
 
 
 class BookingMenuDecision(BaseModel):
-    action: Literal["select_option", "decline_booking", "request_remedy", "unclear"] = Field(
+    action: Literal[
+        "select_option",
+        "decline_booking",
+        "request_remedy",
+        "cancel_appointment",
+        "unclear",
+    ] = Field(
         description="What the patient is trying to do while viewing booking options."
     )
     selected_value: Optional[str] = Field(

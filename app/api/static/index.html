@@ -8,13 +8,116 @@
   </head>
   <body>
     <main class="shell">
+      <section class="auth-view" id="authView" aria-label="Patient account access">
+        <div class="auth-header">
+          <div>
+            <h1>Smart Hospital Portal</h1>
+            <p>Sign in to continue your care conversation</p>
+          </div>
+        </div>
+
+        <div class="auth-tabs" role="tablist" aria-label="Authentication mode">
+          <button class="tab active" id="showLoginBtn" type="button">Login</button>
+          <button class="tab" id="showSignupBtn" type="button">Sign up</button>
+        </div>
+
+        <form class="auth-form" id="loginForm">
+          <label>
+            Email
+            <input id="loginEmail" type="email" autocomplete="email" required />
+          </label>
+          <label>
+            Password
+            <input id="loginPassword" type="password" autocomplete="current-password" required />
+          </label>
+          <button type="submit">Login</button>
+        </form>
+
+        <form class="auth-form hidden" id="signupForm">
+          <section class="signup-step" id="signupStepOne">
+            <label>
+              Email
+              <input id="signupEmail" type="email" autocomplete="email" required />
+            </label>
+            <label>
+              Password
+              <input
+                id="signupPassword"
+                type="password"
+                autocomplete="new-password"
+                minlength="8"
+                required
+              />
+            </label>
+            <label>
+              Confirm password
+              <input id="signupConfirmPassword" type="password" autocomplete="new-password" required />
+            </label>
+            <p class="form-hint">Minimum 8 characters with uppercase, lowercase, number, and special character.</p>
+            <button id="signupNextBtn" type="button">Next</button>
+          </section>
+
+          <section class="signup-step hidden" id="signupStepTwo">
+            <div class="form-grid">
+              <label>
+                Name
+                <input id="profileName" type="text" autocomplete="name" required />
+              </label>
+              <label>
+                Age
+                <input id="profileAge" type="number" min="1" max="129" required />
+              </label>
+              <label>
+                Mobile number
+                <input id="profileMobile" type="tel" autocomplete="tel" required />
+              </label>
+              <label>
+                Email ID
+                <input id="profileEmail" type="email" autocomplete="email" required />
+              </label>
+              <label>
+                Blood group
+                <select id="profileBloodGroup" required>
+                  <option value="">Select blood group</option>
+                  <option>A+</option>
+                  <option>A-</option>
+                  <option>B+</option>
+                  <option>B-</option>
+                  <option>AB+</option>
+                  <option>AB-</option>
+                  <option>O+</option>
+                  <option>O-</option>
+                </select>
+              </label>
+              <label class="full-width">
+                Address
+                <textarea id="profileAddress" rows="3" required></textarea>
+              </label>
+              <label class="full-width">
+                Health issues
+                <textarea id="profileHealthIssues" rows="3" placeholder="Optional"></textarea>
+              </label>
+            </div>
+            <div class="form-actions">
+              <button class="secondary" id="signupBackBtn" type="button">Back</button>
+              <button type="submit">Create account</button>
+            </div>
+          </section>
+        </form>
+
+        <p class="auth-error" id="authMessage" role="alert"></p>
+      </section>
+
       <section class="workspace" aria-label="Patient triage chat">
         <header class="topbar">
           <div>
             <h1>Smart Hospital Portal</h1>
-            <p>AI triage, doctor selection, and appointment booking</p>
+            <p id="patientSummary">AI triage, doctor selection, and appointment booking</p>
           </div>
-          <div class="status" id="status">Ready</div>
+          <div class="topbar-actions">
+            <div class="status" id="status">Ready</div>
+            <button class="secondary" id="logoutBtn" type="button">Logout</button>
+          </div>
         </header>
 
         <section class="content">
@@ -60,6 +163,14 @@
           </section>
         </section>
       </section>
+
+      <div class="closed-modal hidden" id="chatClosedModal" role="dialog" aria-modal="true" aria-labelledby="chatClosedTitle">
+        <section class="closed-dialog">
+          <h2 id="chatClosedTitle">Chat closed</h2>
+          <p>This care conversation has ended. Start a new chat to discuss new symptoms or appointments.</p>
+          <button id="startNewChatBtn" type="button">Start new chat</button>
+        </section>
+      </div>
     </main>
 
     <script src="/static/app.js"></script>

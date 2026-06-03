@@ -15,12 +15,18 @@ def ensure_booking_schema(conn):
                 start_time TIMESTAMP NOT NULL,
                 end_time TIMESTAMP NOT NULL,
                 status TEXT NOT NULL DEFAULT 'booked',
-                created_at TIMESTAMP NOT NULL DEFAULT NOW(),
-                UNIQUE (slot_id, status)
+                created_at TIMESTAMP NOT NULL DEFAULT NOW()
             );
+
+            ALTER TABLE appointment_bookings
+                DROP CONSTRAINT IF EXISTS appointment_bookings_slot_id_status_key;
 
             CREATE INDEX IF NOT EXISTS idx_appointment_bookings_active
                 ON appointment_bookings(slot_id, end_time)
+                WHERE status = 'booked';
+
+            CREATE UNIQUE INDEX IF NOT EXISTS ux_appointment_bookings_booked_slot
+                ON appointment_bookings(slot_id)
                 WHERE status = 'booked';
 
             INSERT INTO appointment_bookings (
@@ -38,7 +44,7 @@ def ensure_booking_schema(conn):
                 end_time
             FROM appointment_slots
             WHERE is_booked = TRUE
-            ON CONFLICT (slot_id, status) DO NOTHING;
+            ON CONFLICT DO NOTHING;
 
             UPDATE appointment_bookings
             SET status = 'completed'
@@ -194,6 +200,18 @@ def book_selected_slot(slot_id: str, patient_id: str | None = None):
                 )
                 cur.execute(
                     """
+                    SELECT booking_id
+                    FROM appointment_bookings
+                    WHERE slot_id = %s
+                        AND status = 'booked'
+                    ORDER BY created_at DESC
+                    LIMIT 1;
+                    """,
+                    (booked_slot_id,),
+                )
+                booking_id = cur.fetchone()[0]
+                cur.execute(
+                    """
                     UPDATE appointment_slots
                     SET is_booked = TRUE,
                         booked_by_patient_id = %s
@@ -212,4 +230,132 @@ def book_selected_slot(slot_id: str, patient_id: str | None = None):
         "start_time": start_time,
         "end_time": end_time,
         "slot_id": booked_slot_id,
+        "booking_id": booking_id,
+    }
+
+
+def active_bookings_for_patient(patient_id: str | None = None, limit: int = 10):
+    with connect_db() as conn:
+        ensure_booking_schema(conn)
+        with conn.cursor() as cur:
+            if patient_id:
+                cur.execute(
+                    """
+                    SELECT
+                        b.booking_id,
+                        b.slot_id,
+                        d.name,
+                        d.department,
+                        b.start_time,
+                        b.end_time
+                    FROM appointment_bookings b
+                    JOIN doctors d ON d.doctor_id = b.doctor_id
+                    WHERE b.patient_id = %s
+                        AND b.status = 'booked'
+                        AND b.end_time > NOW()
+                    ORDER BY b.start_time ASC
+                    LIMIT %s;
+                    """,
+                    (patient_id, limit),
+                )
+            else:
+                cur.execute(
+                    """
+                    SELECT
+                        b.booking_id,
+                        b.slot_id,
+                        d.name,
+                        d.department,
+                        b.start_time,
+                        b.end_time
+                    FROM appointment_bookings b
+                    JOIN doctors d ON d.doctor_id = b.doctor_id
+                    WHERE b.status = 'booked'
+                        AND b.end_time > NOW()
+                    ORDER BY b.start_time ASC
+                    LIMIT %s;
+                    """,
+                    (limit,),
+                )
+            rows = cur.fetchall()
+
+    return [
+        {
+            "booking_id": str(booking_id),
+            "slot_id": str(slot_id),
+            "doctor": str(doctor_name),
+            "department": str(department),
+            "time": str(start_time),
+            "end_time": str(end_time),
+        }
+        for booking_id, slot_id, doctor_name, department, start_time, end_time in rows
+    ]
+
+
+def cancel_booking(reference: str, patient_id: str | None = None):
+    with connect_db() as conn:
+        try:
+            ensure_booking_schema(conn)
+            with conn.cursor() as cur:
+                params = [reference, reference]
+                patient_clause = ""
+                if patient_id:
+                    patient_clause = "AND b.patient_id = %s"
+                    params.append(patient_id)
+
+                cur.execute(
+                    f"""
+                    SELECT
+                        b.booking_id,
+                        b.slot_id,
+                        d.name,
+                        d.department,
+                        b.start_time,
+                        b.end_time
+                    FROM appointment_bookings b
+                    JOIN doctors d ON d.doctor_id = b.doctor_id
+                    WHERE (b.booking_id::text = %s OR b.slot_id::text = %s)
+                        AND b.status = 'booked'
+                        AND b.end_time > NOW()
+                        {patient_clause}
+                    FOR UPDATE OF b;
+                    """,
+                    tuple(params),
+                )
+                row = cur.fetchone()
+
+                if not row:
+                    conn.rollback()
+                    return None
+
+                booking_id, slot_id, doctor_name, department, start_time, end_time = row
+                cur.execute(
+                    """
+                    UPDATE appointment_bookings
+                    SET status = 'cancelled'
+                    WHERE booking_id = %s;
+                    """,
+                    (booking_id,),
+                )
+                cur.execute(
+                    """
+                    UPDATE appointment_slots
+                    SET is_booked = FALSE,
+                        booked_by_patient_id = NULL
+                    WHERE slot_id = %s;
+                    """,
+                    (slot_id,),
+                )
+                conn.commit()
+        except Exception:
+            conn.rollback()
+            raise
+
+    return {
+        "booking_id": str(booking_id),
+        "slot_id": str(slot_id),
+        "doctor": str(doctor_name),
+        "department": str(department),
+        "time": str(start_time),
+        "end_time": str(end_time),
     }

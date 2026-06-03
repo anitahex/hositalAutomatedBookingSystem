@@ -16,8 +16,84 @@ def _route(next_agent: str, **updates):
     }
 
 
+def _close_chat():
+    return _route(
+        "finish",
+        awaiting=None,
+        chat_closed=True,
+        final_response="Take care. You can come back anytime if you need help.",
+    )
+
+
 def _clean_json(raw_output: str) -> str:
     return raw_output.replace("```json", "").replace("```", "").strip()
+
+
+def _looks_like_end_chat(text: str) -> bool:
+    lowered = text.strip().lower()
+    if not lowered:
+        return False
+
+    exact = {
+        "bye",
+        "goodbye",
+        "end",
+        "end chat",
+        "close chat",
+        "quit",
+        "done",
+        "that's all",
+        "that is all",
+        "thanks",
+        "thank you",
+        "no thanks",
+        "no thank you",
+        "nothing else",
+    }
+    return lowered in exact or any(
+        phrase in lowered
+        for phrase in (
+            "end the chat",
+            "stop the chat",
+            "finish the chat",
+            "i am done",
+            "i'm done",
+            "no more help",
+        )
+    )
+
+
+def _looks_like_more_help(text: str) -> bool:
+    lowered = text.strip().lower()
+    return lowered in {"no", "continue", "more help", "help me"} or any(
+        phrase in lowered
+        for phrase in (
+            "need more",
+            "something else",
+            "other help",
+        )
+    )
+
+
+def _confirms_end_chat(text: str) -> bool:
+    lowered = text.strip().lower()
+    if not lowered:
+        return False
+
+    exact = {
+        "yes",
+        "y",
+        "yeah",
+        "yep",
+        "ya",
+        "sure",
+        "ok",
+        "okay",
+        "please",
+        "confirm",
+        "confirmed",
+    }
+    return lowered in exact or _looks_like_end_chat(lowered)
 
 
 def _dynamic_route(state: GraphState) -> dict | None:
@@ -27,6 +103,32 @@ def _dynamic_route(state: GraphState) -> dict | None:
     user_input = (state.get("user_input") or "").strip()
     if not user_input:
         return None
+
+    if state.get("awaiting") == "end_confirmation":
+        if _confirms_end_chat(user_input):
+            return _close_chat()
+        if _looks_like_more_help(user_input):
+            return _route(
+                "finish",
+                awaiting=None,
+                chat_closed=False,
+                intent=None,
+                final_response=(
+                    "Sure, I am still here. Tell me what you need next - symptoms, "
+                    "another appointment, or appointment cancellation."
+                ),
+            )
+
+    if _looks_like_end_chat(user_input):
+        return _route(
+            "finish",
+            awaiting="end_confirmation",
+            chat_closed=False,
+            final_response=(
+                "Would you like to end the chat now? Reply yes to end, or tell me "
+                "what else you need help with."
+            ),
+        )
 
     # First turn still belongs to triage; there is no existing flow to interrupt.
     if not state.get("intent") and not state.get("awaiting"):
@@ -46,6 +148,9 @@ Current state:
 - target_department: {state.get("target_department")}
 - booking_active: {state.get("booking_active")}
 - confirmed_booking: {state.get("confirmed_booking")}
+- confirmed_bookings: {state.get("confirmed_bookings") or []}
+- patient_profile: {state.get("patient_profile") or "Unknown"}
+- active_appointments: {state.get("active_appointments") or []}
 - remedy_given: {state.get("remedy_given")}
 - persisting: {state.get("persisting")}
 - selected_doctor: {state.get("selected_doctor_name")}
@@ -59,7 +164,7 @@ Agent choices:
 - conversation_agent: patient is providing/needs intake details before remedy.
 - remedy_agent: patient asks for remedy, suggestions, relief, home care, or responds to remedy follow-up.
 - medical_rag: symptoms are known and the patient wants the right department/doctor.
-- appointment_booker: patient wants booking, appointment, doctor selection, slot selection, or declines booking.
+- appointment_booker: patient wants booking, appointment, doctor selection, slot selection, declines booking, or wants to cancel an appointment.
 - finish: patient clearly ends the chat or says they are done/better.
 
 Rules:
@@ -68,6 +173,8 @@ Rules:
 - If the patient asks for a remedy while in a booking menu, route to remedy_agent.
 - If the patient asks for a doctor and symptoms are known but department is unknown, route to medical_rag.
 - If the patient asks for a doctor and department/options are already known, route to appointment_booker.
+- If the patient wants to cancel an appointment, route to appointment_booker.
+- If the assistant just asked whether to end the chat, only finish when the patient confirms ending.
 
 Return only JSON:
 {parser.get_format_instructions()}
@@ -130,6 +237,7 @@ Return only JSON:
         updates.update(
             {
                 "awaiting": None,
+                "chat_closed": True,
                 "final_response": "Take care. You can come back anytime if you need help.",
             }
         )
@@ -160,7 +268,17 @@ def supervisor_node(state: GraphState):
     if awaiting == "remedy_check":
         return _route("remedy_agent")
 
-    if awaiting in {"symptom_follow_up", "doctor_selection", "slot_selection"}:
+    if awaiting == "end_confirmation":
+        return _route(
+            "finish",
+            awaiting="end_confirmation",
+            chat_closed=False,
+            final_response=(
+                "Please reply yes to end the chat, or tell me what else you need help with."
+            ),
+        )
+
+    if awaiting in {"symptom_follow_up", "doctor_selection", "slot_selection", "cancellation_selection"}:
         return _route("appointment_booker")
 
     if not state.get("intent"):
@@ -175,9 +293,6 @@ def supervisor_node(state: GraphState):
 
     if state.get("intent") == "direct_booking":
         return _route("appointment_booker")
-
-    if state.get("confirmed_booking") and state.get("symptoms") and not state.get("remedy_given"):
-        return _route("remedy_agent")
 
     if state.get("intent") and not _conversation_complete(state):
         return _route("conversation_agent")

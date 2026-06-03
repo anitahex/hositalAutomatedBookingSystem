@@ -78,6 +78,12 @@ Severity meanings:
 Previous conversation:
 {_build_history_text(history) if history else "None"}
 
+Patient profile from hospital records:
+{state.get("patient_profile") or "Unknown"}
+
+Active appointments:
+{state.get("active_appointments") or state.get("confirmed_bookings") or []}
+
 Latest patient message:
 {user_input}
 

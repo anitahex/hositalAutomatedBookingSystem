@@ -123,6 +123,12 @@ Your job: gather enough information to give a personalised remedy and, if needed
 Current known symptoms: {', '.join(symptoms) if symptoms else 'unclear'}
 Estimated severity: {severity}
 
+Patient profile from hospital records:
+{state.get("patient_profile") or "Unknown"}
+
+Active appointments:
+{state.get("active_appointments") or state.get("confirmed_bookings") or []}
+
 Full conversation so far:
 {history_text if history_text else "Just started."}
 
