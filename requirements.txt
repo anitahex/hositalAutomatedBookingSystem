@@ -9,5 +9,6 @@ psycopg2-binary
 pydantic
 python-dotenv
 qdrant-client
+sentence-transformers
 pytest
 uvicorn

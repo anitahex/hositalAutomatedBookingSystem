@@ -2,7 +2,7 @@ from app.agents import remedy_agent
 
 
 def test_remedy_agent_uses_generic_clinical_safety_fallback(monkeypatch):
-    monkeypatch.setattr(remedy_agent, "generate_text", lambda _: "not json")
+    monkeypatch.setattr(remedy_agent, "generate_text", lambda *args, **kwargs: "not json")
 
     state = remedy_agent.remedy_agent_node(
         {
@@ -19,7 +19,7 @@ def test_remedy_agent_uses_generic_clinical_safety_fallback(monkeypatch):
 
 
 def test_remedy_agent_uses_llm_follow_up_classification(monkeypatch):
-    def fake_generate_text(_: str) -> str:
+    def fake_generate_text(*args, **kwargs) -> str:
         return """
         {
             "patient_status": "persisting_or_worsening",

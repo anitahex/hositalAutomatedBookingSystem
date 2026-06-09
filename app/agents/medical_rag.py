@@ -5,10 +5,14 @@ from app.services.rag import match_department_details
 def medical_rag_node(state: GraphState):
     symptoms = state.get("symptoms") or []
     collected_info = state.get("collected_info") or {}
-    try:
-        match = match_department_details(symptoms, collected_info)
-    except TypeError:
-        match = match_department_details(symptoms)
+    match = match_department_details(
+        symptoms,
+        collected_info,
+        chat_history=state.get("conversation_history"),
+        chat_summary=state.get("chat_summary"),
+        patient_id=str(state.get("patient_id") or ""),
+        chat_session_id=str(state.get("chat_session_id") or ""),
+    )
     if match.needs_clarification or not match.department:
         symptom_text = ", ".join(symptoms) if symptoms else "your symptoms"
         response = (

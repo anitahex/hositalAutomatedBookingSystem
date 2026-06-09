@@ -8,12 +8,20 @@ from app.inference.llm import generate_text
 from app.services.embeddings import embed_query
 from app.services.vector_store import search_clinical_knowledge
 
+try:
+    from sentence_transformers import CrossEncoder
+except ModuleNotFoundError:
+    CrossEncoder = None
+
 
 DEFAULT_DEPARTMENT = "General Physician"
-RAG_MATCH_LIMIT = 5
+RAG_MATCH_LIMIT = 20
+RAG_RERANK_LIMIT = 3
 MIN_CONFIDENT_SCORE = 0.65
+RERANKER_MODEL = "BAAI/bge-reranker-base"
 
 department_parser = PydanticOutputParser(pydantic_object=DepartmentDecision)
+_reranker = None
 
 
 @dataclass
@@ -71,6 +79,17 @@ def _heuristic_department(
             confidence=0.85,
             source="heuristic",
             reason="Symptoms suggest a skin-related concern.",
+        )
+
+    if (
+        any(term in text for term in ("leg pain", "calf", "calves", "throbbing"))
+        and any(term in text for term in ("tingling", "numbness", "b12", "weakness", "burning"))
+    ):
+        return DepartmentMatch(
+            department="Neurology",
+            confidence=0.86,
+            source="heuristic",
+            reason="Symptoms suggest a nerve or neurological concern.",
         )
 
     if any(
@@ -150,6 +169,12 @@ def _llm_department(
     symptoms: list[str],
     vector_context: list[dict] | None = None,
     collected_info: dict | None = None,
+    *,
+    node_name: str = "medical_rag",
+    chat_history: list[dict] | None = None,
+    chat_summary: str | None = None,
+    patient_id: str | None = None,
+    chat_session_id: str | None = None,
 ) -> DepartmentMatch:
     prompt = f"""
 You are a hospital department routing assistant.
@@ -167,7 +192,14 @@ Return only JSON:
 {department_parser.get_format_instructions()}
 """.strip()
 
-    raw_output = generate_text(prompt)
+    raw_output = generate_text(
+        prompt,
+        node_name=node_name,
+        chat_history=chat_history,
+        chat_summary=chat_summary,
+        patient_id=patient_id,
+        chat_session_id=chat_session_id,
+    )
     clean_json = _clean_json(raw_output)
     print(f"Department decision JSON: {clean_json}")
 
@@ -192,10 +224,49 @@ Return only JSON:
     )
 
 
+def _get_reranker():
+    global _reranker
+    if _reranker is not None or CrossEncoder is None:
+        return _reranker
+
+    try:
+        _reranker = CrossEncoder(RERANKER_MODEL)
+    except Exception as exc:
+        print(f"[RAG Notice] Cross-encoder reranker unavailable: {exc}")
+        _reranker = None
+    return _reranker
+
+
+def _rerank_matches(query_text: str, matches, limit: int = RAG_RERANK_LIMIT):
+    if not matches:
+        return []
+
+    reranker = _get_reranker()
+    if not reranker:
+        return list(matches[:limit])
+
+    pairs = []
+    for match in matches:
+        payload = match.payload or {}
+        chunk_text = payload.get("chunk_text") or payload.get("text") or ""
+        pairs.append((query_text, str(chunk_text)))
+
+    try:
+        scores = reranker.predict(pairs)
+    except Exception as exc:
+        print(f"[RAG Notice] Cross-encoder rerank failed: {exc}")
+        return list(matches[:limit])
+
+    scored = sorted(
+        zip(matches, scores),
+        key=lambda item: float(item[1]),
+        reverse=True,
+    )
+    return [match for match, _ in scored[:limit]]
+
+
 def _vector_department(matches) -> DepartmentMatch:
-    department_scores = defaultdict(float)
     best_scores = defaultdict(float)
-    has_scores = False
 
     for match in matches:
         payload = match.payload or {}
@@ -208,12 +279,10 @@ def _vector_department(matches) -> DepartmentMatch:
             score = 1.0
         else:
             score = float(raw_score or 0)
-            has_scores = True
 
-        department_scores[department] += score
         best_scores[department] = max(best_scores[department], score)
 
-    if not department_scores:
+    if not best_scores:
         return DepartmentMatch(
             department=None,
             confidence=0,
@@ -222,13 +291,9 @@ def _vector_department(matches) -> DepartmentMatch:
             reason="No vector result had a department payload.",
         )
 
-    department = max(department_scores, key=department_scores.get)
+    department = max(best_scores, key=best_scores.get)
     confidence = best_scores[department]
-    reason = (
-        f"Best vector score was {confidence:.2f}."
-        if has_scores
-        else "Vector result had a department payload but no explicit score."
-    )
+    reason = f"Best vector score for the reranked chunk was {confidence:.2f}."
 
     return DepartmentMatch(
         department=department,
@@ -256,6 +321,11 @@ def _vector_context(matches) -> list[dict]:
 def match_department_details(
     symptoms: list[str],
     collected_info: dict | None = None,
+    *,
+    chat_history: list[dict] | None = None,
+    chat_summary: str | None = None,
+    patient_id: str | None = None,
+    chat_session_id: str | None = None,
 ) -> DepartmentMatch:
     """
     Uses vector retrieval first, then asks the LLM to reason over the symptoms and
@@ -282,14 +352,29 @@ def match_department_details(
         matches = search_clinical_knowledge(query_vector, limit=RAG_MATCH_LIMIT)
     except Exception as exc:
         print(f"[RAG Error] Vector search connection failed: {exc}")
-        return heuristic_match or _llm_department(cleaned_symptoms, collected_info=collected_info)
+        return heuristic_match or _llm_department(
+            cleaned_symptoms,
+            collected_info=collected_info,
+            chat_history=chat_history,
+            chat_summary=chat_summary,
+            patient_id=patient_id,
+            chat_session_id=chat_session_id,
+        )
 
     if not matches:
         print("[RAG Notice] Qdrant returned 0 matches. Asking LLM for department routing.")
-        return heuristic_match or _llm_department(cleaned_symptoms, collected_info=collected_info)
+        return heuristic_match or _llm_department(
+            cleaned_symptoms,
+            collected_info=collected_info,
+            chat_history=chat_history,
+            chat_summary=chat_summary,
+            patient_id=patient_id,
+            chat_session_id=chat_session_id,
+        )
 
-    vector_match = _vector_department(matches)
-    context = _vector_context(matches)
+    reranked_matches = _rerank_matches(query_string, matches, limit=RAG_RERANK_LIMIT)
+    vector_match = _vector_department(reranked_matches)
+    context = _vector_context(reranked_matches)
 
     if (
         not vector_match.department
@@ -297,7 +382,15 @@ def match_department_details(
         or vector_match.department == DEFAULT_DEPARTMENT
     ):
         print("[RAG Notice] Vector confidence low. Asking LLM to reason over context.")
-        llm_match = _llm_department(cleaned_symptoms, context, collected_info)
+        llm_match = _llm_department(
+            cleaned_symptoms,
+            context,
+            collected_info,
+            chat_history=chat_history,
+            chat_summary=chat_summary,
+            patient_id=patient_id,
+            chat_session_id=chat_session_id,
+        )
         if llm_match.department and not llm_match.needs_clarification:
             return llm_match
         if heuristic_match:

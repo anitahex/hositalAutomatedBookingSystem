@@ -18,6 +18,8 @@ def test_access_token_rejects_tampering():
         patient_id="patient-123",
         email="patient@example.com",
     )
-    tampered = f"{token[:-1]}x"
+    header, payload, signature = token.split(".")
+    tampered_payload = f"{payload[:-1]}x"
+    tampered = ".".join([header, tampered_payload, signature])
 
     assert verify_access_token(tampered) is None

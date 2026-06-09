@@ -5,24 +5,90 @@ Handles symptom follow-up, doctor selection, and slot booking.
 Remedy logic lives in remedy_agent.py.
 """
 
+from datetime import date, datetime, timedelta
+
 from app.agents.state import GraphState
 from app.agents.schemas import BookingMenuDecision
 from app.inference.llm import generate_text
 from langchain_core.output_parsers import PydanticOutputParser
 from app.services.appointments import (
     active_bookings_for_patient,
+    available_doctors_by_name,
+    available_doctors_by_name_on_date,
     available_doctors_for_department,
+    available_doctors_for_department_on_date,
     available_slots_for_doctor,
+    available_slots_for_doctor_on_date,
     book_selected_slot,
     cancel_booking,
 )
 
 
 menu_parser = PydanticOutputParser(pydantic_object=BookingMenuDecision)
+BOOKING_WINDOW_DAYS = 7
 
 
 def _clean_json(raw_output: str) -> str:
     return raw_output.replace("```json", "").replace("```", "").strip()
+
+
+def _date_options() -> list[dict[str, str]]:
+    today = date.today()
+    options = []
+    for offset in range(BOOKING_WINDOW_DAYS + 1):
+        day = today + timedelta(days=offset)
+        if offset == 0:
+            label = f"Today ({day.isoformat()})"
+        elif offset == 1:
+            label = f"Tomorrow ({day.isoformat()})"
+        else:
+            label = day.strftime("%a %d %b (%Y-%m-%d)")
+        options.append({"label": label, "value": day.isoformat()})
+    return options
+
+
+def _valid_requested_date(value: str | None) -> bool:
+    if not value:
+        return False
+    try:
+        requested = date.fromisoformat(value)
+    except ValueError:
+        return False
+
+    today = date.today()
+    return today <= requested <= today + timedelta(days=BOOKING_WINDOW_DAYS)
+
+
+def _date_selection_response(prefix: str | None = None):
+    options = _date_options()
+    option_lines = "\n".join(f"{index}. {option['label']}" for index, option in enumerate(options, start=1))
+    message = (
+        f"{prefix}\n\n" if prefix else ""
+    ) + (
+        "Which day would you prefer? You can choose one of these dates:\n"
+        f"{option_lines}"
+    )
+    return {
+        "awaiting": "date_selection",
+        "date_options": options,
+        "final_response": message,
+    }
+
+
+def _choose_date_option(user_input: str, options: list[dict]) -> str | None:
+    text = user_input.strip().lower()
+    if text.isdigit():
+        index = int(text) - 1
+        if 0 <= index < len(options):
+            return options[index]["value"]
+
+    for option in options:
+        label = str(option.get("label", "")).lower()
+        value = str(option.get("value", "")).lower()
+        if text == value or text in label:
+            return option["value"]
+
+    return None
 
 
 def format_numbered_options(items: list[dict], label_key: str, extra_keys: list[str]):
@@ -148,6 +214,25 @@ def cancel_selected_appointment(state: GraphState):
 
 
 def classify_booking_menu_reply(state: GraphState, menu_type: str) -> BookingMenuDecision | None:
+    lowered = " ".join((state.get("user_input") or "").lower().replace("'", "").split())
+    decline_phrases = (
+        "no",
+        "no appointment",
+        "i dont want",
+        "i do not want",
+        "dont want to see a doctor",
+        "do not want to see a doctor",
+        "skip booking",
+        "cancel booking",
+        "not now",
+    )
+    if any(phrase in lowered for phrase in decline_phrases):
+        return BookingMenuDecision(
+            action="decline_booking",
+            selected_value=None,
+            reason="Patient declined booking from the displayed menu.",
+        )
+
     prompt = f"""
 You are an appointment booking assistant interpreting the patient's latest reply.
 
@@ -167,7 +252,14 @@ Return only JSON:
 {menu_parser.get_format_instructions()}
 """.strip()
 
-    raw_output = generate_text(prompt)
+    raw_output = generate_text(
+        prompt,
+        node_name="appointment_booker",
+        chat_history=state.get("conversation_history"),
+        chat_summary=state.get("chat_summary"),
+        patient_id=str(state.get("patient_id") or ""),
+        chat_session_id=str(state.get("chat_session_id") or ""),
+    )
     clean_json = _clean_json(raw_output)
     print(f"Booking menu decision JSON: {clean_json}")
 
@@ -204,27 +296,85 @@ def capture_symptom_follow_up(state: GraphState):
 
 def ask_preferred_doctor(state: GraphState):
     department = state.get("target_department") or "General Physician"
+    requested_doctor_name = state.get("requested_doctor_name")
+    requested_department = state.get("requested_department")
+    requested_date = state.get("requested_date")
     severity = state.get("severity") or "moderate"
     symptoms = state.get("symptoms") or []
     symptom_text = ", ".join(symptoms) if symptoms else "your symptoms"
 
-    doctors = available_doctors_for_department(department=department, limit=5)
+    if requested_date and not _valid_requested_date(requested_date):
+        return _date_selection_response(
+            "Appointments can be booked only from today up to 7 days ahead."
+        )
+
+    if requested_doctor_name and requested_date:
+        doctors = available_doctors_by_name_on_date(requested_doctor_name, requested_date, limit=5)
+    elif requested_doctor_name:
+        doctors = available_doctors_by_name(requested_doctor_name, limit=5)
+    elif requested_date:
+        doctors = available_doctors_for_department_on_date(department, requested_date, limit=5)
+    else:
+        doctors = available_doctors_for_department(department=department, limit=5)
 
     if not doctors:
+        requested_text = (
+            f"matching {requested_doctor_name}"
+            if requested_doctor_name
+            else f"in the {department} department"
+        )
+        date_text = f" on {requested_date}" if requested_date else ""
         return {
-            "awaiting": None,
             "doctor_options": [],
+            **_date_selection_response(
+                f"I could not find available doctors {requested_text}{date_text}. "
+            ),
+        }
+
+    if requested_doctor_name and len(doctors) == 1:
+        doctor = doctors[0]
+        slots = (
+            available_slots_for_doctor_on_date(doctor["doctor_id"], requested_date, limit=5)
+            if requested_date
+            else available_slots_for_doctor(doctor["doctor_id"], limit=5)
+        )
+        if not slots:
+            return {
+                "doctor_options": [],
+                "slot_options": [],
+                **_date_selection_response(
+                    f"{doctor['doctor_name']} has no open slots"
+                    f"{f' on {requested_date}' if requested_date else ''}."
+                ),
+            }
+
+        slot_lines = format_numbered_options(
+            slots,
+            label_key="start_time",
+            extra_keys=["end_time"],
+        )
+        return {
+            "awaiting": "slot_selection",
+            "booking_active": True,
+            "target_department": doctor.get("department") or department,
+            "doctor_options": [doctor],
+            "selected_doctor_id": doctor["doctor_id"],
+            "selected_doctor_name": doctor["doctor_name"],
+            "slot_options": slots,
             "final_response": (
-                f"Based on your symptoms ({symptom_text}), I recommend the {department} department. "
-                "Unfortunately, no doctors in this department have available slots right now. "
-                "Please call the hospital directly or check back later."
+                f"I found {doctor['doctor_name']} in {doctor.get('department') or department}.\n\n"
+                f"Available slots{f' on {requested_date}' if requested_date else ''}:\n{slot_lines}\n\n"
+                "Please reply with the slot number you prefer. "
+                "If you would like to skip booking for now, reply 'no'."
             ),
         }
 
     doctor_lines = format_numbered_options(
         doctors,
         label_key="doctor_name",
-        extra_keys=["experience_years", "next_available_time"],
+        extra_keys=["department", "experience_years", "next_available_time"]
+        if requested_doctor_name
+        else ["experience_years", "next_available_time"],
     )
 
     severity_note = ""
@@ -233,13 +383,21 @@ def ask_preferred_doctor(state: GraphState):
             " Given the severity of your symptoms, I recommend seeing a doctor as soon as possible."
         )
 
+    if requested_doctor_name:
+        intro = f"I found these matching doctors for {requested_doctor_name}."
+    elif requested_department:
+        intro = f"You asked for the **{department}** department."
+    else:
+        intro = f"Based on your symptoms ({symptom_text}), I recommend the **{department}** department."
+    if requested_date:
+        intro = f"{intro} Showing availability for {requested_date}."
+
     return {
         "awaiting": "doctor_selection",
         "booking_active": True,
         "doctor_options": doctors,
         "final_response": (
-            f"Since your symptoms are persisting, I recommend the **{department}** department."
-            f"{severity_note}\n\n"
+            f"{intro}{severity_note}\n\n"
             f"Here are the available doctors:\n{doctor_lines}\n\n"
             "Please reply with the doctor number or name you prefer."
         ),
@@ -262,16 +420,19 @@ def ask_preferred_slot(state: GraphState):
             )
         }
 
-    slots = available_slots_for_doctor(selected["doctor_id"], limit=5)
+    requested_date = state.get("requested_date")
+    slots = (
+        available_slots_for_doctor_on_date(selected["doctor_id"], requested_date, limit=5)
+        if requested_date and _valid_requested_date(requested_date)
+        else available_slots_for_doctor(selected["doctor_id"], limit=5)
+    )
 
     if not slots:
         return {
-            "awaiting": "doctor_selection",
             "selected_doctor_id": selected["doctor_id"],
             "selected_doctor_name": selected["doctor_name"],
-            "final_response": (
+            **_date_selection_response(
                 f"{selected['doctor_name']} has no open slots right now. "
-                "Please choose another doctor from the list."
             ),
         }
 
@@ -288,7 +449,8 @@ def ask_preferred_slot(state: GraphState):
         "selected_doctor_name": selected["doctor_name"],
         "slot_options": slots,
         "final_response": (
-            f"Available slots for {selected['doctor_name']}:\n{slot_lines}\n\n"
+            f"Available slots for {selected['doctor_name']}"
+            f"{f' on {requested_date}' if requested_date else ''}:\n{slot_lines}\n\n"
             "Please reply with the slot number you prefer. "
             "If you would like to skip booking for now, reply 'no'."
         ),
@@ -364,6 +526,19 @@ def appointment_booker_node(state: GraphState):
 
     if _looks_like_cancellation(state.get("user_input", "")):
         return ask_cancellation_choice(state)
+
+    if awaiting == "date_selection":
+        selected_date = _choose_date_option(
+            state.get("user_input", ""),
+            state.get("date_options") or [],
+        )
+        if selected_date:
+            state = {**state, "requested_date": selected_date}
+        if not state.get("requested_date") or not _valid_requested_date(state.get("requested_date")):
+            return _date_selection_response(
+                "Appointments can be booked only from today up to 7 days ahead."
+            )
+        return ask_preferred_doctor(state)
 
     if awaiting == "symptom_follow_up":
         return capture_symptom_follow_up(state)

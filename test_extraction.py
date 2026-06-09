@@ -2,7 +2,7 @@ from app.agents import triage_router
 
 
 def test_triage_router_extracts_intent_and_symptoms(monkeypatch):
-    def fake_generate_text(_: str) -> str:
+    def fake_generate_text(*args, **kwargs) -> str:
         return """
         {
             "intent": "triage_symptoms",
@@ -24,7 +24,7 @@ def test_triage_router_extracts_intent_and_symptoms(monkeypatch):
 
 
 def test_triage_router_uses_llm_for_body_part_pain_and_urgency(monkeypatch):
-    def fake_generate_text(_: str) -> str:
+    def fake_generate_text(*args, **kwargs) -> str:
         return """
         {
             "intent": "triage_symptoms",
@@ -43,7 +43,7 @@ def test_triage_router_uses_llm_for_body_part_pain_and_urgency(monkeypatch):
 
 
 def test_triage_router_clarifies_on_bad_llm_output(monkeypatch):
-    monkeypatch.setattr(triage_router, "generate_text", lambda _: "not json")
+    monkeypatch.setattr(triage_router, "generate_text", lambda *args, **kwargs: "not json")
 
     state = triage_router.triage_router_node({"user_input": "severe leg pain"})
 
@@ -54,7 +54,7 @@ def test_triage_router_clarifies_on_bad_llm_output(monkeypatch):
 
 
 def test_triage_router_returns_clarification_when_llm_and_fast_extract_fail(monkeypatch):
-    monkeypatch.setattr(triage_router, "generate_text", lambda _: "not json")
+    monkeypatch.setattr(triage_router, "generate_text", lambda *args, **kwargs: "not json")
 
     state = triage_router.triage_router_node({"user_input": "help"})
 

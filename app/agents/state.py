@@ -5,6 +5,7 @@ class GraphState(TypedDict, total=False):
     # Core input
     user_input: str
     patient_id: Optional[str]
+    chat_session_id: Optional[str]
     patient_profile: Optional[dict]
     active_appointments: Optional[list[dict]]
 
@@ -22,6 +23,8 @@ class GraphState(TypedDict, total=False):
     # Dynamic conversation history
     # Each entry: {"role": "assistant"|"patient", "text": str}
     conversation_history: Optional[list[dict]]
+    recent_history: Optional[list[dict]]
+    chat_summary: Optional[str]
     greeted: Optional[bool]
 
     # What info has been collected via conversation
@@ -40,6 +43,10 @@ class GraphState(TypedDict, total=False):
 
     # Department + booking
     target_department: Optional[str]
+    requested_department: Optional[str]
+    requested_doctor_name: Optional[str]
+    requested_date: Optional[str]
+    date_options: Optional[list[dict[str, str]]]
     booking_declined: Optional[bool]
     doctor_options: Optional[list[dict]]
     selected_doctor_id: Optional[str]

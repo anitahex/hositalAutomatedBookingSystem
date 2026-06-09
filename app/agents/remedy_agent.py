@@ -48,7 +48,14 @@ Return only JSON:
 {follow_up_parser.get_format_instructions()}
 """.strip()
 
-    raw_output = generate_text(prompt)
+    raw_output = generate_text(
+        prompt,
+        node_name="remedy_agent",
+        chat_history=state.get("conversation_history"),
+        chat_summary=state.get("chat_summary"),
+        patient_id=str(state.get("patient_id") or ""),
+        chat_session_id=str(state.get("chat_session_id") or ""),
+    )
     clean_json = _clean_json(raw_output)
     print(f"Remedy follow-up JSON: {clean_json}")
 
@@ -179,8 +186,15 @@ Collected Context: {collected_info}
 Return only JSON with no extra text:
 {parser.get_format_instructions()}
 """.strip()
-
-    raw_output = generate_text(prompt)
+    print(f"Remedy Agent prompt: {prompt}")
+    raw_output = generate_text(
+        prompt,
+        node_name="remedy_agent",
+        chat_history=state.get("conversation_history"),
+        chat_summary=state.get("chat_summary"),
+        patient_id=str(state.get("patient_id") or ""),
+        chat_session_id=str(state.get("chat_session_id") or ""),
+    )
     print(f"REMEDY RAW OUTPUT: {raw_output[:300]}")
     clean_json = raw_output.replace("```json", "").replace("```", "").strip()
 

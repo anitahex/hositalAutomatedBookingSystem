@@ -3,6 +3,10 @@ CREATE EXTENSION IF NOT EXISTS pgcrypto;
 DROP TABLE IF EXISTS appointment_bookings;
 DROP TABLE IF EXISTS appointment_slots;
 DROP TABLE IF EXISTS doctors;
+DROP TABLE IF EXISTS llm_token_usage;
+DROP TABLE IF EXISTS token_logs;
+DROP TABLE IF EXISTS chat_sessions;
+DROP TABLE IF EXISTS chat_messages;
 DROP TABLE IF EXISTS patient_profiles;
 DROP TABLE IF EXISTS users;
 
@@ -53,6 +57,50 @@ CREATE TABLE appointment_bookings (
     created_at TIMESTAMP NOT NULL DEFAULT NOW()
 );
 
+CREATE TABLE chat_sessions (
+    chat_session_id UUID PRIMARY KEY,
+    patient_id TEXT NOT NULL,
+    input_tokens INTEGER NOT NULL DEFAULT 0,
+    output_tokens INTEGER NOT NULL DEFAULT 0,
+    total_tokens INTEGER NOT NULL DEFAULT 0,
+    llm_calls INTEGER NOT NULL DEFAULT 0,
+    chat_summary TEXT NOT NULL DEFAULT '',
+    started_at TIMESTAMP NOT NULL DEFAULT NOW(),
+    updated_at TIMESTAMP NOT NULL DEFAULT NOW()
+);
+
+CREATE TABLE llm_token_usage (
+    usage_id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+    chat_session_id UUID NOT NULL REFERENCES chat_sessions(chat_session_id) ON DELETE CASCADE,
+    patient_id TEXT NOT NULL,
+    model TEXT NOT NULL,
+    call_type TEXT NOT NULL,
+    input_tokens INTEGER NOT NULL,
+    output_tokens INTEGER NOT NULL,
+    total_tokens INTEGER NOT NULL,
+    created_at TIMESTAMP NOT NULL DEFAULT NOW()
+);
+
+CREATE TABLE token_logs (
+    session_id VARCHAR NOT NULL,
+    patient_id VARCHAR NOT NULL,
+    node_name VARCHAR NOT NULL,
+    model_name VARCHAR NOT NULL,
+    input_tokens INTEGER NOT NULL,
+    output_tokens INTEGER NOT NULL,
+    status VARCHAR NOT NULL CHECK (status IN ('SUCCESS', 'ERROR')),
+    latency_ms INTEGER NOT NULL
+);
+
+CREATE TABLE chat_messages (
+    message_id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+    patient_id TEXT NOT NULL,
+    chat_session_id UUID,
+    role TEXT NOT NULL CHECK (role IN ('patient', 'assistant')),
+    text TEXT NOT NULL,
+    created_at TIMESTAMP NOT NULL DEFAULT NOW()
+);
+
 CREATE INDEX idx_doctors_department ON doctors(department);
 CREATE INDEX idx_slots_available ON appointment_slots(start_time)
     WHERE is_booked = FALSE;
@@ -62,3 +110,15 @@ CREATE INDEX idx_appointment_bookings_active
 CREATE UNIQUE INDEX ux_appointment_bookings_booked_slot
     ON appointment_bookings(slot_id)
     WHERE status = 'booked';
+CREATE INDEX idx_llm_token_usage_session_created
+    ON llm_token_usage(chat_session_id, created_at);
+CREATE INDEX idx_chat_sessions_patient_updated
+    ON chat_sessions(patient_id, updated_at);
+CREATE INDEX idx_token_logs_session
+    ON token_logs(session_id);
+CREATE INDEX idx_token_logs_patient
+    ON token_logs(patient_id);
+CREATE INDEX idx_chat_messages_patient_created
+    ON chat_messages(patient_id, created_at);
+CREATE INDEX idx_chat_messages_patient_session_created
+    ON chat_messages(patient_id, chat_session_id, created_at);

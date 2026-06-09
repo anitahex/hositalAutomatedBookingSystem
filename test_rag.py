@@ -17,7 +17,7 @@ def test_match_department_corrects_general_physician_for_skin_rash(monkeypatch):
     monkeypatch.setattr(
         rag,
         "generate_text",
-        lambda _: """
+        lambda *args, **kwargs: """
         {
             "department": "Dermatology",
             "confidence": 0.9,
@@ -68,7 +68,7 @@ def test_llm_context_decision_can_choose_specialist_over_weak_general(monkeypatc
     monkeypatch.setattr(
         rag,
         "generate_text",
-        lambda _: """
+        lambda *args, **kwargs: """
         {
             "department": "Dermatology",
             "confidence": 0.86,
@@ -94,7 +94,7 @@ def test_back_pain_context_routes_to_orthopedics_when_vector_is_weak(monkeypatch
     monkeypatch.setattr(
         rag,
         "generate_text",
-        lambda _: """
+        lambda *args, **kwargs: """
         {
             "department": null,
             "confidence": 0,

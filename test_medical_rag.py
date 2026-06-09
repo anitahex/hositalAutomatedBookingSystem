@@ -6,7 +6,7 @@ def test_medical_rag_asks_clarifying_question_on_low_confidence(monkeypatch):
     monkeypatch.setattr(
         medical_rag,
         "match_department_details",
-        lambda symptoms: DepartmentMatch(
+        lambda *args, **kwargs: DepartmentMatch(
             department=None,
             confidence=0.51,
             source="vector_rerank",
@@ -26,7 +26,7 @@ def test_medical_rag_sets_department_on_confident_match(monkeypatch):
     monkeypatch.setattr(
         medical_rag,
         "match_department_details",
-        lambda symptoms: DepartmentMatch(
+        lambda *args, **kwargs: DepartmentMatch(
             department="Dermatology",
             confidence=0.8,
             source="vector_rerank",

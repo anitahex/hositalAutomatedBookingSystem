@@ -114,3 +114,38 @@ class SupervisorDecision(BaseModel):
         description="Updated high-level intent if the patient changed direction.",
     )
     reason: str = Field(description="Short routing reason for debugging.")
+
+
+class UserRequestUnderstanding(BaseModel):
+    action: Literal[
+        "profile_query",
+        "symptom_or_care",
+        "direct_booking",
+        "booking_lookup",
+        "cancel_appointment",
+        "end_chat",
+        "thanks_only",
+        "non_medical",
+        "continue_current",
+        "unclear",
+    ] = Field(description="The user's latest request in the current state.")
+    profile_fields: list[str] = Field(
+        default_factory=list,
+        description=(
+            "Requested profile fields, e.g. name, age, blood_group, health_issues, "
+            "mobile_number, email, address."
+        ),
+    )
+    requested_department: Optional[str] = Field(
+        default=None,
+        description="Department explicitly requested by the user, if any.",
+    )
+    requested_doctor_name: Optional[str] = Field(
+        default=None,
+        description="Specific doctor name explicitly requested by the user, if any.",
+    )
+    requested_date: Optional[str] = Field(
+        default=None,
+        description="Requested appointment date as YYYY-MM-DD, if the user asked for a date.",
+    )
+    reason: str = Field(description="Brief explanation for the classification.")

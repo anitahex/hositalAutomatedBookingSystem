@@ -93,8 +93,15 @@ messages, return an empty symptoms list and mild severity unless prior context c
 Return only JSON:
 {parser.get_format_instructions()}
 """.strip()
-
-    raw_output = generate_text(prompt)
+    print(f"Triage Router prompt: {prompt}")
+    raw_output = generate_text(
+        prompt,
+        node_name="triage_router",
+        chat_history=state.get("conversation_history"),
+        chat_summary=state.get("chat_summary"),
+        patient_id=str(state.get("patient_id") or ""),
+        chat_session_id=str(state.get("chat_session_id") or ""),
+    )
     clean_json = _clean_json(raw_output)
     print(f"Triage Router clean JSON: {clean_json}")
 

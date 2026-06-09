@@ -3,168 +3,295 @@
   <head>
     <meta charset="utf-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1" />
-    <title>Smart Hospital Portal</title>
+    <title>Hospital AI Triage</title>
     <link rel="stylesheet" href="/static/styles.css" />
   </head>
   <body>
     <main class="shell">
+      <div class="ambient ambient-one" aria-hidden="true"></div>
+      <div class="ambient ambient-two" aria-hidden="true"></div>
+      <div class="ambient ambient-three" aria-hidden="true"></div>
+
       <section class="auth-view" id="authView" aria-label="Patient account access">
-        <div class="auth-header">
-          <div>
-            <h1>Smart Hospital Portal</h1>
-            <p>Sign in to continue your care conversation</p>
+        <div class="auth-card">
+          <div class="auth-header">
+            <div class="auth-mark" aria-hidden="true">+</div>
+            <div>
+              <p class="eyebrow">Medical AI Workflow</p>
+              <h1>Hospital AI Triage</h1>
+              <p class="auth-subtitle">Sign in to continue your care conversation.</p>
+            </div>
           </div>
-        </div>
 
-        <div class="auth-tabs" role="tablist" aria-label="Authentication mode">
-          <button class="tab active" id="showLoginBtn" type="button">Login</button>
-          <button class="tab" id="showSignupBtn" type="button">Sign up</button>
-        </div>
+          <div class="auth-tabs" role="tablist" aria-label="Authentication mode">
+            <button class="tab active" id="showLoginBtn" type="button">Login</button>
+            <button class="tab" id="showSignupBtn" type="button">Sign up</button>
+          </div>
 
-        <form class="auth-form" id="loginForm">
-          <label>
-            Email
-            <input id="loginEmail" type="email" autocomplete="email" required />
-          </label>
-          <label>
-            Password
-            <input id="loginPassword" type="password" autocomplete="current-password" required />
-          </label>
-          <button type="submit">Login</button>
-        </form>
-
-        <form class="auth-form hidden" id="signupForm">
-          <section class="signup-step" id="signupStepOne">
+          <form class="auth-form" id="loginForm">
             <label>
               Email
-              <input id="signupEmail" type="email" autocomplete="email" required />
+              <input id="loginEmail" type="email" autocomplete="email" required />
             </label>
             <label>
               Password
-              <input
-                id="signupPassword"
-                type="password"
-                autocomplete="new-password"
-                minlength="8"
-                required
-              />
+              <input id="loginPassword" type="password" autocomplete="current-password" required />
             </label>
-            <label>
-              Confirm password
-              <input id="signupConfirmPassword" type="password" autocomplete="new-password" required />
-            </label>
-            <p class="form-hint">Minimum 8 characters with uppercase, lowercase, number, and special character.</p>
-            <button id="signupNextBtn" type="button">Next</button>
-          </section>
+            <button type="submit">Login</button>
+          </form>
 
-          <section class="signup-step hidden" id="signupStepTwo">
-            <div class="form-grid">
+          <form class="auth-form hidden" id="signupForm">
+            <section class="signup-step" id="signupStepOne">
               <label>
-                Name
-                <input id="profileName" type="text" autocomplete="name" required />
-              </label>
-              <label>
-                Age
-                <input id="profileAge" type="number" min="1" max="129" required />
+                Email
+                <input id="signupEmail" type="email" autocomplete="email" required />
               </label>
               <label>
-                Mobile number
-                <input id="profileMobile" type="tel" autocomplete="tel" required />
+                Password
+                <input
+                  id="signupPassword"
+                  type="password"
+                  autocomplete="new-password"
+                  minlength="8"
+                  required
+                />
               </label>
               <label>
-                Email ID
-                <input id="profileEmail" type="email" autocomplete="email" required />
+                Confirm password
+                <input id="signupConfirmPassword" type="password" autocomplete="new-password" required />
               </label>
-              <label>
-                Blood group
-                <select id="profileBloodGroup" required>
-                  <option value="">Select blood group</option>
-                  <option>A+</option>
-                  <option>A-</option>
-                  <option>B+</option>
-                  <option>B-</option>
-                  <option>AB+</option>
-                  <option>AB-</option>
-                  <option>O+</option>
-                  <option>O-</option>
-                </select>
-              </label>
-              <label class="full-width">
-                Address
-                <textarea id="profileAddress" rows="3" required></textarea>
-              </label>
-              <label class="full-width">
-                Health issues
-                <textarea id="profileHealthIssues" rows="3" placeholder="Optional"></textarea>
-              </label>
-            </div>
-            <div class="form-actions">
-              <button class="secondary" id="signupBackBtn" type="button">Back</button>
-              <button type="submit">Create account</button>
-            </div>
-          </section>
-        </form>
+              <p class="form-hint">Use uppercase, lowercase, number, and special character.</p>
+              <button id="signupNextBtn" type="button">Next</button>
+            </section>
 
-        <p class="auth-error" id="authMessage" role="alert"></p>
+            <section class="signup-step hidden" id="signupStepTwo">
+              <div class="form-grid">
+                <label>
+                  Name
+                  <input id="profileName" type="text" autocomplete="name" required />
+                </label>
+                <label>
+                  Age
+                  <input id="profileAge" type="number" min="1" max="129" required />
+                </label>
+                <label>
+                  Mobile number
+                  <input id="profileMobile" type="tel" autocomplete="tel" required />
+                </label>
+                <label>
+                  Email ID
+                  <input id="profileEmail" type="email" autocomplete="email" required />
+                </label>
+                <label>
+                  Blood group
+                  <select id="profileBloodGroup" required>
+                    <option value="">Select blood group</option>
+                    <option>A+</option>
+                    <option>A-</option>
+                    <option>B+</option>
+                    <option>B-</option>
+                    <option>AB+</option>
+                    <option>AB-</option>
+                    <option>O+</option>
+                    <option>O-</option>
+                  </select>
+                </label>
+                <label class="full-width">
+                  Address
+                  <textarea id="profileAddress" rows="3" required></textarea>
+                </label>
+                <label class="full-width">
+                  Health issues
+                  <textarea id="profileHealthIssues" rows="3" placeholder="Optional"></textarea>
+                </label>
+              </div>
+              <div class="form-actions">
+                <button class="secondary" id="signupBackBtn" type="button">Back</button>
+                <button type="submit">Create account</button>
+              </div>
+            </section>
+          </form>
+
+          <p class="auth-error" id="authMessage" role="alert"></p>
+        </div>
       </section>
 
       <section class="workspace" aria-label="Patient triage chat">
-        <header class="topbar">
-          <div>
-            <h1>Smart Hospital Portal</h1>
-            <p id="patientSummary">AI triage, doctor selection, and appointment booking</p>
-          </div>
-          <div class="topbar-actions">
-            <div class="status" id="status">Ready</div>
-            <button class="secondary" id="logoutBtn" type="button">Logout</button>
-          </div>
-        </header>
-
-        <section class="content">
-          <aside class="panel" aria-label="Current triage state">
-            <h2>Case</h2>
-            <dl>
+        <aside class="app-sidebar" aria-label="Patient context">
+          <section class="sidebar-card hero-card" id="patientCard" aria-label="Patient snapshot">
+            <div class="card-head">
               <div>
-                <dt>Severity</dt>
-                <dd id="severity">-</dd>
+                <p class="card-kicker">Patient snapshot</p>
+                <h2 id="patientName">Guest</h2>
               </div>
-              <div>
-                <dt>Department</dt>
-                <dd id="department">-</dd>
-              </div>
-              <div>
-                <dt>Next step</dt>
-                <dd id="awaiting">Describe symptoms</dd>
-              </div>
-            </dl>
-            <button class="secondary" id="resetBtn" type="button">Reset case</button>
-          </aside>
-
-          <section class="chat">
-            <div class="messages" id="messages" aria-live="polite">
-              <div class="message assistant">
-                Describe your symptoms. I will estimate severity, recommend a department, show available doctors, then help you choose a slot.
+              <div class="avatar-shell" aria-hidden="true">
+                <span class="avatar-mark">+</span>
               </div>
             </div>
+            <p class="sidebar-lead" id="patientSummary">AI triage, doctor selection, and appointment booking.</p>
+            <div class="stacked-meta" id="patientMeta">
+              <div><span>Age</span><strong id="patientAge">-</strong></div>
+              <div><span>Blood group</span><strong id="patientBlood">-</strong></div>
+              <div><span>Health issues</span><strong id="patientIssues">-</strong></div>
+            </div>
+          </section>
 
-            <div class="quick-actions" id="quickActions"></div>
+          <section class="sidebar-card" id="workflowCard" aria-label="Workflow status">
+            <div class="card-head">
+              <div>
+                <p class="card-kicker">Workflow</p>
+                <h2>Current state</h2>
+              </div>
+              <span class="status-chip" id="workflowState">Triage</span>
+            </div>
+            <div class="workflow-rail" id="workflowRail">
+              <span class="workflow-step active">Triage</span>
+              <span class="workflow-step">Conversation</span>
+              <span class="workflow-step">RAG</span>
+              <span class="workflow-step">Booking</span>
+            </div>
+            <div class="info-grid">
+              <div>
+                <span>Severity</span>
+                <strong id="severity">-</strong>
+              </div>
+              <div>
+                <span>Department</span>
+                <strong id="department">-</strong>
+              </div>
+              <div>
+                <span>Next step</span>
+                <strong id="awaiting">Describe symptoms</strong>
+              </div>
+            </div>
+          </section>
 
-            <form class="composer" id="chatForm">
-              <input
-                id="messageInput"
-                name="message"
-                type="text"
-                autocomplete="off"
-                placeholder="Type symptoms, doctor choice, slot choice, or no"
-                required
-              />
-              <button type="submit">Send</button>
-            </form>
+          <section class="sidebar-card" id="summaryCard" aria-label="Conversation summary">
+            <div class="card-head">
+              <div>
+                <p class="card-kicker">Memory</p>
+                <h2>Conversation summary</h2>
+              </div>
+            </div>
+            <p class="summary-copy" id="chatSummary">Waiting for a little context.</p>
+          </section>
+
+          <section class="sidebar-card" id="recentHistoryCard" aria-label="Recent turns">
+            <div class="card-head">
+              <div>
+                <p class="card-kicker">Recent turns</p>
+                <h2>Sliding window</h2>
+              </div>
+            </div>
+            <div class="recent-history" id="recentHistory"></div>
+          </section>
+
+          <section class="sidebar-card" id="appointmentsCard" aria-label="Active appointments">
+            <div class="card-head">
+              <div>
+                <p class="card-kicker">Care plan</p>
+                <h2>Active appointments</h2>
+              </div>
+            </div>
+            <div class="appointment-rail" id="activeAppointmentsPreview">
+              <p class="panel-note">No active appointments loaded.</p>
+            </div>
+          </section>
+
+          <section class="sidebar-card tokens-card" aria-label="Token usage">
+            <div class="card-head">
+              <div>
+                <p class="card-kicker">Observability</p>
+                <h2>Token usage</h2>
+              </div>
+            </div>
+            <div class="token-grid" id="tokenUsage">
+              <div><span>Input</span><strong id="tokenInput">-</strong></div>
+              <div><span>Output</span><strong id="tokenOutput">-</strong></div>
+              <div><span>Total</span><strong id="tokenTotal">-</strong></div>
+              <div><span>Calls</span><strong id="tokenCalls">-</strong></div>
+            </div>
+          </section>
+
+          <nav class="sidebar-nav" aria-label="Patient tools">
+            <button id="resetBtn" type="button">New chat</button>
+            <button class="secondary" id="chatHistoryBtn" type="button">Chat history</button>
+            <button class="secondary" id="upcomingBookingsBtn" type="button">Upcoming bookings</button>
+            <button class="secondary" id="previousBookingsBtn" type="button">Previous bookings</button>
+            <button class="secondary" id="logoutBtn" type="button">Logout</button>
+          </nav>
+        </aside>
+
+        <section class="app-main">
+          <header class="topbar">
+            <div class="topbar-brand">
+              <div class="bot-avatar" aria-hidden="true">
+                <span>+</span>
+              </div>
+              <div>
+                <p class="card-kicker">Medical AI Triage</p>
+                <h1>Hospital Assistant</h1>
+                <p id="topbarCopy">Describe symptoms, book care, or review follow-up steps.</p>
+              </div>
+            </div>
+            <div class="topbar-actions">
+              <div class="presence-chip"><span class="presence-dot"></span>Online</div>
+              <div class="status" id="status">Ready</div>
+            </div>
+          </header>
+
+          <section class="profile-panel hidden" id="profilePanel" aria-live="polite">
+            <div class="profile-panel-header">
+              <h2 id="profilePanelTitle">Profile</h2>
+              <button class="secondary compact" id="closeProfilePanelBtn" type="button">Close</button>
+            </div>
+            <div class="profile-panel-body" id="profilePanelBody"></div>
+          </section>
+
+          <section class="content">
+            <section class="chat">
+              <div class="messages" id="messages" aria-live="polite">
+                <div class="message assistant enter">
+                  <div class="message-meta">
+                    <span class="bubble-avatar">+</span>
+                    <span>Medical assistant</span>
+                  </div>
+                  <div class="bubble">
+                    <div class="message-text">
+                      Describe your symptoms. I will estimate severity, recommend a department, show available doctors, then help you choose a slot.
+                    </div>
+                  </div>
+                </div>
+              </div>
+
+              <div class="quick-actions" id="quickActions"></div>
+
+              <form class="composer" id="chatForm">
+                <div class="composer-shell">
+                  <textarea
+                    id="messageInput"
+                    name="message"
+                    rows="1"
+                    autocomplete="off"
+                    placeholder="Type symptoms, doctor choice, slot choice, or no"
+                    required
+                  ></textarea>
+                  <p class="composer-hint">Enter to send. Shift+Enter for a new line.</p>
+                </div>
+                <button type="submit">Send</button>
+              </form>
+            </section>
           </section>
         </section>
       </section>
 
-      <div class="closed-modal hidden" id="chatClosedModal" role="dialog" aria-modal="true" aria-labelledby="chatClosedTitle">
+      <div
+        class="closed-modal hidden"
+        id="chatClosedModal"
+        role="dialog"
+        aria-modal="true"
+        aria-labelledby="chatClosedTitle"
+      >
         <section class="closed-dialog">
           <h2 id="chatClosedTitle">Chat closed</h2>
           <p>This care conversation has ended. Start a new chat to discuss new symptoms or appointments.</p>
