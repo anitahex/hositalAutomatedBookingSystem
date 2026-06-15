@@ -26,10 +26,22 @@ def medical_rag_node(state: GraphState):
         return {
             "awaiting": "conversation",
             "target_department": None,
+            "department_match_source": match.source,
+            "department_match_confidence": match.confidence,
+            "department_match_reason": match.reason,
+            "retrieval_attempted": match.retrieval_attempted,
+            "retrieval_confidence": match.retrieval_confidence,
             "conversation_history": history,
             "questions_asked": questions_asked + [response],
             "final_response": response,
         }
 
     department = match.department
-    return {"target_department": department}
+    return {
+        "target_department": department,
+        "department_match_source": match.source,
+        "department_match_confidence": match.confidence,
+        "department_match_reason": match.reason,
+        "retrieval_attempted": match.retrieval_attempted,
+        "retrieval_confidence": match.retrieval_confidence,
+    }

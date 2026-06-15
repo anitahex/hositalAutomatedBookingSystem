@@ -6,8 +6,16 @@ import os
 import time
 
 
-JWT_SECRET = os.getenv("JWT_SECRET") or os.getenv("HF_TOKEN") or "dev-only-change-me"
+JWT_SECRET = os.getenv("JWT_SECRET") or "dev-only-change-me"
 JWT_EXP_SECONDS = int(os.getenv("JWT_EXP_SECONDS", str(60 * 60 * 24 * 7)))
+LEGACY_JWT_SECRETS = [
+    secret
+    for secret in {
+        os.getenv("HF_TOKEN"),
+        "dev-only-change-me",
+    }
+    if secret
+]
 
 
 def _b64url_encode(raw: bytes) -> str:
@@ -50,18 +58,9 @@ def verify_access_token(token: str) -> dict | None:
         return None
 
     signing_input = f"{header_b64}.{payload_b64}"
-    expected_signature = hmac.new(
-        JWT_SECRET.encode("utf-8"),
-        signing_input.encode("ascii"),
-        hashlib.sha256,
-    ).digest()
-
     try:
         supplied_signature = _b64url_decode(signature_b64)
     except Exception:
-        return None
-
-    if not hmac.compare_digest(expected_signature, supplied_signature):
         return None
 
     try:
@@ -75,4 +74,14 @@ def verify_access_token(token: str) -> dict | None:
     if not payload.get("sub"):
         return None
 
-    return payload
+    candidate_secrets = [JWT_SECRET, *LEGACY_JWT_SECRETS]
+    for secret in candidate_secrets:
+        expected_signature = hmac.new(
+            secret.encode("utf-8"),
+            signing_input.encode("ascii"),
+            hashlib.sha256,
+        ).digest()
+        if hmac.compare_digest(expected_signature, supplied_signature):
+            return payload
+
+    return None

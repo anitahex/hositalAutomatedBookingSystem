@@ -46,6 +46,11 @@ class GraphState(TypedDict, total=False):
     requested_department: Optional[str]
     requested_doctor_name: Optional[str]
     requested_date: Optional[str]
+    department_match_source: Optional[str]
+    department_match_confidence: Optional[float]
+    department_match_reason: Optional[str]
+    retrieval_attempted: Optional[bool]
+    retrieval_confidence: Optional[float]
     date_options: Optional[list[dict[str, str]]]
     booking_declined: Optional[bool]
     doctor_options: Optional[list[dict]]
@@ -57,6 +62,10 @@ class GraphState(TypedDict, total=False):
     confirmed_booking: Optional[dict[str, str]]
     confirmed_bookings: Optional[list[dict[str, str]]]
     cancellation_options: Optional[list[dict[str, str]]]
+    reschedule_options: Optional[list[dict[str, str]]]
+    reschedule_date_options: Optional[list[dict[str, str]]]
+    reschedule_slot_options: Optional[list[dict[str, str]]]
+    selected_booking_id: Optional[str]
     note_forwarded: Optional[bool]
 
     # Final output

@@ -1,5 +1,3 @@
-import os
-
 from langgraph.graph import END, StateGraph
 
 from app.agents.appointment_booker import appointment_booker_node
@@ -10,9 +8,10 @@ from app.agents.state import GraphState
 from app.agents.supervisor import route_from_supervisor, supervisor_node
 from app.agents.triage_router import triage_router_node
 from app.inference.llm import summarize_chat_history
+from app.services.memory_policy import get_memory_policy
 
 
-MAX_RECENT_TURNS = int(os.getenv("HF_RECENT_TURNS", "5"))
+MEMORY_POLICY = get_memory_policy("memory_compactor")
 
 
 workflow = StateGraph(GraphState)
@@ -74,7 +73,7 @@ def _history_to_turns(history: list[dict] | None) -> list[dict]:
     ]
 
 
-def _trim_recent_history(history: list[dict], max_turns: int = MAX_RECENT_TURNS) -> tuple[list[dict], list[dict]]:
+def _trim_recent_history(history: list[dict], max_turns: int = MEMORY_POLICY.compaction_window_turns) -> tuple[list[dict], list[dict]]:
     if not history:
         return [], []
 
@@ -119,7 +118,7 @@ def compact_hybrid_memory(state: GraphState) -> GraphState:
     history = _history_to_turns(
         current_state.get("recent_history") or current_state.get("conversation_history")
     )
-    recent_history, overflow = _trim_recent_history(history)
+    recent_history, overflow = _trim_recent_history(history, MEMORY_POLICY.compaction_window_turns)
     summary = current_state.get("chat_summary") or ""
 
     if overflow:

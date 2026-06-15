@@ -7,7 +7,10 @@ from pydantic import BaseModel
 
 from app.api.dependencies import current_user
 from app.agents.graph import initialise_hybrid_memory, run_patient_chat
-from app.services.appointments import active_bookings_for_patient
+from app.services.appointments import upcoming_bookings_for_patient
+
+# Backward-compatible alias for tests and any existing monkeypatches.
+active_bookings_for_patient = upcoming_bookings_for_patient
 from app.services.chat_history import (
     append_chat_messages,
     load_chat_history_with_timestamps,
@@ -59,7 +62,7 @@ def _prepare_chat_state(request: ChatRequest, user: dict):
 
     if patient_id:
         try:
-            appointments = active_bookings_for_patient(patient_id, limit=5)
+            appointments = upcoming_bookings_for_patient(patient_id, limit=5)
             state["active_appointments"] = appointments
             if appointments and not state.get("confirmed_bookings"):
                 state["confirmed_bookings"] = appointments

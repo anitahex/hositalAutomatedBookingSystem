@@ -5,11 +5,13 @@ Handles symptom follow-up, doctor selection, and slot booking.
 Remedy logic lives in remedy_agent.py.
 """
 
+import re
 from datetime import date, datetime, timedelta
 
 from app.agents.state import GraphState
 from app.agents.schemas import BookingMenuDecision
 from app.inference.llm import generate_text
+from app.services.memory_policy import get_memory_policy
 from langchain_core.output_parsers import PydanticOutputParser
 from app.services.appointments import (
     active_bookings_for_patient,
@@ -21,11 +23,25 @@ from app.services.appointments import (
     available_slots_for_doctor_on_date,
     book_selected_slot,
     cancel_booking,
+    normalize_department_name,
+    upcoming_bookings_for_patient,
+    reschedule_options_for_booking,
+    reschedule_patient_booking,
 )
-
 
 menu_parser = PydanticOutputParser(pydantic_object=BookingMenuDecision)
 BOOKING_WINDOW_DAYS = 7
+MEMORY_POLICY = get_memory_policy("appointment_booker")
+
+# 100% STATIC CACHEABLE PREFIX
+STATIC_MENU_PROMPT = """You are an appointment booking assistant interpreting the patient's latest reply.
+Use meaning and the displayed options, not keyword matching.
+
+Decide whether the patient selected an option, declined booking, requested symptom care/remedy instead, asked to cancel an appointment, or gave an unclear reply.
+If they selected an option, copy the number, id, name, or time they used into selected_value.
+
+Return ONLY valid JSON matching this exact structure:
+{"action":"select_option|decline_booking|request_remedy|cancel_appointment|unclear","selected_value":"string or null","reason":"string"}"""
 
 
 def _clean_json(raw_output: str) -> str:
@@ -122,6 +138,70 @@ def _looks_like_cancellation(text: str) -> bool:
     return any(word in lowered for word in ("cancel", "cancell", "delete appointment", "remove appointment"))
 
 
+def _looks_like_reschedule_request(text: str) -> bool:
+    lowered = " ".join((text or "").lower().split())
+    return any(
+        phrase in lowered
+        for phrase in (
+            "reschedule",
+            "change my appointment",
+            "change appointment",
+            "change the date",
+            "change date",
+            "modify appointment",
+            "modify the appointment",
+            "update appointment",
+            "update the appointment",
+            "move appointment",
+            "postpone appointment",
+            "shift appointment",
+            "book another date",
+            "another date",
+        )
+    )
+
+
+def _looks_like_specific_doctor_name(value: str | None) -> bool:
+    if not value:
+        return False
+
+    lowered = " ".join(str(value).strip().lower().split())
+    if not lowered:
+        return False
+
+    if any(
+        phrase in lowered
+        for phrase in (
+            "who is",
+            "any doctor",
+            "any physician",
+            "a doctor",
+            "the doctor",
+            "available doctor",
+            "available physician",
+            "doctor in",
+            "doctor for",
+            "doctor at",
+            "doctor from",
+            "doctor department",
+            "doctor specialist",
+            "physician",
+            "specialist",
+            "psychiatrist",
+            "cardiologist",
+            "neurologist",
+            "dermatologist",
+            "gastroenterologist",
+            "orthopedic",
+            "orthopedics",
+        )
+    ):
+        return False
+
+    tokens = [token for token in re.split(r"\s+", str(value).strip()) if re.search(r"[a-z]", token, flags=re.IGNORECASE)]
+    return len(tokens) >= 2
+
+
 def _format_booking_options(bookings: list[dict]):
     lines = []
     for index, booking in enumerate(bookings, start=1):
@@ -153,6 +233,43 @@ def ask_cancellation_choice(state: GraphState):
         "final_response": (
             "Which appointment would you like to cancel?\n"
             f"{_format_booking_options(bookings)}\n\n"
+            "Please reply with the appointment number or reference ID."
+        ),
+    }
+
+
+def _format_reschedule_booking_options(bookings: list[dict]):
+    lines = []
+    for index, booking in enumerate(bookings, start=1):
+        change_state = "can change date" if booking.get("can_modify", True) else "locked"
+        lines.append(
+            f"{index}. {booking['doctor']} ({booking['department']}) at {booking['time']} "
+            f"- Reference: {booking['booking_id']} [{change_state}]"
+        )
+    return "\n".join(lines)
+
+
+def ask_reschedule_choice(state: GraphState):
+    bookings = state.get("confirmed_bookings") or []
+    if not bookings:
+        bookings = upcoming_bookings_for_patient(state.get("patient_id"))
+
+    if not bookings:
+        return {
+            "awaiting": None,
+            "reschedule_options": [],
+            "final_response": (
+                "I could not find any active appointments to change. "
+                "You can send the appointment reference if you have one."
+            ),
+        }
+
+    return {
+        "awaiting": "reschedule_selection",
+        "reschedule_options": bookings,
+        "final_response": (
+            "Which appointment would you like to change?\n"
+            f"{_format_reschedule_booking_options(bookings)}\n\n"
             "Please reply with the appointment number or reference ID."
         ),
     }
@@ -213,6 +330,184 @@ def cancel_selected_appointment(state: GraphState):
     }
 
 
+def ask_reschedule_date(state: GraphState):
+    selected = choose_option(
+        state["user_input"],
+        state.get("reschedule_options") or [],
+        id_key="booking_id",
+        name_key="doctor",
+    )
+
+    reference = None
+    if selected:
+        reference = selected["booking_id"]
+    else:
+        text = state["user_input"].strip()
+        if text:
+            reference = text
+
+    if not reference:
+        return {
+            "awaiting": "reschedule_selection",
+            "final_response": "Please reply with the appointment number or reference ID to change.",
+        }
+
+    booking = next(
+        (
+            item
+            for item in (state.get("reschedule_options") or [])
+            if item.get("booking_id") == reference or item.get("slot_id") == reference
+        ),
+        None,
+    )
+    if booking and booking.get("can_modify") is False:
+        return {
+            "awaiting": None,
+            "reschedule_options": [],
+            "final_response": (
+                "That appointment is within 24 hours, so it cannot be changed right now."
+            ),
+        }
+
+    date_options = _date_options()
+    option_lines = "\n".join(f"{index}. {option['label']}" for index, option in enumerate(date_options, start=1))
+    return {
+        "awaiting": "reschedule_date_selection",
+        "reschedule_options": state.get("reschedule_options") or [],
+        "selected_booking_id": reference,
+        "reschedule_date_options": date_options,
+        "final_response": (
+            "Which day would you prefer for the new appointment date?\n"
+            f"{option_lines}\n\n"
+            "Please reply with the date number."
+        ),
+    }
+
+
+def ask_reschedule_slot(state: GraphState):
+    selected_date = _choose_date_option(
+        state.get("user_input", ""),
+        state.get("reschedule_date_options") or [],
+    )
+    if selected_date:
+        state = {**state, "requested_date": selected_date}
+
+    booking_id = state.get("selected_booking_id")
+    if not booking_id:
+        return {
+            "awaiting": "reschedule_selection",
+            "final_response": "Please choose the appointment you want to change first.",
+        }
+
+    requested_date = state.get("requested_date")
+    if not requested_date or not _valid_requested_date(requested_date):
+        return {
+            "awaiting": "reschedule_date_selection",
+            "reschedule_date_options": state.get("reschedule_date_options") or _date_options(),
+            "final_response": "Appointments can be changed only from today up to 7 days ahead.",
+        }
+
+    slots = reschedule_options_for_booking(
+        booking_id=booking_id,
+        patient_id=state.get("patient_id"),
+        requested_date=requested_date,
+        limit=8,
+    )
+    if not slots:
+        return {
+            "awaiting": "reschedule_date_selection",
+            "reschedule_date_options": _date_options(),
+            "final_response": (
+                f"I could not find any open slots on {requested_date}. "
+                "Please choose another date."
+            ),
+        }
+
+    slot_lines = format_numbered_options(
+        slots,
+        label_key="start_time",
+        extra_keys=["end_time"],
+    )
+    return {
+        "awaiting": "reschedule_slot_selection",
+        "selected_booking_id": booking_id,
+        "requested_date": requested_date,
+        "reschedule_slot_options": slots,
+        "final_response": (
+            f"Available slots on {requested_date}:\n{slot_lines}\n\n"
+            "Please reply with the slot number you prefer."
+        ),
+    }
+
+
+def apply_reschedule_slot(state: GraphState):
+    selected = choose_option(
+        state["user_input"],
+        state.get("reschedule_slot_options") or [],
+        id_key="slot_id",
+        name_key="start_time",
+    )
+
+    if not selected:
+        return {
+            "awaiting": "reschedule_slot_selection",
+            "final_response": "I could not match that slot. Please reply with one of the listed slot numbers.",
+        }
+
+    booking_id = state.get("selected_booking_id")
+    if not booking_id:
+        return {
+            "awaiting": "reschedule_selection",
+            "final_response": "Please choose the appointment you want to change first.",
+        }
+
+    booked = reschedule_patient_booking(
+        booking_id=booking_id,
+        patient_id=state.get("patient_id"),
+        new_slot_id=selected["slot_id"],
+    )
+
+    if not booked:
+        return {
+            "awaiting": "reschedule_slot_selection",
+            "final_response": "That slot is no longer available. Please choose another slot.",
+        }
+
+    confirmed_booking = {
+        "booking_id": str(booked.get("booking_id") or booking_id),
+        "doctor": str(booked["doctor"]),
+        "department": str(booked["department"]),
+        "time": str(booked["time"]),
+        "slot_id": str(booked["slot_id"]),
+        "can_modify": bool(booked.get("can_modify", True)),
+    }
+    remaining = list(state.get("confirmed_bookings") or [])
+    for index, booking in enumerate(remaining):
+        if booking.get("booking_id") == confirmed_booking["booking_id"] or booking.get("slot_id") == confirmed_booking["slot_id"]:
+            remaining[index] = confirmed_booking
+            break
+    else:
+        remaining.append(confirmed_booking)
+
+    return {
+        "awaiting": "end_confirmation",
+        "booking_active": False,
+        "confirmed_booking": confirmed_booking,
+        "confirmed_bookings": remaining,
+        "reschedule_options": [],
+        "reschedule_date_options": [],
+        "reschedule_slot_options": [],
+        "final_response": (
+            "Your appointment has been updated.\n\n"
+            f"Doctor: {booked['doctor']}\n"
+            f"Department: {booked['department']}\n"
+            f"Date & Time: {booked['time']}\n"
+            f"Reference ID: {confirmed_booking['booking_id']}\n\n"
+            "Would you like help with anything else, or should we end the chat?"
+        ),
+    }
+
+
 def classify_booking_menu_reply(state: GraphState, menu_type: str) -> BookingMenuDecision | None:
     lowered = " ".join((state.get("user_input") or "").lower().replace("'", "").split())
     decline_phrases = (
@@ -233,33 +528,19 @@ def classify_booking_menu_reply(state: GraphState, menu_type: str) -> BookingMen
             reason="Patient declined booking from the displayed menu.",
         )
 
-    prompt = f"""
-You are an appointment booking assistant interpreting the patient's latest reply.
-
-Use meaning and the displayed options, not keyword matching.
-
-Current menu: {menu_type}
-Doctor options: {state.get("doctor_options") or []}
-Slot options: {state.get("slot_options") or []}
-Latest patient reply: {state.get("user_input", "")}
-
-Decide whether the patient selected an option, declined booking, requested symptom
-care/remedy instead, asked to cancel an appointment, or gave an unclear reply.
-If they selected an option, copy the number, id, name, or time they used into
-selected_value.
-
-Return only JSON:
-{menu_parser.get_format_instructions()}
-""".strip()
+    dynamic_user_prompt = f"Current menu: {menu_type}\nDoctor options: {state.get('doctor_options') or []}\nSlot options: {state.get('slot_options') or []}\nLatest reply: {state.get('user_input', '')}"
 
     raw_output = generate_text(
-        prompt,
+        system_prompt=STATIC_MENU_PROMPT,
+        user_prompt=dynamic_user_prompt,
         node_name="appointment_booker",
-        chat_history=state.get("conversation_history"),
         chat_summary=state.get("chat_summary"),
+        include_history=True,
+        history_turns=MEMORY_POLICY.prompt_window_turns,
         patient_id=str(state.get("patient_id") or ""),
         chat_session_id=str(state.get("chat_session_id") or ""),
     )
+    
     clean_json = _clean_json(raw_output)
     print(f"Booking menu decision JSON: {clean_json}")
 
@@ -295,8 +576,11 @@ def capture_symptom_follow_up(state: GraphState):
 
 
 def ask_preferred_doctor(state: GraphState):
-    department = state.get("target_department") or "General Physician"
+    requested_department_text = state.get("requested_department") or state.get("target_department")
+    department = normalize_department_name(requested_department_text or "General Physician")
     requested_doctor_name = state.get("requested_doctor_name")
+    if not _looks_like_specific_doctor_name(requested_doctor_name):
+        requested_doctor_name = None
     requested_department = state.get("requested_department")
     requested_date = state.get("requested_date")
     severity = state.get("severity") or "moderate"
@@ -318,16 +602,60 @@ def ask_preferred_doctor(state: GraphState):
         doctors = available_doctors_for_department(department=department, limit=5)
 
     if not doctors:
+        fallback_department = "General Physician"
+        fallback_doctors = []
+        if department != fallback_department:
+            if requested_date:
+                fallback_doctors = available_doctors_for_department_on_date(
+                    fallback_department,
+                    requested_date,
+                    limit=5,
+                )
+            else:
+                fallback_doctors = available_doctors_for_department(
+                    department=fallback_department,
+                    limit=5,
+                )
+
         requested_text = (
             f"matching {requested_doctor_name}"
             if requested_doctor_name
-            else f"in the {department} department"
+            else f"in the {requested_department_text or department} department"
         )
         date_text = f" on {requested_date}" if requested_date else ""
+        if fallback_doctors:
+            doctor_lines = format_numbered_options(
+                fallback_doctors,
+                label_key="doctor_name",
+                extra_keys=["experience_years", "next_available_time"],
+            )
+            fallback_intro = (
+                f"We do not currently have doctors available {requested_text}{date_text}. "
+                f"I can show the available {fallback_department} doctors instead."
+            )
+            if requested_department:
+                fallback_intro = (
+                    f"We do not currently have doctors available in the {requested_department_text or department} department{date_text}. "
+                    f"I can show the available {fallback_department} doctors instead."
+                )
+            return {
+                "awaiting": "doctor_selection",
+                "booking_active": True,
+                "target_department": fallback_department,
+                "requested_department": requested_department or department,
+                "doctor_options": fallback_doctors,
+                "final_response": (
+                    f"{fallback_intro}\n\n"
+                    f"Here are the available {fallback_department} doctors:\n{doctor_lines}\n\n"
+                    "Please reply with the doctor number or name you prefer."
+                ),
+            }
+
         return {
             "doctor_options": [],
             **_date_selection_response(
                 f"I could not find available doctors {requested_text}{date_text}. "
+                f"I also could not find any available {fallback_department} doctors right now. "
             ),
         }
 
@@ -523,6 +851,18 @@ def appointment_booker_node(state: GraphState):
 
     if awaiting == "cancellation_selection":
         return cancel_selected_appointment(state)
+
+    if awaiting == "reschedule_selection":
+        return ask_reschedule_date(state)
+
+    if awaiting == "reschedule_date_selection":
+        return ask_reschedule_slot(state)
+
+    if awaiting == "reschedule_slot_selection":
+        return apply_reschedule_slot(state)
+
+    if _looks_like_reschedule_request(state.get("user_input", "")):
+        return ask_reschedule_choice(state)
 
     if _looks_like_cancellation(state.get("user_input", "")):
         return ask_cancellation_choice(state)

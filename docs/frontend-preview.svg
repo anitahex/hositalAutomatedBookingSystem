@@ -1,0 +1,176 @@
+<svg width="1600" height="1000" viewBox="0 0 1600 1000" fill="none" xmlns="http://www.w3.org/2000/svg">
+  <defs>
+    <linearGradient id="bg" x1="0" y1="0" x2="1600" y2="1000" gradientUnits="userSpaceOnUse">
+      <stop offset="0%" stop-color="#F8FAFC"/>
+      <stop offset="55%" stop-color="#F3F5F8"/>
+      <stop offset="100%" stop-color="#EEF1F6"/>
+    </linearGradient>
+    <radialGradient id="glowA" cx="0" cy="0" r="1" gradientUnits="userSpaceOnUse" gradientTransform="translate(295 180) rotate(62) scale(220 360)">
+      <stop offset="0%" stop-color="#DCEBFF" stop-opacity="0.75"/>
+      <stop offset="100%" stop-color="#DCEBFF" stop-opacity="0"/>
+    </radialGradient>
+    <radialGradient id="glowB" cx="0" cy="0" r="1" gradientUnits="userSpaceOnUse" gradientTransform="translate(1260 160) rotate(120) scale(260 340)">
+      <stop offset="0%" stop-color="#E9E0FF" stop-opacity="0.65"/>
+      <stop offset="100%" stop-color="#E9E0FF" stop-opacity="0"/>
+    </radialGradient>
+    <linearGradient id="card" x1="150" y1="120" x2="1450" y2="900" gradientUnits="userSpaceOnUse">
+      <stop offset="0%" stop-color="#FFFFFF" stop-opacity="0.92"/>
+      <stop offset="100%" stop-color="#FDFDFE" stop-opacity="0.82"/>
+    </linearGradient>
+    <linearGradient id="accent" x1="0" y1="0" x2="1" y2="1">
+      <stop offset="0%" stop-color="#4F46E5"/>
+      <stop offset="100%" stop-color="#7C3AED"/>
+    </linearGradient>
+    <linearGradient id="accentSoft" x1="0" y1="0" x2="1" y2="0">
+      <stop offset="0%" stop-color="#EEF2FF"/>
+      <stop offset="100%" stop-color="#F5F3FF"/>
+    </linearGradient>
+    <filter id="shadow" x="-20%" y="-20%" width="140%" height="140%">
+      <feDropShadow dx="0" dy="18" stdDeviation="28" flood-color="#0F172A" flood-opacity="0.10"/>
+    </filter>
+    <filter id="shadowSoft" x="-20%" y="-20%" width="140%" height="140%">
+      <feDropShadow dx="0" dy="10" stdDeviation="18" flood-color="#0F172A" flood-opacity="0.08"/>
+    </filter>
+    <style>
+      .title { font: 700 34px -apple-system, BlinkMacSystemFont, "SF Pro Display", "Segoe UI", sans-serif; fill: #0F172A; letter-spacing: -0.04em; }
+      .h1 { font: 700 22px -apple-system, BlinkMacSystemFont, "SF Pro Display", "Segoe UI", sans-serif; fill: #111827; letter-spacing: -0.03em; }
+      .h2 { font: 600 14px -apple-system, BlinkMacSystemFont, "SF Pro Text", "Segoe UI", sans-serif; fill: #475569; letter-spacing: 0.04em; }
+      .body { font: 400 16px -apple-system, BlinkMacSystemFont, "SF Pro Text", "Segoe UI", sans-serif; fill: #334155; }
+      .muted { font: 400 13px -apple-system, BlinkMacSystemFont, "SF Pro Text", "Segoe UI", sans-serif; fill: #64748B; }
+      .small { font: 500 12px -apple-system, BlinkMacSystemFont, "SF Pro Text", "Segoe UI", sans-serif; fill: #6B7280; letter-spacing: 0.02em; }
+      .chip { font: 600 13px -apple-system, BlinkMacSystemFont, "SF Pro Text", "Segoe UI", sans-serif; fill: #4338CA; }
+      .button { font: 600 15px -apple-system, BlinkMacSystemFont, "SF Pro Text", "Segoe UI", sans-serif; fill: #FFFFFF; }
+    </style>
+  </defs>
+
+  <rect width="1600" height="1000" fill="url(#bg)"/>
+  <circle cx="250" cy="170" r="230" fill="url(#glowA)"/>
+  <circle cx="1310" cy="140" r="260" fill="url(#glowB)"/>
+
+  <rect x="88" y="64" width="1424" height="872" rx="34" fill="url(#card)" stroke="#FFFFFF" stroke-opacity="0.8" filter="url(#shadow)"/>
+
+  <!-- Top bar -->
+  <rect x="120" y="96" width="1360" height="72" rx="22" fill="#FFFFFF" fill-opacity="0.82" stroke="#E5E7EB"/>
+  <circle cx="155" cy="132" r="18" fill="url(#accent)"/>
+  <path d="M147 132H163M155 124V140" stroke="#FFFFFF" stroke-width="2.5" stroke-linecap="round"/>
+  <text x="188" y="124" class="h2">MEDICAL TRIAGE</text>
+  <text x="188" y="146" class="h1">Hospital Assistant</text>
+  <text x="188" y="164" class="muted">Smart triage, booking, rescheduling, and cancellation with minimal friction.</text>
+
+  <rect x="1280" y="114" width="94" height="32" rx="16" fill="#F8FAFC" stroke="#E5E7EB"/>
+  <text x="1301" y="135" class="small">Show menu</text>
+  <rect x="1386" y="114" width="82" height="32" rx="16" fill="#ECFDF5" stroke="#BBF7D0"/>
+  <circle cx="1404" cy="130" r="5" fill="#22C55E"/>
+  <text x="1416" y="135" class="small" fill="#166534">Online</text>
+
+  <!-- Left rail -->
+  <rect x="120" y="196" width="284" height="730" rx="28" fill="#FFFFFF" fill-opacity="0.76" stroke="#E5E7EB"/>
+  <text x="148" y="236" class="h2">PATIENT SNAPSHOT</text>
+
+  <rect x="144" y="256" width="236" height="128" rx="24" fill="url(#accentSoft)" stroke="#E0E7FF"/>
+  <circle cx="178" cy="292" r="18" fill="url(#accent)"/>
+  <text x="210" y="286" class="h1" font-size="18">Anit</text>
+  <text x="210" y="310" class="muted">Warm handoff in progress</text>
+  <rect x="168" y="332" width="188" height="30" rx="15" fill="#FFFFFF" fill-opacity="0.85"/>
+  <text x="184" y="351" class="chip">Needs physician review</text>
+
+  <text x="148" y="430" class="h2">ACTIVE CONTEXT</text>
+  <rect x="144" y="446" width="236" height="60" rx="18" fill="#F8FAFC" stroke="#E5E7EB"/>
+  <text x="164" y="472" class="body" font-size="14">Symptoms: facial swelling</text>
+  <text x="164" y="494" class="muted">Started this morning, no breathing difficulty</text>
+
+  <rect x="144" y="520" width="236" height="60" rx="18" fill="#F8FAFC" stroke="#E5E7EB"/>
+  <text x="164" y="546" class="body" font-size="14">Intent: book physician</text>
+  <text x="164" y="568" class="muted">Prefer upcoming availability only</text>
+
+  <rect x="144" y="594" width="236" height="60" rx="18" fill="#F8FAFC" stroke="#E5E7EB"/>
+  <text x="164" y="620" class="body" font-size="14">Rules enforced</text>
+  <text x="164" y="642" class="muted">7-day booking window, 24h change cutoff</text>
+
+  <text x="148" y="706" class="h2">SUGGESTED ROUTING</text>
+  <rect x="144" y="722" width="236" height="46" rx="16" fill="#FFFFFF" stroke="#E5E7EB"/>
+  <text x="164" y="750" class="body" font-size="14">General Physician</text>
+  <text x="286" y="750" class="small">Match</text>
+  <rect x="144" y="780" width="236" height="46" rx="16" fill="#FFFFFF" stroke="#E5E7EB"/>
+  <text x="164" y="808" class="body" font-size="14">ENT / Allergy</text>
+  <text x="290" y="808" class="small">Alt</text>
+
+  <!-- Main chat area -->
+  <rect x="428" y="196" width="786" height="730" rx="28" fill="#FFFFFF" fill-opacity="0.82" stroke="#E5E7EB"/>
+  <text x="456" y="236" class="h2">CONVERSATION</text>
+  <text x="456" y="266" class="h1">Responsive triage with compact memory and low-token prompts</text>
+
+  <!-- Assistant bubble 1 -->
+  <circle cx="464" cy="326" r="16" fill="#EDE9FE"/>
+  <path d="M457 326H471M464 319V333" stroke="#6D28D9" stroke-width="2.2" stroke-linecap="round"/>
+  <text x="492" y="318" class="small">Medical assistant</text>
+  <rect x="492" y="332" width="520" height="76" rx="20" fill="#FFFFFF" stroke="#E5E7EB" filter="url(#shadowSoft)"/>
+  <text x="516" y="362" class="body">Hello Anit. Describe your symptoms, book an appointment,</text>
+  <text x="516" y="386" class="body">or ask to update, modify, or cancel an appointment.</text>
+
+  <!-- User bubble -->
+  <rect x="980" y="430" width="198" height="50" rx="18" fill="url(#accent)"/>
+  <text x="1005" y="461" class="button">feeling exhausted</text>
+
+  <!-- Assistant bubble 2 -->
+  <circle cx="464" cy="520" r="16" fill="#EDE9FE"/>
+  <path d="M457 520H471M464 513V527" stroke="#6D28D9" stroke-width="2.2" stroke-linecap="round"/>
+  <text x="492" y="512" class="small">Triage assistant</text>
+  <rect x="492" y="526" width="588" height="92" rx="20" fill="#FFFFFF" stroke="#E5E7EB" filter="url(#shadowSoft)"/>
+  <text x="516" y="556" class="body">I understand you are feeling exhausted and your face is swollen.</text>
+  <text x="516" y="580" class="body">When did this start, and do you have any breathing difficulty or pain?</text>
+
+  <!-- User bubble -->
+  <rect x="1088" y="652" width="90" height="50" rx="18" fill="url(#accent)"/>
+  <text x="1118" y="683" class="button">no</text>
+
+  <!-- Assistant bubble 3 -->
+  <circle cx="464" cy="718" r="16" fill="#EDE9FE"/>
+  <path d="M457 718H471M464 711V725" stroke="#6D28D9" stroke-width="2.2" stroke-linecap="round"/>
+  <text x="492" y="710" class="small">Triage assistant</text>
+  <rect x="492" y="724" width="548" height="88" rx="20" fill="#FFFFFF" stroke="#E5E7EB" filter="url(#shadowSoft)"/>
+  <text x="516" y="754" class="body">Given facial swelling, I am routing this to a physician match</text>
+  <text x="516" y="778" class="body">and checking the next 7 days only for eligible slots.</text>
+
+  <!-- Composer -->
+  <rect x="456" y="838" width="708" height="66" rx="22" fill="#F8FAFC" stroke="#E5E7EB"/>
+  <text x="482" y="879" class="muted">Type symptoms, booking changes, or appointment actions...</text>
+  <rect x="1086" y="848" width="58" height="44" rx="16" fill="url(#accent)"/>
+  <path d="M1106 870H1124M1117 859L1124 870L1117 881" stroke="#FFFFFF" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"/>
+
+  <!-- Quick actions -->
+  <rect x="456" y="916" width="126" height="34" rx="17" fill="#EEF2FF" stroke="#C7D2FE"/>
+  <text x="478" y="937" class="chip">Book doctor</text>
+  <rect x="592" y="916" width="140" height="34" rx="17" fill="#F5F3FF" stroke="#DDD6FE"/>
+  <text x="610" y="937" class="chip">Reschedule</text>
+  <rect x="742" y="916" width="118" height="34" rx="17" fill="#F8FAFC" stroke="#E5E7EB"/>
+  <text x="765" y="937" class="chip">Cancel</text>
+  <rect x="870" y="916" width="180" height="34" rx="17" fill="#F8FAFC" stroke="#E5E7EB"/>
+  <text x="892" y="937" class="chip">Show available slots</text>
+
+  <!-- Right panel -->
+  <rect x="1240" y="196" width="204" height="730" rx="28" fill="#FFFFFF" fill-opacity="0.76" stroke="#E5E7EB"/>
+  <text x="1270" y="236" class="h2">SESSION</text>
+  <rect x="1262" y="256" width="160" height="92" rx="20" fill="#F8FAFC" stroke="#E5E7EB"/>
+  <text x="1284" y="288" class="body" font-size="14">Availability window</text>
+  <text x="1284" y="312" class="h1" font-size="26">7 days</text>
+  <text x="1284" y="336" class="muted">No past slots offered</text>
+
+  <rect x="1262" y="364" width="160" height="110" rx="20" fill="url(#accentSoft)" stroke="#E0E7FF"/>
+  <text x="1284" y="394" class="body" font-size="14">Policy guardrails</text>
+  <text x="1284" y="420" class="muted">Changes only if more than</text>
+  <text x="1284" y="440" class="muted">24 hours remain</text>
+  <text x="1284" y="462" class="chip">Enforced everywhere</text>
+
+  <rect x="1262" y="490" width="160" height="110" rx="20" fill="#F8FAFC" stroke="#E5E7EB"/>
+  <text x="1284" y="520" class="body" font-size="14">Token strategy</text>
+  <text x="1284" y="546" class="muted">Summary + recent turn cache</text>
+  <text x="1284" y="570" class="muted">Low-noise prompt window</text>
+
+  <rect x="1262" y="616" width="160" height="86" rx="20" fill="#FFFFFF" stroke="#E5E7EB"/>
+  <text x="1284" y="648" class="body" font-size="14">RAG status</text>
+  <text x="1284" y="672" class="muted">Retrieval + rerank active</text>
+
+  <rect x="1262" y="718" width="160" height="58" rx="18" fill="url(#accent)"/>
+  <text x="1300" y="752" class="button">Ready</text>
+</svg>

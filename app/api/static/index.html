@@ -117,7 +117,7 @@
       </section>
 
       <section class="workspace" aria-label="Patient triage chat">
-        <aside class="app-sidebar" aria-label="Patient context">
+        <aside class="app-sidebar" id="appSidebar" aria-label="Patient context">
           <section class="sidebar-card hero-card" id="patientCard" aria-label="Patient snapshot">
             <div class="card-head">
               <div>
@@ -164,6 +164,7 @@
                 <strong id="awaiting">Describe symptoms</strong>
               </div>
             </div>
+            <p class="routing-meta" id="routingMeta">Department routing has not run yet.</p>
           </section>
 
           <section class="sidebar-card" id="summaryCard" aria-label="Conversation summary">
@@ -214,6 +215,8 @@
           </section>
 
           <nav class="sidebar-nav" aria-label="Patient tools">
+            <button id="bookAppointmentBtn" type="button">Book appointment</button>
+            <button class="secondary" id="modifyAppointmentBtn" type="button">Modify appointment</button>
             <button id="resetBtn" type="button">New chat</button>
             <button class="secondary" id="chatHistoryBtn" type="button">Chat history</button>
             <button class="secondary" id="upcomingBookingsBtn" type="button">Upcoming bookings</button>
@@ -221,6 +224,16 @@
             <button class="secondary" id="logoutBtn" type="button">Logout</button>
           </nav>
         </aside>
+
+        <button
+          class="sidebar-handle"
+          id="sidebarHandleBtn"
+          type="button"
+          aria-controls="appSidebar"
+          aria-expanded="true"
+        >
+          <span class="sidebar-handle-label" id="sidebarHandleLabel">Menu</span>
+        </button>
 
         <section class="app-main">
           <header class="topbar">
@@ -235,6 +248,9 @@
               </div>
             </div>
             <div class="topbar-actions">
+              <button class="secondary compact sidebar-toggle" id="sidebarToggleBtn" type="button" aria-controls="appSidebar" aria-expanded="true">
+                Menu
+              </button>
               <div class="presence-chip"><span class="presence-dot"></span>Online</div>
               <div class="status" id="status">Ready</div>
             </div>
@@ -250,6 +266,9 @@
 
           <section class="content">
             <section class="chat">
+              <button class="scroll-top-btn hidden" id="scrollTopBtn" type="button" aria-label="Jump to top of chat">
+                Top
+              </button>
               <div class="messages" id="messages" aria-live="polite">
                 <div class="message assistant enter">
                   <div class="message-meta">

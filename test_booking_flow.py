@@ -1,7 +1,11 @@
+from datetime import datetime
+
 from app.agents import appointment_booker
 from app.agents import conversation_agent
 from app.agents.graph import run_patient_chat
 from app.agents.supervisor import supervisor_node
+from app.agents.supervisor import _extract_requested_department
+from app.services import appointments as appointments_service
 
 
 def test_booker_asks_empathetic_symptom_follow_up_before_doctors():
@@ -58,6 +62,88 @@ def test_booker_recommends_doctors_and_asks_for_preference(monkeypatch):
     assert state["awaiting"] == "doctor_selection"
     assert state["doctor_options"][0]["doctor_name"] == "Dr. A"
     assert "Please reply with the doctor number" in state["final_response"]
+
+
+def test_booker_normalizes_misspelled_department_before_lookup(monkeypatch):
+    seen = {}
+
+    def fake_available_doctors(department, limit):
+        seen["department"] = department
+        seen["limit"] = limit
+        return [
+            {
+                "doctor_id": "doc-psy-1",
+                "doctor_name": "Dr. Sunita Panday",
+                "experience_years": 19,
+                "next_available_time": "2026-06-15T09:00:00",
+                "available_slot_count": 2,
+            }
+        ]
+
+    monkeypatch.setattr(
+        appointment_booker,
+        "available_doctors_for_department",
+        fake_available_doctors,
+    )
+
+    state = appointment_booker.appointment_booker_node(
+        {
+            "target_department": "Psychitary",
+            "requested_department": "Psychitary",
+            "user_input": "book an appointment with psychitary department",
+        }
+    )
+
+    assert seen["department"] == "Psychiatry"
+    assert state["awaiting"] == "doctor_selection"
+    assert "Psychiatry" in state["final_response"]
+    assert "Dr. Sunita Panday" in state["final_response"]
+
+
+def test_booker_falls_back_to_general_physician_when_department_missing(monkeypatch):
+    calls = []
+
+    def fake_available_doctors_for_department(department, limit):
+        calls.append(("department", department, limit))
+        if department == "Imaginary Department":
+            return []
+        if department == "General Physician":
+            return [
+                {
+                    "doctor_id": "gp-1",
+                    "doctor_name": "Dr. Arun Agarwal",
+                    "experience_years": 36,
+                    "next_available_time": "2026-06-15T09:00:00",
+                    "available_slot_count": 4,
+                }
+            ]
+        return []
+
+    monkeypatch.setattr(
+        appointment_booker,
+        "available_doctors_for_department",
+        fake_available_doctors_for_department,
+    )
+
+    state = appointment_booker.appointment_booker_node(
+        {
+            "target_department": "Imaginary Department",
+            "requested_department": "Imaginary Department",
+            "user_input": "book an appointment with imaginary department",
+        }
+    )
+
+    assert calls[0][1] == "Imaginary"
+    assert calls[-1][1] == "General Physician"
+    assert state["awaiting"] == "doctor_selection"
+    assert state["target_department"] == "General Physician"
+    assert "Imaginary Department" in state["final_response"]
+    assert "General Physician" in state["final_response"]
+    assert "Dr. Arun Agarwal" in state["final_response"]
+
+
+def test_supervisor_extracts_misspelled_department():
+    assert _extract_requested_department("book an appointment with the psychitary department") == "Psychiatry"
 
 
 def test_booker_shows_slots_after_doctor_selection(monkeypatch):
@@ -241,6 +327,27 @@ def test_supervisor_answers_upcoming_booking_lookup_during_booking_menu():
     assert state["chat_closed"] is False
     assert "upcoming bookings" in state["final_response"]
     assert "Dr. Rao" in state["final_response"]
+
+
+def test_supervisor_answers_clinical_note_query_from_saved_booking():
+    state = supervisor_node(
+        {
+            "user_input": "what symptoms were forwarded to my doctor?",
+            "confirmed_booking": {
+                "booking_id": "booking-1",
+                "doctor": "Dr. Neetu Ramrakhiani",
+                "department": "Neurology",
+                "time": "2026-06-18T10:30:00",
+                "booking_note": "Reported symptoms: lower back pain, exhaustion; Duration: since last month",
+            },
+            "patient_profile": {"name": "Anit", "age": 26},
+        }
+    )
+
+    assert state["next_agent"] == "finish"
+    assert "clinical note" in state["final_response"].lower()
+    assert "lower back pain" in state["final_response"]
+    assert "Neetu Ramrakhiani" in state["final_response"]
 
 
 def test_supervisor_routes_requested_department_directly_to_booking():
@@ -567,6 +674,133 @@ def test_booker_gives_remedies_when_patient_declines(monkeypatch):
     assert state["awaiting"] is None
     assert "No appointment has been booked" in state["final_response"]
     assert "please see a Cardiology doctor" in state["final_response"]
+
+
+def test_reschedule_patient_booking_handles_booking_row_shape(monkeypatch):
+    class FakeCursor:
+        def __init__(self):
+            self.last_query = ""
+
+        def execute(self, query, params=None):
+            self.last_query = query
+
+        def fetchone(self):
+            if "FROM appointment_slots s" in self.last_query:
+                return ("slot-new", "doctor-new", "Dr. B", "Cardiology", datetime(2026, 5, 22, 10, 0, 0), datetime(2026, 5, 22, 10, 30, 0))
+            return None
+
+    class FakeConn:
+        def __init__(self):
+            self.cursor_obj = FakeCursor()
+
+        def cursor(self):
+            class CursorContext:
+                def __enter__(inner_self):
+                    return self.cursor_obj
+
+                def __exit__(inner_self, exc_type, exc, tb):
+                    return False
+
+            return CursorContext()
+
+        def commit(self):
+            pass
+
+        def rollback(self):
+            pass
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, exc_type, exc, tb):
+            return False
+
+    monkeypatch.setattr(appointments_service, "ensure_booking_schema", lambda conn: None)
+    monkeypatch.setattr(
+        appointments_service,
+        "_modifiable_booking",
+        lambda cur, booking_id, patient_id: (
+            "booking-1",
+            "slot-old",
+            "doctor-old",
+            "Dr. A",
+            "Cardiology",
+            "note",
+            datetime(2026, 5, 21, 9, 0, 0),
+            datetime(2026, 5, 21, 9, 30, 0),
+        ),
+    )
+    monkeypatch.setattr(appointments_service, "connect_db", lambda: FakeConn())
+
+    booking = appointments_service.reschedule_patient_booking(
+        booking_id="booking-1",
+        patient_id="patient-1",
+        new_slot_id="slot-new",
+    )
+
+    assert booking["booking_id"] == "booking-1"
+    assert booking["slot_id"] == "slot-new"
+    assert booking["doctor"] == "Dr. B"
+
+
+def test_book_selected_slot_returns_compatibility_fields(monkeypatch):
+    class FakeCursor:
+        def __init__(self):
+            self.last_query = ""
+
+        def execute(self, query, params=None):
+            self.last_query = query
+
+        def fetchone(self):
+            if "SELECT booking_id" in self.last_query:
+                return ("booking-1",)
+            if "FROM appointment_slots s" in self.last_query:
+                return (
+                    "Dr. A",
+                    "Neurology",
+                    datetime(2026, 5, 21, 9, 0, 0),
+                    datetime(2026, 5, 21, 9, 30, 0),
+                    "slot-1",
+                    "doctor-1",
+                )
+            return None
+
+    class FakeConn:
+        def __init__(self):
+            self.cursor_obj = FakeCursor()
+
+        def cursor(self):
+            class CursorContext:
+                def __enter__(inner_self):
+                    return self.cursor_obj
+
+                def __exit__(inner_self, exc_type, exc, tb):
+                    return False
+
+            return CursorContext()
+
+        def commit(self):
+            pass
+
+        def rollback(self):
+            pass
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, exc_type, exc, tb):
+            return False
+
+    monkeypatch.setattr(appointments_service, "ensure_booking_schema", lambda conn: None)
+    monkeypatch.setattr(appointments_service, "connect_db", lambda: FakeConn())
+
+    booking = appointments_service.book_selected_slot(slot_id="slot-1", patient_id="patient-1")
+
+    assert booking["doctor"] == "Dr. A"
+    assert booking["doctor_name"] == "Dr. A"
+    assert booking["department"] == "Neurology"
+    assert booking["time"] == "2026-05-21T09:00:00"
+    assert booking["start_time"] == datetime(2026, 5, 21, 9, 0, 0)
 
 
 def test_conversation_stops_when_structured_intake_is_sufficient(monkeypatch):

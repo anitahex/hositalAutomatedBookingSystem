@@ -6,6 +6,7 @@ from langchain_core.output_parsers import PydanticOutputParser
 from app.agents.schemas import DepartmentDecision
 from app.inference.llm import generate_text
 from app.services.embeddings import embed_query
+from app.services.memory_policy import get_memory_policy
 from app.services.vector_store import search_clinical_knowledge
 
 try:
@@ -22,7 +23,17 @@ RERANKER_MODEL = "BAAI/bge-reranker-base"
 
 department_parser = PydanticOutputParser(pydantic_object=DepartmentDecision)
 _reranker = None
+MEMORY_POLICY = get_memory_policy("medical_rag")
 
+# 100% STATIC CACHEABLE PREFIX
+STATIC_DEPARTMENT_PROMPT = f"""You are a hospital department routing assistant.
+
+Choose the most appropriate department from the symptoms and any retrieved clinical context. Use clinical meaning, not hardcoded keyword matching. Prefer a specific department when the symptoms clearly point there; otherwise ask for clarification.
+
+Default fallback department: {DEFAULT_DEPARTMENT}
+
+Return ONLY valid JSON matching this exact structure:
+{{"department":"string or null","confidence":float,"needs_clarification":true|false,"reason":"string"}}"""
 
 @dataclass
 class DepartmentMatch:
@@ -31,6 +42,8 @@ class DepartmentMatch:
     source: str
     needs_clarification: bool = False
     reason: str = ""
+    retrieval_attempted: bool = False
+    retrieval_confidence: float = 0.0
 
 
 def _clean_json(raw_output: str) -> str:
@@ -58,13 +71,7 @@ def _heuristic_department(
 
     if any(
         term in text
-        for term in (
-            "chest pain",
-            "chest tightness",
-            "palpitation",
-            "heart",
-            "left arm pain",
-        )
+        for term in ("chest pain", "chest tightness", "palpitation", "heart", "left arm pain")
     ):
         return DepartmentMatch(
             department="Cardiology",
@@ -94,19 +101,7 @@ def _heuristic_department(
 
     if any(
         term in text
-        for term in (
-            "back pain",
-            "lower back",
-            "spine",
-            "joint",
-            "knee",
-            "shoulder",
-            "fracture",
-            "sprain",
-            "lifting",
-            "gym",
-            "muscle pain",
-        )
+        for term in ("back pain", "lower back", "spine", "joint", "knee", "shoulder", "fracture", "sprain", "lifting", "gym", "muscle pain")
     ):
         return DepartmentMatch(
             department="Orthopedics",
@@ -117,16 +112,7 @@ def _heuristic_department(
 
     if any(
         term in text
-        for term in (
-            "weakness in legs",
-            "numbness",
-            "tingling",
-            "seizure",
-            "loss of speech",
-            "paralysis",
-            "migraine",
-            "severe headache",
-        )
+        for term in ("weakness in legs", "numbness", "tingling", "seizure", "loss of speech", "paralysis", "migraine", "severe headache")
     ):
         return DepartmentMatch(
             department="Neurology",
@@ -137,15 +123,7 @@ def _heuristic_department(
 
     if any(
         term in text
-        for term in (
-            "stomach",
-            "abdominal",
-            "vomiting",
-            "diarrhea",
-            "constipation",
-            "loss of appetite",
-            "nausea",
-        )
+        for term in ("stomach", "abdominal", "vomiting", "diarrhea", "constipation", "loss of appetite", "nausea")
     ):
         return DepartmentMatch(
             department="Gastroenterology",
@@ -176,27 +154,18 @@ def _llm_department(
     patient_id: str | None = None,
     chat_session_id: str | None = None,
 ) -> DepartmentMatch:
-    prompt = f"""
-You are a hospital department routing assistant.
-
-Choose the most appropriate department from the symptoms and any retrieved clinical
-context. Use clinical meaning, not hardcoded keyword matching. Prefer a specific
-department when the symptoms clearly point there; otherwise ask for clarification.
-
-Symptoms: {symptoms}
+    
+    dynamic_user_prompt = f"""Symptoms: {symptoms}
 Collected patient context: {collected_info or {}}
-Retrieved clinical context: {vector_context or []}
-Default fallback department: {DEFAULT_DEPARTMENT}
-
-Return only JSON:
-{department_parser.get_format_instructions()}
-""".strip()
+Retrieved clinical context: {vector_context or []}"""
 
     raw_output = generate_text(
-        prompt,
+        system_prompt=STATIC_DEPARTMENT_PROMPT,
+        user_prompt=dynamic_user_prompt,
         node_name=node_name,
-        chat_history=chat_history,
         chat_summary=chat_summary,
+        include_history=True,
+        history_turns=MEMORY_POLICY.prompt_window_turns,
         patient_id=patient_id,
         chat_session_id=chat_session_id,
     )
@@ -221,6 +190,11 @@ Return only JSON:
         source="llm",
         needs_clarification=decision.needs_clarification,
         reason=decision.reason,
+        retrieval_attempted=bool(vector_context),
+        retrieval_confidence=max(
+            (float(item.get("score", 0.0) or 0.0) for item in (vector_context or [])),
+            default=0.0,
+        ),
     )
 
 
@@ -289,6 +263,8 @@ def _vector_department(matches) -> DepartmentMatch:
             source="vector",
             needs_clarification=True,
             reason="No vector result had a department payload.",
+            retrieval_attempted=True,
+            retrieval_confidence=0.0,
         )
 
     department = max(best_scores, key=best_scores.get)
@@ -301,6 +277,8 @@ def _vector_department(matches) -> DepartmentMatch:
         source="vector",
         needs_clarification=confidence < MIN_CONFIDENT_SCORE,
         reason=reason,
+        retrieval_attempted=True,
+        retrieval_confidence=confidence,
     )
 
 
@@ -338,6 +316,8 @@ def match_department_details(
             source="empty",
             needs_clarification=True,
             reason="No symptoms were provided.",
+            retrieval_attempted=False,
+            retrieval_confidence=0.0,
         )
 
     cleaned_symptoms = [s.strip() for s in symptoms if s and s.strip()]
@@ -363,7 +343,7 @@ def match_department_details(
 
     if not matches:
         print("[RAG Notice] Qdrant returned 0 matches. Asking LLM for department routing.")
-        return heuristic_match or _llm_department(
+        fallback_match = heuristic_match or _llm_department(
             cleaned_symptoms,
             collected_info=collected_info,
             chat_history=chat_history,
@@ -371,6 +351,9 @@ def match_department_details(
             patient_id=patient_id,
             chat_session_id=chat_session_id,
         )
+        fallback_match.retrieval_attempted = True
+        fallback_match.retrieval_confidence = 0.0
+        return fallback_match
 
     reranked_matches = _rerank_matches(query_string, matches, limit=RAG_RERANK_LIMIT)
     vector_match = _vector_department(reranked_matches)
@@ -394,7 +377,11 @@ def match_department_details(
         if llm_match.department and not llm_match.needs_clarification:
             return llm_match
         if heuristic_match:
+            heuristic_match.retrieval_attempted = True
+            heuristic_match.retrieval_confidence = vector_match.confidence
             return heuristic_match
+        llm_match.retrieval_attempted = True
+        llm_match.retrieval_confidence = vector_match.confidence
         return llm_match
 
     print(

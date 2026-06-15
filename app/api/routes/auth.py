@@ -1,9 +1,10 @@
-from fastapi import APIRouter, HTTPException
+from fastapi import APIRouter, Depends, HTTPException
 from psycopg2.errors import UniqueViolation
 from pydantic import BaseModel, Field
 
 from app.services.tokens import create_access_token
 from app.services.users import authenticate_user, create_user_with_profile
+from app.api.dependencies import current_user
 
 
 router = APIRouter()
@@ -70,3 +71,8 @@ def login(request: LoginRequest):
 @router.post("/2fa/verify")
 def verify_2fa():
     return {"status": "verified"}
+
+
+@router.get("/me")
+def me(user: dict = Depends(current_user)):
+    return {"status": "authenticated", "user": user}
