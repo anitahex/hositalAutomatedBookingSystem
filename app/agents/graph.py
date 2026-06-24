@@ -3,6 +3,7 @@ import asyncio
 from langgraph.graph import END, StateGraph
 
 from app.agents.appointment_booker import appointment_booker_node
+from app.agents.checkup_report import checkup_report_node
 from app.agents.conversation_agent import conversation_agent_node
 from app.agents.document_analyzer import document_analyzer_node
 from app.agents.supervisor import continue_current_node
@@ -28,6 +29,7 @@ workflow.add_node("triage_router", triage_router_node)
 workflow.add_node("conversation_agent", conversation_agent_node)
 workflow.add_node("remedy_agent", remedy_agent_node)
 workflow.add_node("medical_rag", medical_rag_node)
+workflow.add_node("checkup_report", checkup_report_node)
 workflow.add_node("general_qa", general_qa_node)
 workflow.add_node("appointment_booker", appointment_booker_node)
 workflow.add_node("appointment_resolver", appointment_booker_node)
@@ -47,6 +49,7 @@ workflow.add_conditional_edges(
         "conversation_agent": "conversation_agent",
         "remedy_agent": "remedy_agent",
         "medical_rag": "medical_rag",
+        "checkup_report": "checkup_report",
         "general_qa": "general_qa",
         "appointment_booker": "appointment_booker",
         "appointment_resolver": "appointment_resolver",
@@ -60,6 +63,7 @@ workflow.add_edge("triage_router", "conversation_agent")
 workflow.add_edge("conversation_agent", "supervisor")
 workflow.add_edge("remedy_agent", "supervisor")
 workflow.add_edge("medical_rag", "supervisor")
+workflow.add_edge("checkup_report", "supervisor")
 workflow.add_edge("general_qa", "supervisor")
 workflow.add_edge("appointment_booker", "supervisor")
 workflow.add_edge("appointment_resolver", "supervisor")

@@ -253,6 +253,10 @@ def _format_department_options(departments: list[dict]) -> str:
 
 
 def _document_booking_note(state: GraphState) -> str | None:
+    # Pre-checkup report (generated from intake chat) takes priority
+    if state.get("pre_checkup_note"):
+        return str(state["pre_checkup_note"])
+
     collected = state.get("collected_facts") or state.get("collected_data") or state.get("collected_info") or {}
     if not isinstance(collected, dict):
         collected = {}

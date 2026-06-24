@@ -110,5 +110,10 @@ class GraphState(TypedDict, total=False):
     active_appointments: Optional[list[dict[str, Any]]]
     pending_file_text: Optional[str]
 
+    # Pre-AI checkup report (generated after intake, forwarded to doctor as booking note)
+    pre_checkup_report: Optional[dict[str, Any]]
+    pre_checkup_note: Optional[str]
+    checkup_summary_shown: Optional[bool]
+
     # Final response
     final_response: Optional[str]

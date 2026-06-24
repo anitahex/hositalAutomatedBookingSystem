@@ -218,6 +218,13 @@ def _is_affirmative(text: str) -> bool:
     } or any(phrase in lowered for phrase in ("yes please", "sure please", "go ahead", "please forward"))
 
 
+def _is_negative(text: str) -> bool:
+    lowered = " ".join((text or "").lower().replace("'", "").split())
+    return lowered in {"no", "nope", "nah", "not now", "no thanks", "no thank you"} or any(
+        phrase in lowered for phrase in ("not right now", "maybe later", "no need", "dont need", "do not need")
+    )
+
+
 def _looks_like_thanks(text: str) -> bool:
     lowered = " ".join((text or "").lower().replace("'", "").split())
     if not lowered:
@@ -421,6 +428,40 @@ def _heuristic_supervisor_route(state: GraphState) -> dict | None:
             remedy_requested=False,
         )
 
+    # Patient responded to the post-checkup booking prompt.
+    # Match on explicit awaiting OR on the combined state signals so that
+    # routing still works even if awaiting drifted between turns.
+    _in_booking_decision = awaiting == "booking_decision" or (
+        state.get("checkup_summary_shown")
+        and (_current_intent(state) == "direct_booking")
+        and state.get("target_department")
+        and not state.get("doctor_options")
+    )
+    if _in_booking_decision:
+        if _is_affirmative(lowered):
+            return _route(
+                "appointment_booker",
+                active_intent="direct_booking",
+                intent="direct_booking",
+                awaiting=None,
+            )
+        if _is_negative(lowered):
+            return _route(
+                "finish",
+                awaiting=None,
+                final_response=(
+                    "No problem. If you change your mind or feel worse, feel free to start a new chat. "
+                    "Take care and rest well!"
+                ),
+            )
+        if awaiting == "booking_decision":
+            # Ambiguous reply — re-ask
+            return _route(
+                "finish",
+                awaiting="booking_decision",
+                final_response="Would you like me to find available appointment slots for you? (yes / no)",
+            )
+
     if awaiting == "conversation":
         if _looks_like_remedy_request(lowered) and state.get("symptoms"):
             return _route("remedy_agent", awaiting=None, remedy_requested=True)
@@ -540,6 +581,11 @@ def _heuristic_supervisor_route(state: GraphState) -> dict | None:
 
 
 def _summarise_clinical_note(state: GraphState, user_text: str | None = None) -> str:
+    # Prefer the pre-checkup report note generated during intake when available
+    if state.get("pre_checkup_note"):
+        extra = f"; Patient reply: {user_text.strip()}" if (user_text and user_text.strip()) else ""
+        return str(state["pre_checkup_note"]) + extra
+
     symptoms = [str(item).strip() for item in (state.get("symptoms") or []) if str(item).strip()]
     collected = _current_facts(state)
     note_parts: list[str] = []
@@ -728,6 +774,7 @@ def _fallback_route_after_node(state: GraphState) -> str:
         "reschedule_slot_selection",
         "department_selection",
         "symptom_follow_up",
+        "booking_decision",
     }:
         return "appointment_booker"
 
@@ -742,6 +789,11 @@ def _fallback_route_after_node(state: GraphState) -> str:
 
     if active_intent == "triage_symptoms":
         if state.get("remedy_requested") or state.get("remedy_given"):
+            # First visit (no prior booking): show pre-checkup summary + department match
+            # instead of giving home remedies. Remedy path is kept only for patients
+            # who already have a booking and want to forward new symptoms.
+            if not state.get("checkup_summary_shown") and not _latest_booking(state):
+                return "checkup_report"
             return "remedy_agent"
         return "conversation_agent"
 
