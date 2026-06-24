@@ -1010,7 +1010,7 @@ def reschedule_patient_booking(booking_id: str, patient_id: str, new_slot_id: st
                     _old_doctor_id,
                     _doctor_name,
                     _department,
-                    _booking_note,
+                    booking_note,
                     _old_start_time,
                     _old_end_time,
                 ) = booking
@@ -1079,7 +1079,7 @@ def reschedule_patient_booking(booking_id: str, patient_id: str, new_slot_id: st
         "slot_id": str(slot_id),
         "doctor": str(doctor_name),
         "department": str(department),
-        "booking_note": None,
+        "booking_note": booking_note,
         "time": start_time.isoformat(),
         "end_time": end_time.isoformat(),
         "status": "booked",

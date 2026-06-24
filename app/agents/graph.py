@@ -1,7 +1,12 @@
+import asyncio
+
 from langgraph.graph import END, StateGraph
 
 from app.agents.appointment_booker import appointment_booker_node
 from app.agents.conversation_agent import conversation_agent_node
+from app.agents.document_analyzer import document_analyzer_node
+from app.agents.supervisor import continue_current_node
+from app.agents.supervisor import general_qa_node
 from app.agents.medical_rag import medical_rag_node
 from app.agents.remedy_agent import remedy_agent_node
 from app.agents.state import GraphState
@@ -9,6 +14,7 @@ from app.agents.supervisor import route_from_supervisor, supervisor_node
 from app.agents.triage_router import triage_router_node
 from app.inference.llm import summarize_chat_history
 from app.services.memory_policy import get_memory_policy
+from app.services.checkpoint_store import SQLiteCheckpointer
 
 
 MEMORY_POLICY = get_memory_policy("memory_compactor")
@@ -22,7 +28,11 @@ workflow.add_node("triage_router", triage_router_node)
 workflow.add_node("conversation_agent", conversation_agent_node)
 workflow.add_node("remedy_agent", remedy_agent_node)
 workflow.add_node("medical_rag", medical_rag_node)
+workflow.add_node("general_qa", general_qa_node)
 workflow.add_node("appointment_booker", appointment_booker_node)
+workflow.add_node("appointment_resolver", appointment_booker_node)
+workflow.add_node("continue_current", continue_current_node)
+workflow.add_node("document_analyzer", document_analyzer_node)
 
 # Entry point
 workflow.set_entry_point("supervisor")
@@ -32,23 +42,32 @@ workflow.add_conditional_edges(
     "supervisor",
     route_from_supervisor,
     {
+        "continue_current": "continue_current",
         "triage_router": "triage_router",
         "conversation_agent": "conversation_agent",
         "remedy_agent": "remedy_agent",
         "medical_rag": "medical_rag",
+        "general_qa": "general_qa",
         "appointment_booker": "appointment_booker",
+        "appointment_resolver": "appointment_resolver",
+        "document_analyzer": "document_analyzer",
         "finish": END,
     },
 )
 
-# All nodes report back to supervisor
-workflow.add_edge("triage_router", "supervisor")
+# Triage hands directly into the follow-up conversation flow so the user can continue naturally.
+workflow.add_edge("triage_router", "conversation_agent")
 workflow.add_edge("conversation_agent", "supervisor")
 workflow.add_edge("remedy_agent", "supervisor")
 workflow.add_edge("medical_rag", "supervisor")
+workflow.add_edge("general_qa", "supervisor")
 workflow.add_edge("appointment_booker", "supervisor")
+workflow.add_edge("appointment_resolver", "supervisor")
+workflow.add_edge("document_analyzer", "supervisor")
+workflow.add_edge("continue_current", "supervisor")
 
-graph = workflow.compile()
+CHECKPOINTER = SQLiteCheckpointer()
+graph = workflow.compile(checkpointer=CHECKPOINTER)
 
 
 def _normalize_message(message: dict) -> dict | None:
@@ -96,29 +115,38 @@ def _build_summary_prompt(existing_summary: str, overflow: list[dict]) -> str:
         f"{message['role'].title()}: {message['text']}"
         for message in overflow
     )
-    return f"""
-You are compressing hospital chat memory for a follow-up medical assistant.
+    return f"""You are compressing hospital chat history into a structured clinical memory for a follow-up AI assistant.
 
-Keep only clinically useful and conversationally important facts.
-Preserve symptoms, timing, severity, triggers, booked appointments, department hints,
-and any decisions already made.
+Output ONLY the sections that have actual information. Use this exact format — one short line per field:
+
+Symptoms: <comma-separated>
+Duration: <e.g. "since yesterday", "3 days">
+Location: <body area>
+Severity: <mild/moderate/severe/emergency>
+Facts: <key=value pairs for cause, pattern, medications, allergies — only if known>
+Topics covered: <intake topics already asked, e.g. "duration, location, triggers">
+Booking: <doctor, department, time — only if confirmed>
+Next step: <e.g. "intake in progress", "awaiting remedy confirmation", "booking flow">
+
+Rules:
+- Skip any section with no information
+- Do NOT invent or assume facts not stated in the conversation
+- Merge the existing summary with new turns; update changed values
+- Keep each section to one line
 
 Existing summary:
 {existing_summary or "None yet."}
 
 New conversation to fold in:
-{overflow_text or "None."}
-
-Return a concise summary in plain text, with no bullet points unless they clearly help.
-""".strip()
+{overflow_text or "None."}""".strip()
 
 
 def compact_hybrid_memory(state: GraphState) -> GraphState:
     current_state = dict(state)
-    history = _history_to_turns(
-        current_state.get("recent_history") or current_state.get("conversation_history")
+    full_history = _history_to_turns(
+        current_state.get("conversation_history") or current_state.get("recent_history")
     )
-    recent_history, overflow = _trim_recent_history(history, MEMORY_POLICY.compaction_window_turns)
+    recent_history, overflow = _trim_recent_history(full_history, MEMORY_POLICY.compaction_window_turns)
     summary = current_state.get("chat_summary") or ""
 
     if overflow:
@@ -133,7 +161,8 @@ def compact_hybrid_memory(state: GraphState) -> GraphState:
         )
 
     current_state["recent_history"] = recent_history
-    current_state["conversation_history"] = list(recent_history)
+    current_state["conversation_history"] = full_history
+    current_state["messages"] = list(recent_history[-6:])
     current_state["chat_summary"] = summary or ""
     return current_state
 
@@ -141,15 +170,16 @@ def compact_hybrid_memory(state: GraphState) -> GraphState:
 def initialise_hybrid_memory(state: GraphState) -> GraphState:
     current_state = dict(state)
     history = _history_to_turns(
-        current_state.get("recent_history") or current_state.get("conversation_history")
+        current_state.get("conversation_history") or current_state.get("recent_history")
     )
-    current_state["recent_history"] = history
     current_state["conversation_history"] = list(history)
+    current_state["recent_history"] = _trim_recent_history(history, MEMORY_POLICY.compaction_window_turns)[0]
+    current_state["messages"] = list(current_state["recent_history"][-6:])
     current_state["chat_summary"] = current_state.get("chat_summary") or ""
     return current_state
 
 
-def run_patient_chat(
+async def arun_patient_chat(
     user_input: str,
     patient_id: str | None = None,
     state: GraphState | None = None,
@@ -177,5 +207,17 @@ def run_patient_chat(
     current_state.pop("next_agent", None)
     current_state["supervisor_checked_input"] = False
 
-    result = graph.invoke(current_state)
+    thread_id = str(current_state.get("session_id") or current_state.get("chat_session_id") or patient_id or "default-session")
+    result = await graph.ainvoke(
+        current_state,
+        config={"configurable": {"thread_id": thread_id}},
+    )
     return compact_hybrid_memory(result)
+
+
+def run_patient_chat(
+    user_input: str,
+    patient_id: str | None = None,
+    state: GraphState | None = None,
+):
+    return asyncio.run(arun_patient_chat(user_input=user_input, patient_id=patient_id, state=state))

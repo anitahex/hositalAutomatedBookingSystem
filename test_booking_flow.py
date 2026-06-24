@@ -19,7 +19,9 @@ def test_booker_asks_empathetic_symptom_follow_up_before_doctors():
 
     assert state["awaiting"] == "symptom_follow_up"
     assert "I noted: chest tightness" in state["final_response"]
-    assert "since when" in state["final_response"]
+    assert "how long have you been feeling this way" in state["final_response"].lower()
+    assert state["questions_asked"]
+    assert state["conversation_history"][-1]["role"] == "assistant"
 
 
 def test_booker_captures_symptom_follow_up_answer():
@@ -33,6 +35,7 @@ def test_booker_captures_symptom_follow_up_answer():
     assert state["awaiting"] is None
     assert state["follow_up_answer"] == "Since yesterday and it is getting worse"
     assert state["symptom_duration"] == "Since yesterday and it is getting worse"
+    assert state["collected_info"]["duration"] == "since yesterday"
 
 
 def test_booker_recommends_doctors_and_asks_for_preference(monkeypatch):
@@ -100,23 +103,11 @@ def test_booker_normalizes_misspelled_department_before_lookup(monkeypatch):
     assert "Dr. Sunita Panday" in state["final_response"]
 
 
-def test_booker_falls_back_to_general_physician_when_department_missing(monkeypatch):
+def test_booker_asks_for_symptoms_instead_of_defaulting_department(monkeypatch):
     calls = []
 
     def fake_available_doctors_for_department(department, limit):
         calls.append(("department", department, limit))
-        if department == "Imaginary Department":
-            return []
-        if department == "General Physician":
-            return [
-                {
-                    "doctor_id": "gp-1",
-                    "doctor_name": "Dr. Arun Agarwal",
-                    "experience_years": 36,
-                    "next_available_time": "2026-06-15T09:00:00",
-                    "available_slot_count": 4,
-                }
-            ]
         return []
 
     monkeypatch.setattr(
@@ -127,19 +118,15 @@ def test_booker_falls_back_to_general_physician_when_department_missing(monkeypa
 
     state = appointment_booker.appointment_booker_node(
         {
-            "target_department": "Imaginary Department",
-            "requested_department": "Imaginary Department",
-            "user_input": "book an appointment with imaginary department",
+            "user_input": "I have heart burn sensation",
+            "symptoms": ["heart burn sensation"],
         }
     )
 
-    assert calls[0][1] == "Imaginary"
-    assert calls[-1][1] == "General Physician"
-    assert state["awaiting"] == "doctor_selection"
-    assert state["target_department"] == "General Physician"
-    assert "Imaginary Department" in state["final_response"]
-    assert "General Physician" in state["final_response"]
-    assert "Dr. Arun Agarwal" in state["final_response"]
+    assert calls == []
+    assert state["awaiting"] == "symptom_follow_up"
+    assert state["booking_active"] is False
+    assert "match the right department" in state["final_response"]
 
 
 def test_supervisor_extracts_misspelled_department():
@@ -350,6 +337,61 @@ def test_supervisor_answers_clinical_note_query_from_saved_booking():
     assert "Neetu Ramrakhiani" in state["final_response"]
 
 
+def test_supervisor_routes_billing_request_away_from_intake():
+    state = supervisor_node(
+        {
+            "awaiting": "conversation",
+            "user_input": "I want to ask about billing and payment",
+            "symptoms": ["stomach pain"],
+            "patient_profile": {"name": "Anit", "age": 26},
+        }
+    )
+
+    assert state["next_agent"] == "finish"
+    assert state["awaiting"] is None
+    assert state["chat_closed"] is False
+    assert "help desk" in state["final_response"].lower()
+
+
+def test_supervisor_routes_add_symptoms_request_to_note_forwarding():
+    state = supervisor_node(
+        {
+            "awaiting": "conversation",
+            "user_input": "please add these symptoms",
+            "symptoms": ["nail pain", "discoloration"],
+            "confirmed_booking": {
+                "booking_id": "booking-1",
+                "doctor": "Dr. Neetu Ramrakhiani",
+                "department": "Dermatology",
+                "time": "2026-06-22T10:30:00",
+            },
+            "patient_profile": {"name": "Anit", "age": 26},
+        }
+    )
+
+    assert state["next_agent"] == "remedy_agent"
+    assert state["awaiting"] is None
+    assert state["remedy_requested"] is True
+
+
+def test_supervisor_routes_new_symptom_pivot_back_to_triage():
+    state = supervisor_node(
+        {
+            "awaiting": "remedy_check",
+            "user_input": "actually now I have fever and vomiting",
+            "remedy_given": True,
+            "symptoms": ["stomach upset"],
+            "patient_profile": {"name": "Anit", "age": 26},
+        }
+    )
+
+    assert state["next_agent"] == "triage_router"
+    assert state["awaiting"] is None
+    assert state["intent"] is None
+    assert state["doctor_options"] == []
+    assert state["slot_options"] == []
+
+
 def test_supervisor_routes_requested_department_directly_to_booking():
     state = supervisor_node(
         {
@@ -377,6 +419,20 @@ def test_supervisor_routes_generic_doctor_request_to_department_matching():
     assert state["next_agent"] == "medical_rag"
     assert state["intent"] == "direct_booking"
     assert state.get("requested_doctor_name") is None
+
+
+def test_supervisor_keeps_symptom_only_message_in_medical_flow():
+    state = supervisor_node(
+        {
+            "user_input": "i have heart burn sensation",
+            "symptoms": ["heart burn sensation"],
+            "severity": "moderate",
+        }
+    )
+
+    assert state["next_agent"] == "triage_router"
+    assert state.get("intent") is None
+    assert state.get("requested_department") is None
 
 
 def test_booker_uses_requested_department_instead_of_symptom_recommendation(monkeypatch):
@@ -676,6 +732,52 @@ def test_booker_gives_remedies_when_patient_declines(monkeypatch):
     assert "please see a Cardiology doctor" in state["final_response"]
 
 
+def test_booker_prompts_for_department_when_multiple_candidates_exist():
+    state = appointment_booker.appointment_booker_node(
+        {
+            "candidate_departments": [
+                {"department": "Gastroenterology", "matched_terms": ["stomach pain"]},
+                {"department": "Dermatology", "matched_terms": ["rash"]},
+            ],
+            "user_input": "",
+        }
+    )
+
+    assert state["awaiting"] == "department_selection"
+    assert "Gastroenterology" in state["final_response"]
+    assert "Dermatology" in state["final_response"]
+
+
+def test_booker_selects_department_candidate_before_doctors(monkeypatch):
+    monkeypatch.setattr(
+        appointment_booker,
+        "available_doctors_for_department",
+        lambda department, limit: [
+            {
+                "doctor_id": "doc-1",
+                "doctor_name": "Dr. A",
+                "experience_years": 10,
+                "next_available_time": "2026-05-21T09:00:00",
+                "available_slot_count": 3,
+            }
+        ],
+    )
+
+    state = appointment_booker.appointment_booker_node(
+        {
+            "awaiting": "department_selection",
+            "candidate_departments": [
+                {"department": "Gastroenterology", "matched_terms": ["stomach pain"]},
+                {"department": "Dermatology", "matched_terms": ["rash"]},
+            ],
+            "user_input": "1",
+        }
+    )
+
+    assert state["awaiting"] == "doctor_selection"
+    assert state["requested_department"] == "Gastroenterology"
+
+
 def test_reschedule_patient_booking_handles_booking_row_shape(monkeypatch):
     class FakeCursor:
         def __init__(self):
@@ -741,6 +843,7 @@ def test_reschedule_patient_booking_handles_booking_row_shape(monkeypatch):
     assert booking["booking_id"] == "booking-1"
     assert booking["slot_id"] == "slot-new"
     assert booking["doctor"] == "Dr. B"
+    assert booking["booking_note"] == "note"
 
 
 def test_book_selected_slot_returns_compatibility_fields(monkeypatch):

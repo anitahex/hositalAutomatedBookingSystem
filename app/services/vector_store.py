@@ -1,10 +1,8 @@
 import os
-import uuid
 
 from dotenv import load_dotenv
 from qdrant_client import QdrantClient
 from qdrant_client.http.exceptions import ResponseHandlingException, UnexpectedResponse
-from qdrant_client.models import Distance, PointStruct, VectorParams
 
 
 load_dotenv()
@@ -58,52 +56,6 @@ def run_qdrant_operation(operation):
             "QDRANT_MODE=local. For remote mode, check QDRANT_URL and "
             "QDRANT_API_KEY in .env, and make sure the Qdrant cluster is reachable."
         ) from exc
-
-
-def recreate_clinical_collection():
-    client = qdrant_client()
-
-    def operation():
-        if client.collection_exists(QDRANT_COLLECTION):
-            client.delete_collection(QDRANT_COLLECTION)
-
-        client.create_collection(
-            collection_name=QDRANT_COLLECTION,
-            vectors_config=VectorParams(
-                size=VECTOR_SIZE,
-                distance=Distance.COSINE,
-            ),
-        )
-
-    run_qdrant_operation(operation)
-
-
-def stable_point_id(source: str) -> str:
-    return str(uuid.uuid5(uuid.NAMESPACE_URL, source))
-
-
-def upsert_clinical_points(records: list[dict]):
-    points = [
-        PointStruct(
-            id=stable_point_id(f"{record['row_number']}:{record['chunk_text']}"),
-            vector=record["embedding"],
-            payload={
-                "row_number": record["row_number"],
-                "department": record["department"],
-                "disease_name": record["disease_name"],
-                "chunk_text": record["chunk_text"],
-            },
-        )
-        for record in records
-    ]
-
-    run_qdrant_operation(
-        lambda: qdrant_client().upsert(
-            collection_name=QDRANT_COLLECTION,
-            points=points,
-            wait=True,
-        )
-    )
 
 
 def search_clinical_knowledge(query_vector: list[float], limit: int = 1):

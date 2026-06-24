@@ -3,7 +3,7 @@ from psycopg2.errors import UniqueViolation
 from pydantic import BaseModel, Field
 
 from app.services.tokens import create_access_token
-from app.services.users import authenticate_user, create_user_with_profile
+from app.services.users import authenticate_user, create_user_with_profile, update_patient_profile
 from app.api.dependencies import current_user
 
 
@@ -68,11 +68,25 @@ def login(request: LoginRequest):
     return {"status": "authenticated", "access_token": token, "token_type": "bearer", "user": profile}
 
 
-@router.post("/2fa/verify")
-def verify_2fa():
-    return {"status": "verified"}
-
-
 @router.get("/me")
 def me(user: dict = Depends(current_user)):
     return {"status": "authenticated", "user": user}
+
+
+class UpdateProfileRequest(BaseModel):
+    health_issues: str | None = None
+    mobile_number: str | None = None
+    address: str | None = None
+
+
+@router.patch("/profile")
+def update_profile(request: UpdateProfileRequest, user: dict = Depends(current_user)):
+    updated = update_patient_profile(
+        patient_id=user["patient_id"],
+        health_issues=request.health_issues,
+        mobile_number=request.mobile_number,
+        address=request.address,
+    )
+    if not updated:
+        raise HTTPException(status_code=404, detail="Profile not found.")
+    return {"status": "updated", "user": updated}

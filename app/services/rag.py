@@ -1,5 +1,5 @@
 from collections import defaultdict
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 
 from langchain_core.output_parsers import PydanticOutputParser
 
@@ -20,6 +20,62 @@ RAG_MATCH_LIMIT = 20
 RAG_RERANK_LIMIT = 3
 MIN_CONFIDENT_SCORE = 0.65
 RERANKER_MODEL = "BAAI/bge-reranker-base"
+
+DEPARTMENT_SYMPTOM_RULES: dict[str, tuple[str, ...]] = {
+    "Cardiology": (
+        "chest pain", "chest tightness", "palpitation", "heart", "left arm pain",
+        "rapid heartbeat", "irregular heartbeat", "chest pressure",
+    ),
+    "Dermatology": (
+        "rash", "itch", "skin", "hives", "acne", "eczema", "psoriasis",
+        "skin infection", "skin lesion", "itching",
+    ),
+    "Neurology": (
+        "leg pain", "calf", "calves", "throbbing", "tingling", "numbness", "seizure",
+        "loss of speech", "paralysis", "migraine", "severe headache", "tremor",
+        "balance problem", "memory loss", "confusion",
+    ),
+    "Orthopedics": (
+        "back pain", "lower back", "spine", "joint", "knee", "shoulder", "fracture",
+        "sprain", "lifting", "gym", "muscle pain", "bone", "hip", "wrist", "ankle",
+        "neck pain", "stiff neck", "joint swelling",
+    ),
+    "Gastroenterology": (
+        "stomach", "abdominal", "vomiting", "diarrhea", "constipation", "loss of appetite",
+        "nausea", "loose motion", "loose stool", "stomach pain", "acid reflux",
+        "heartburn", "bloating", "indigestion", "stomach cramps",
+    ),
+    "Pulmonology": (
+        "cough", "breath", "asthma", "wheezing", "lungs", "shortness of breath",
+        "chest congestion", "respiratory", "sputum", "breathless",
+    ),
+    "Ophthalmology": (
+        "eye pain", "eye redness", "blurry vision", "vision loss", "eye discharge",
+        "eye infection", "watery eyes", "double vision", "eye swelling",
+    ),
+    "ENT": (
+        "ear pain", "ear infection", "hearing loss", "sore throat", "throat pain",
+        "tonsil", "nasal congestion", "sinus", "sneezing", "runny nose",
+        "hoarse voice", "difficulty swallowing",
+    ),
+    "Psychiatry": (
+        "anxiety", "depression", "panic attack", "mental health", "mood swings",
+        "suicidal", "sleep disorder", "bipolar", "hallucination", "phobia",
+        "obsessive", "compulsive",
+    ),
+    "Urology": (
+        "urinary", "burning urination", "frequent urination", "kidney stone",
+        "bladder", "prostate", "urine color", "blood in urine",
+    ),
+    "Endocrinology": (
+        "diabetes", "thyroid", "blood sugar", "insulin", "hormone imbalance",
+        "unexplained weight gain", "unexplained weight loss",
+    ),
+    "General Physician": (
+        "fatigue", "exhaustion", "general weakness", "malaise", "body ache",
+        "flu", "cold", "viral", "general checkup", "mild fever",
+    ),
+}
 
 department_parser = PydanticOutputParser(pydantic_object=DepartmentDecision)
 _reranker = None
@@ -44,6 +100,7 @@ class DepartmentMatch:
     reason: str = ""
     retrieval_attempted: bool = False
     retrieval_confidence: float = 0.0
+    candidate_departments: list[dict[str, object]] = field(default_factory=list)
 
 
 def _clean_json(raw_output: str) -> str:
@@ -64,83 +121,52 @@ def _heuristic_department(
     symptoms: list[str],
     collected_info: dict | None = None,
 ) -> DepartmentMatch | None:
+    candidates = _heuristic_department_candidates(symptoms, collected_info)
+    if not candidates:
+        return None
+
+    top = candidates[0]
+    return DepartmentMatch(
+        department=str(top["department"]),
+        confidence=float(top["confidence"]),
+        source="heuristic",
+        reason=str(top["reason"]),
+        candidate_departments=candidates,
+    )
+
+
+def _heuristic_department_candidates(
+    symptoms: list[str],
+    collected_info: dict | None = None,
+) -> list[dict[str, object]]:
     text = _flatten_context(symptoms, collected_info)
 
     if not text.strip():
-        return None
+        return []
 
-    if any(
-        term in text
-        for term in ("chest pain", "chest tightness", "palpitation", "heart", "left arm pain")
-    ):
-        return DepartmentMatch(
-            department="Cardiology",
-            confidence=0.85,
-            source="heuristic",
-            reason="Symptoms suggest a heart or chest-related concern.",
-        )
+    scores: dict[str, float] = defaultdict(float)
+    evidence: dict[str, list[str]] = defaultdict(list)
 
-    if any(term in text for term in ("rash", "itch", "skin", "hives", "acne")):
-        return DepartmentMatch(
-            department="Dermatology",
-            confidence=0.85,
-            source="heuristic",
-            reason="Symptoms suggest a skin-related concern.",
-        )
+    for department, terms in DEPARTMENT_SYMPTOM_RULES.items():
+        for term in terms:
+            if term in text:
+                scores[department] += 1.0
+                evidence[department].append(term)
 
-    if (
-        any(term in text for term in ("leg pain", "calf", "calves", "throbbing"))
-        and any(term in text for term in ("tingling", "numbness", "b12", "weakness", "burning"))
-    ):
-        return DepartmentMatch(
-            department="Neurology",
-            confidence=0.86,
-            source="heuristic",
-            reason="Symptoms suggest a nerve or neurological concern.",
-        )
-
-    if any(
-        term in text
-        for term in ("back pain", "lower back", "spine", "joint", "knee", "shoulder", "fracture", "sprain", "lifting", "gym", "muscle pain")
-    ):
-        return DepartmentMatch(
-            department="Orthopedics",
-            confidence=0.82,
-            source="heuristic",
-            reason="Symptoms suggest a musculoskeletal or spine-related concern.",
-        )
-
-    if any(
-        term in text
-        for term in ("weakness in legs", "numbness", "tingling", "seizure", "loss of speech", "paralysis", "migraine", "severe headache")
-    ):
-        return DepartmentMatch(
-            department="Neurology",
-            confidence=0.82,
-            source="heuristic",
-            reason="Symptoms suggest a nerve or neurological concern.",
-        )
-
-    if any(
-        term in text
-        for term in ("stomach", "abdominal", "vomiting", "diarrhea", "constipation", "loss of appetite", "nausea")
-    ):
-        return DepartmentMatch(
-            department="Gastroenterology",
-            confidence=0.82,
-            source="heuristic",
-            reason="Symptoms suggest a digestive concern.",
-        )
-
-    if any(term in text for term in ("cough", "breath", "asthma", "wheezing", "lungs")):
-        return DepartmentMatch(
-            department="Pulmonology",
-            confidence=0.82,
-            source="heuristic",
-            reason="Symptoms suggest a breathing or lung-related concern.",
-        )
-
-    return None
+    candidates = sorted(
+        (
+            {
+                "department": department,
+                "confidence": min(0.95, 0.55 + (scores[department] * 0.1)),
+                "matched_terms": evidence[department][:4],
+                "reason": f"Matched {', '.join(evidence[department][:3])}.",
+            }
+            for department in scores
+        ),
+        key=lambda item: float(item["confidence"]),
+        reverse=True,
+    )
+    return candidates
 
 
 def _llm_department(
@@ -184,8 +210,11 @@ Retrieved clinical context: {vector_context or []}"""
             reason="Could not parse department decision.",
         )
 
+    # When the LLM says clarification is needed, the department is uncertain —
+    # return None so downstream code always triggers a clarifying question.
+    department = None if decision.needs_clarification else decision.department
     return DepartmentMatch(
-        department=decision.department,
+        department=department,
         confidence=decision.confidence,
         source="llm",
         needs_clarification=decision.needs_clarification,
@@ -296,6 +325,31 @@ def _vector_context(matches) -> list[dict]:
     return context
 
 
+def _multi_department_match_from_candidates(
+    candidates: list[dict[str, object]],
+    *,
+    retrieval_attempted: bool,
+    retrieval_confidence: float,
+) -> DepartmentMatch | None:
+    if len(candidates) < 2:
+        return None
+
+    top = candidates[:2]
+    if float(top[1]["confidence"]) < 0.6:
+        return None
+
+    return DepartmentMatch(
+        department=None,
+        confidence=float(top[0]["confidence"]),
+        source="heuristic_multi",
+        needs_clarification=True,
+        reason=f"The symptoms appear to span both {top[0]['department']} and {top[1]['department']}.",
+        retrieval_attempted=retrieval_attempted,
+        retrieval_confidence=retrieval_confidence,
+        candidate_departments=top,
+    )
+
+
 def match_department_details(
     symptoms: list[str],
     collected_info: dict | None = None,
@@ -322,6 +376,7 @@ def match_department_details(
 
     cleaned_symptoms = [s.strip() for s in symptoms if s and s.strip()]
     heuristic_match = _heuristic_department(cleaned_symptoms, collected_info)
+    heuristic_candidates = list(heuristic_match.candidate_departments if heuristic_match else [])
 
     try:
         query_parts = [f"symptoms: {', '.join(cleaned_symptoms)}"]
@@ -332,6 +387,12 @@ def match_department_details(
         matches = search_clinical_knowledge(query_vector, limit=RAG_MATCH_LIMIT)
     except Exception as exc:
         print(f"[RAG Error] Vector search connection failed: {exc}")
+        if (heuristic_multi := _multi_department_match_from_candidates(
+            heuristic_match.candidate_departments if heuristic_match else [],
+            retrieval_attempted=False,
+            retrieval_confidence=0.0,
+        )):
+            return heuristic_multi
         return heuristic_match or _llm_department(
             cleaned_symptoms,
             collected_info=collected_info,
@@ -343,6 +404,12 @@ def match_department_details(
 
     if not matches:
         print("[RAG Notice] Qdrant returned 0 matches. Asking LLM for department routing.")
+        if (heuristic_multi := _multi_department_match_from_candidates(
+            heuristic_match.candidate_departments if heuristic_match else [],
+            retrieval_attempted=True,
+            retrieval_confidence=0.0,
+        )):
+            return heuristic_multi
         fallback_match = heuristic_match or _llm_department(
             cleaned_symptoms,
             collected_info=collected_info,
@@ -364,6 +431,12 @@ def match_department_details(
         or vector_match.needs_clarification
         or vector_match.department == DEFAULT_DEPARTMENT
     ):
+        if (heuristic_multi := _multi_department_match_from_candidates(
+            heuristic_candidates,
+            retrieval_attempted=True,
+            retrieval_confidence=vector_match.confidence,
+        )):
+            return heuristic_multi
         print("[RAG Notice] Vector confidence low. Asking LLM to reason over context.")
         llm_match = _llm_department(
             cleaned_symptoms,
@@ -379,6 +452,8 @@ def match_department_details(
         if heuristic_match:
             heuristic_match.retrieval_attempted = True
             heuristic_match.retrieval_confidence = vector_match.confidence
+            if heuristic_candidates:
+                heuristic_match.candidate_departments = heuristic_candidates
             return heuristic_match
         llm_match.retrieval_attempted = True
         llm_match.retrieval_confidence = vector_match.confidence
@@ -388,6 +463,8 @@ def match_department_details(
         f"[RAG Success] Vector matched to: '{vector_match.department}' "
         f"(Score: {vector_match.confidence:.2f})"
     )
+    if heuristic_candidates and not vector_match.candidate_departments:
+        vector_match.candidate_departments = heuristic_candidates
     return vector_match
 
 

@@ -120,3 +120,17 @@ def test_back_pain_context_routes_to_orthopedics_when_vector_is_weak(monkeypatch
 
     assert match.department == "Orthopedics"
     assert match.needs_clarification is False
+
+
+def test_multi_symptom_context_can_surface_multiple_departments(monkeypatch):
+    monkeypatch.setattr(rag, "embed_query", lambda _: [0.1, 0.2, 0.3])
+    monkeypatch.setattr(rag, "search_clinical_knowledge", lambda query_vector, limit: [])
+
+    match = rag.match_department_details(["rash", "stomach pain"])
+
+    assert match.needs_clarification is True
+    assert match.department is None
+    assert len(match.candidate_departments) >= 2
+    departments = {item["department"] for item in match.candidate_departments}
+    assert "Dermatology" in departments
+    assert "Gastroenterology" in departments

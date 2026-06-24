@@ -67,6 +67,25 @@ def load_recent_chat_history(patient_id: str, limit: int = 30, chat_session_id: 
     return [{"role": role, "text": text} for role, text in rows]
 
 
+def load_chat_session_history(patient_id: str, chat_session_id: str):
+    with connect_db() as conn:
+        ensure_chat_history_schema(conn)
+        with conn.cursor() as cur:
+            cur.execute(
+                """
+                SELECT role, text
+                FROM chat_messages
+                WHERE patient_id = %s
+                    AND chat_session_id = %s
+                ORDER BY created_at ASC;
+                """,
+                (patient_id, chat_session_id),
+            )
+            rows = cur.fetchall()
+
+    return [{"role": role, "text": text} for role, text in rows]
+
+
 def load_chat_sessions_with_messages(patient_id: str, limit: int = 100):
     with connect_db() as conn:
         ensure_chat_history_schema(conn)

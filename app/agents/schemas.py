@@ -1,4 +1,4 @@
-from typing import Literal, Optional
+from typing import Any, Dict, Literal, Optional
 
 from pydantic import BaseModel, Field
 
@@ -106,6 +106,7 @@ class SupervisorDecision(BaseModel):
         "conversation_agent",
         "remedy_agent",
         "medical_rag",
+        "general_qa",
         "appointment_booker",
         "finish",
     ] = Field(description="The best next graph step for the latest patient message.")
@@ -114,6 +115,71 @@ class SupervisorDecision(BaseModel):
         description="Updated high-level intent if the patient changed direction.",
     )
     reason: str = Field(description="Short routing reason for debugging.")
+
+
+class CombinedSupervisorDecision(BaseModel):
+    next_agent: Literal[
+        "continue_current",
+        "triage_router",
+        "conversation_agent",
+        "remedy_agent",
+        "medical_rag",
+        "general_qa",
+        "appointment_booker",
+        "appointment_resolver",
+        "document_analyzer",
+        "finish",
+    ] = Field(description="The best next graph step for the latest patient message.")
+    user_action_summary: str = Field(
+        default="",
+        description="Short description of what the user just did."
+    )
+    update_active_intent: Optional[Literal["triage_symptoms", "direct_booking"]] = Field(
+        default=None,
+        description="Updated high-level intent if the user changed direction. None means keep the current state intent.",
+    )
+    extracted_facts: Dict[str, Any] = Field(
+        default_factory=dict,
+        description="Only new structured facts extracted from the latest turn.",
+    )
+
+
+class DocumentAnalysisDecision(BaseModel):
+    document_type: Optional[str] = Field(
+        default=None,
+        description="The likely type of document, such as prescription, lab report, discharge summary, or scan.",
+    )
+    summary: str = Field(description="A concise summary of the uploaded medical document.")
+    department: str = Field(description="The best matching department for the document.")
+    temporary_relief: str = Field(description="1-2 sentences of safe temporary relief guidance.")
+    specialist_advice: str = Field(description="Instruction to see the recommended specialist.")
+    booking_prompt: Optional[str] = Field(
+        default=None,
+        description="A short booking prompt asking if the patient wants to schedule an appointment.",
+    )
+
+
+class DocumentCatalogEntry(BaseModel):
+    document_id: str
+    document_type: str
+    clinical_date: Optional[str] = None
+    findings_keys: list[str] = []
+
+
+class DocumentRetrievalAnswer(BaseModel):
+    answer: str = Field(description="Answer composed from retrieved document summary data.")
+    document_ids_used: list[str] = Field(
+        default_factory=list,
+        description="document_id(s) whose blob data was fetched to produce this answer.",
+    )
+    needs_clarification: bool = Field(
+        default=False,
+        description="True if multiple documents matched and the question was ambiguous.",
+    )
+    clarification_prompt: Optional[str] = Field(
+        default=None,
+        description="Clarifying question to ask the user when needs_clarification is True.",
+    )
 
 
 class UserRequestUnderstanding(BaseModel):

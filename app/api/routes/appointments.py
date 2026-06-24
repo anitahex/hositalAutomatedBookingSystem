@@ -1,4 +1,4 @@
-from datetime import date as dt_date, timedelta
+from datetime import date as dt_date
 
 from fastapi import APIRouter, Depends, HTTPException
 from pydantic import BaseModel
@@ -21,9 +21,6 @@ from app.services.appointments import (
 
 
 router = APIRouter()
-BOOKING_LOOKAHEAD_DAYS = 7
-
-
 class RescheduleRequest(BaseModel):
     slot_id: str
 
@@ -123,13 +120,6 @@ def reschedule_options(
         requested_date = dt_date.fromisoformat(date)
     except ValueError:
         raise HTTPException(status_code=400, detail="Please provide the date in YYYY-MM-DD format.")
-
-    today = dt_date.today()
-    if requested_date < today or requested_date > today + timedelta(days=BOOKING_LOOKAHEAD_DAYS):
-        raise HTTPException(
-            status_code=400,
-            detail="Reschedule dates must be within the next 7 days.",
-        )
 
     slots = reschedule_options_for_booking(
         booking_id=booking_id,

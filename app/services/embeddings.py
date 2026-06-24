@@ -25,7 +25,3 @@ embedding_model = HuggingFaceEndpointEmbeddings(
 
 def embed_query(text: str) -> list[float]:
     return embedding_model.embed_query(text)
-
-
-def embed_documents(texts: list[str]) -> list[list[float]]:
-    return embedding_model.embed_documents(texts)

@@ -22,11 +22,16 @@ const topbarCopy = document.querySelector("#topbarCopy");
 const chatSummary = document.querySelector("#chatSummary");
 const recentHistory = document.querySelector("#recentHistory");
 const activeAppointmentsPreview = document.querySelector("#activeAppointmentsPreview");
+const documentUpload = document.querySelector("#documentUpload");
+const uploadStatus = document.querySelector("#uploadStatus");
+const attachPills = document.querySelector("#attachPills");
+const analyzedDocsList = document.querySelector("#analyzedDocsList");
 const tokenInput = document.querySelector("#tokenInput");
 const tokenOutput = document.querySelector("#tokenOutput");
 const tokenTotal = document.querySelector("#tokenTotal");
 const tokenCalls = document.querySelector("#tokenCalls");
 const quickActions = document.querySelector("#quickActions");
+const editProfileBtn = document.querySelector("#editProfileBtn");
 const resetBtn = document.querySelector("#resetBtn");
 const logoutBtn = document.querySelector("#logoutBtn");
 const bookAppointmentBtn = document.querySelector("#bookAppointmentBtn");
@@ -67,6 +72,7 @@ let bookingStudioState = {
   slotId: null,
   mode: "book",
 };
+let pendingUploadFiles = [];
 
 const passwordPattern = /^(?=.*[a-z])(?=.*[A-Z])(?=.*\d)(?=.*[^A-Za-z0-9]).{8,}$/;
 
@@ -75,6 +81,102 @@ function newChatSessionId() {
     return crypto.randomUUID();
   }
   return "session-" + Date.now().toString(36) + "-" + Math.random().toString(36).slice(2);
+}
+
+function currentSessionId() {
+  return state?.session_id || state?.chat_session_id || newChatSessionId();
+}
+
+function setUploadStatus(text, tone = "default") {
+  if (!uploadStatus) return;
+  uploadStatus.textContent = text || "";
+  uploadStatus.dataset.tone = tone;
+}
+
+function showAttachPill(file) {
+  if (!attachPills) return;
+
+  const pill = document.createElement("div");
+  pill.className = "attach-pill";
+
+  const icon = document.createElement("span");
+  icon.textContent = file.name.toLowerCase().endsWith(".pdf") ? "📄" : "🖼";
+
+  const name = document.createElement("span");
+  name.className = "attach-pill-name";
+  name.textContent = file.name;
+  name.title = file.name;
+
+  const remove = document.createElement("button");
+  remove.type = "button";
+  remove.className = "attach-pill-remove";
+  remove.textContent = "×";
+  remove.title = "Remove file";
+  remove.addEventListener("click", () => {
+    const idx = pendingUploadFiles.indexOf(file);
+    if (idx > -1) pendingUploadFiles.splice(idx, 1);
+    pill.remove();
+    if (documentUpload && pendingUploadFiles.length === 0) documentUpload.value = "";
+    setUploadStatus("", "default");
+  });
+
+  pill.append(icon, name, remove);
+  attachPills.appendChild(pill);
+}
+
+function clearAttachPill() {
+  if (attachPills) attachPills.replaceChildren();
+  pendingUploadFiles = [];
+}
+
+function renderAnalyzedDocs(docs) {
+  if (!analyzedDocsList) return;
+  analyzedDocsList.replaceChildren();
+
+  if (!Array.isArray(docs) || !docs.length) {
+    const note = document.createElement("p");
+    note.className = "panel-note";
+    note.textContent = "No documents analyzed yet. Use 📎 in the chat to attach a file.";
+    analyzedDocsList.appendChild(note);
+    return;
+  }
+
+  [...docs].reverse().forEach((doc) => {
+    const item = document.createElement("article");
+    item.className = "analyzed-doc-item";
+
+    const name = document.createElement("div");
+    name.className = "analyzed-doc-name";
+    name.title = doc.file_name || "Unknown file";
+    name.textContent = doc.file_name || "Unknown file";
+
+    const type = document.createElement("div");
+    type.className = "analyzed-doc-type";
+    type.textContent = (doc.document_type || "document").replaceAll("_", " ");
+
+    const dept = document.createElement("div");
+    dept.className = "analyzed-doc-dept";
+    dept.textContent = `→ ${doc.department || "?"}`;
+
+    item.append(name, type, dept);
+    analyzedDocsList.appendChild(item);
+  });
+}
+
+function addUserMessageWithFile(text, filenames) {
+  const { node, body } = createMessageNode("user", "", {});
+  const names = Array.isArray(filenames) ? filenames : [filenames];
+  for (const filename of names) {
+    const chip = document.createElement("div");
+    chip.className = "msg-file-chip";
+    const ext = (filename || "").toLowerCase();
+    chip.textContent = (ext.endsWith(".pdf") ? "📄 " : "🖼 ") + filename;
+    body.appendChild(chip);
+  }
+  if (text) {
+    const textNode = document.createTextNode(text);
+    body.appendChild(textNode);
+  }
 }
 
 function scrollMessages(smooth = true) {
@@ -118,6 +220,70 @@ function safeText(value, fallback = "-") {
   return String(value);
 }
 
+function mergeBookingLists(existing = [], incoming = []) {
+  const merged = [];
+  const seen = new Set();
+
+  [...(existing || []), ...(incoming || [])].forEach((booking) => {
+    if (!booking || typeof booking !== "object") {
+      return;
+    }
+    const key = `${booking.booking_id || ""}::${booking.slot_id || ""}`;
+    if (seen.has(key)) {
+      return;
+    }
+    seen.add(key);
+    merged.push(booking);
+  });
+
+  return merged;
+}
+
+function normalizeChatState(nextState, fallbackState = null) {
+  const merged = {
+    ...(fallbackState || {}),
+    ...(nextState || {}),
+  };
+
+  const history = nextState?.messages || nextState?.conversation_history || fallbackState?.messages || fallbackState?.conversation_history || [];
+  const upcomingBookings = mergeBookingLists(
+    nextState?.upcoming_bookings || nextState?.confirmed_bookings || fallbackState?.upcoming_bookings || fallbackState?.confirmed_bookings || [],
+    nextState?.active_appointments || fallbackState?.active_appointments || []
+  );
+  const activeIntent = nextState?.active_intent || nextState?.intent || fallbackState?.active_intent || fallbackState?.intent || null;
+  const collectedData = nextState?.collected_data || nextState?.collected_info || fallbackState?.collected_data || fallbackState?.collected_info || {};
+  const sessionId = nextState?.session_id || nextState?.chat_session_id || fallbackState?.session_id || fallbackState?.chat_session_id || null;
+
+  return {
+    ...merged,
+    messages: Array.isArray(history) ? history.slice(-6) : [],
+    recent_history: Array.isArray(nextState?.recent_history)
+      ? nextState.recent_history.slice(-6)
+      : Array.isArray(history)
+        ? history.slice(-6)
+        : [],
+    upcoming_bookings: upcomingBookings,
+    confirmed_bookings: upcomingBookings,
+    confirmed_booking: upcomingBookings[upcomingBookings.length - 1] || null,
+    active_appointments: upcomingBookings,
+    active_intent: activeIntent,
+    intent: activeIntent,
+    session_id: sessionId,
+    chat_session_id: sessionId,
+    pending_file_data: nextState?.pending_file_data ?? fallbackState?.pending_file_data ?? null,
+    pending_file_name: nextState?.pending_file_name ?? fallbackState?.pending_file_name ?? null,
+    pending_file_mime_type: nextState?.pending_file_mime_type ?? fallbackState?.pending_file_mime_type ?? null,
+    file_clarification_context: nextState?.file_clarification_context ?? fallbackState?.file_clarification_context ?? null,
+    collected_data: collectedData,
+    collected_info: collectedData,
+    analyzed_documents: Array.isArray(nextState?.analyzed_documents)
+      ? nextState.analyzed_documents
+      : Array.isArray(fallbackState?.analyzed_documents)
+        ? fallbackState.analyzed_documents
+        : [],
+  };
+}
+
 function setPatientSummary(user) {
   if (!user) {
     patientName.textContent = "Guest";
@@ -144,12 +310,17 @@ function setAuthenticated(user, token) {
   document.body.classList.add("authenticated");
   setPatientSummary(user);
   resetChat();
+  refreshActiveAppointments();
   setSidebarOpen(sidebarOpen);
 }
 
 function clearAuthenticated() {
   hideChatClosed();
   hideProfilePanel();
+  if (documentUpload) documentUpload.value = "";
+  clearAttachPill();
+  setUploadStatus("", "default");
+  renderAnalyzedDocs([]);
   currentUser = null;
   accessToken = null;
   patientId = null;
@@ -169,6 +340,32 @@ function clearAuthenticated() {
     "Please login or sign up to continue.",
     { intro: true, noAnimation: true }
   );
+}
+
+async function refreshActiveAppointments() {
+  if (!patientId || !accessToken) {
+    renderActiveAppointments([]);
+    return [];
+  }
+
+  try {
+    const data = await authedJson("/appointments/upcoming");
+    const bookings = data.bookings || [];
+
+    if (state) {
+      state = normalizeChatState({
+        active_appointments: bookings,
+        upcoming_bookings: mergeBookingLists(state.upcoming_bookings, bookings),
+      }, state);
+    }
+
+    const activeBookings = state?.upcoming_bookings || bookings;
+    renderActiveAppointments(activeBookings);
+    return activeBookings;
+  } catch (error) {
+    renderActiveAppointments([]);
+    return [];
+  }
 }
 
 function createMessageNode(role, text = "", options = {}) {
@@ -248,22 +445,92 @@ async function streamAssistantText(messageNode, text) {
   finishStreamingMessage(messageNode);
 }
 
-function appendAssistantToken(messageNode, token) {
-  if (!token) {
-    return;
-  }
+// ── Inline markdown renderer ────────────────────────────────────────────────
+function _escHtml(t) {
+  return t.replace(/&/g,"&amp;").replace(/</g,"&lt;").replace(/>/g,"&gt;").replace(/"/g,"&quot;");
+}
+function _inlineMd(t) {
+  t = _escHtml(t);
+  t = t.replace(/\*\*(.+?)\*\*/g, "<strong>$1</strong>");
+  t = t.replace(/\*([^*\n]+?)\*/g, "<em>$1</em>");
+  t = t.replace(/`([^`\n]+?)`/g, "<code>$1</code>");
+  return t;
+}
+function renderMarkdown(raw) {
+  const lines = raw.split("\n");
+  const out = [];
+  let inUl = false, inTable = false, tableHead = false, pBuf = [];
 
+  function flushP() { if (pBuf.length) { out.push(`<p>${pBuf.join(" ")}</p>`); pBuf = []; } }
+  function closeUl() { if (inUl) { out.push("</ul>"); inUl = false; } }
+  function closeTable() { if (inTable) { out.push("</tbody></table>"); inTable = false; tableHead = false; } }
+
+  for (const line of lines) {
+    // Tables
+    if (inTable || line.match(/^\|.+\|/)) {
+      if (line.match(/^\|[\s\-:|]+\|/)) {
+        out.push("</thead><tbody>"); tableHead = true; continue;
+      }
+      if (line.match(/^\|.+\|/)) {
+        if (!inTable) { flushP(); closeUl(); out.push('<div class="md-table-wrap"><table class="md-table"><thead>'); inTable = true; tableHead = false; }
+        const cells = line.split("|").slice(1, -1);
+        const tag = tableHead ? "td" : "th";
+        out.push("<tr>" + cells.map(c => `<${tag}>${_inlineMd(c.trim())}</${tag}>`).join("") + "</tr>");
+        continue;
+      }
+    }
+    closeTable();
+
+    if (line.startsWith("### ")) {
+      flushP(); closeUl(); out.push(`<h3>${_inlineMd(line.slice(4))}</h3>`);
+    } else if (line.startsWith("## ")) {
+      flushP(); closeUl(); out.push(`<h2>${_inlineMd(line.slice(3))}</h2>`);
+    } else if (line.startsWith("# ")) {
+      flushP(); closeUl(); out.push(`<h1>${_inlineMd(line.slice(2))}</h1>`);
+    } else if (line.match(/^(\s{0,4})[-*•]\s/)) {
+      flushP();
+      const indent = (line.match(/^(\s*)/)||["",""])[1].length;
+      const content = line.replace(/^\s*[-*•]\s/, "");
+      if (!inUl) { out.push("<ul>"); inUl = true; }
+      out.push(`<li style="margin-left:${Math.min(indent,4)*10}px">${_inlineMd(content)}</li>`);
+    } else if (line.match(/^-{3,}\s*$/)) {
+      flushP(); closeUl(); out.push("<hr>");
+    } else if (!line.trim()) {
+      flushP(); closeUl();
+    } else {
+      closeUl(); pBuf.push(_inlineMd(line));
+    }
+  }
+  flushP(); closeUl();
+  if (inTable) out.push("</tbody></table></div>");
+  return out.join("");
+}
+// ────────────────────────────────────────────────────────────────────────────
+
+function appendAssistantToken(messageNode, token) {
+  if (!token) return;
   if (!messageNode.textStarted) {
     messageNode.body.replaceChildren();
     messageNode.textStarted = true;
+    messageNode._mdBuf = "";
   }
-
-  messageNode.body.textContent += token;
-  scrollMessages();
+  messageNode._mdBuf = (messageNode._mdBuf || "") + token;
+  if (!messageNode._rafId) {
+    messageNode._rafId = requestAnimationFrame(() => {
+      messageNode.body.innerHTML = renderMarkdown(messageNode._mdBuf || "");
+      scrollMessages();
+      messageNode._rafId = null;
+    });
+  }
 }
 
 function finishStreamingMessage(messageNode) {
+  if (messageNode._rafId) { cancelAnimationFrame(messageNode._rafId); messageNode._rafId = null; }
+  if (messageNode._mdBuf !== undefined) {
+    messageNode.body.innerHTML = renderMarkdown(messageNode._mdBuf || "");
+  }
   messageNode.node.classList.remove("streaming");
+  scrollMessages(false);
 }
 
 async function readChatStream(response, assistantMessage) {
@@ -661,7 +928,7 @@ function renderBookingStudio() {
 
       const experience = document.createElement("span");
       experience.className = "booking-card-meta";
-      experience.textContent = `${doctor.experience_years || 0} years experience`;
+      experience.textContent = formatDoctorExperience(doctor);
 
       const availability = document.createElement("span");
       availability.className = "booking-card-meta";
@@ -879,6 +1146,9 @@ function renderBookingStudio() {
 }
 
 function bookingSummary(booking) {
+  const shell = document.createElement("div");
+  shell.className = "booking-summary-shell";
+
   const summary = document.createElement("div");
   summary.className = "booking-summary";
 
@@ -892,23 +1162,10 @@ function bookingSummary(booking) {
   status.textContent = `Status: ${booking.status || "booked"}`;
 
   summary.append(doctor, department, time, status);
+  shell.appendChild(summary);
+  shell.appendChild(buildClinicalNotesBlock(booking.booking_note));
 
-  if (booking.booking_note) {
-    const notePanel = document.createElement("details");
-    notePanel.className = "clinical-notes-block";
-
-    const noteSummary = document.createElement("summary");
-    noteSummary.textContent = "Clinical Notes";
-
-    const noteBody = document.createElement("div");
-    noteBody.className = "clinical-notes-body";
-    noteBody.textContent = booking.booking_note;
-
-    notePanel.append(noteSummary, noteBody);
-    summary.appendChild(notePanel);
-  }
-
-  return summary;
+  return shell;
 }
 
 function renderTokenUsage(usage) {
@@ -980,24 +1237,29 @@ function renderActiveAppointments(bookings) {
     time.textContent = formatDateTime(booking.time || booking.start_time);
 
     item.append(title, dept, time);
-
-    if (booking.booking_note) {
-      const notePanel = document.createElement("details");
-      notePanel.className = "clinical-notes-block compact";
-
-      const noteSummary = document.createElement("summary");
-      noteSummary.textContent = "Clinical Notes";
-
-      const noteBody = document.createElement("div");
-      noteBody.className = "clinical-notes-body";
-      noteBody.textContent = booking.booking_note;
-
-      notePanel.append(noteSummary, noteBody);
-      item.appendChild(notePanel);
-    }
+    item.appendChild(buildClinicalNotesBlock(booking.booking_note, true));
 
     activeAppointmentsPreview.appendChild(item);
   });
+}
+
+function buildClinicalNotesBlock(note, compact = false) {
+  if (!note) {
+    return document.createDocumentFragment();
+  }
+
+  const notePanel = document.createElement("details");
+  notePanel.className = compact ? "clinical-notes-block compact" : "clinical-notes-block";
+
+  const noteSummary = document.createElement("summary");
+  noteSummary.textContent = "Clinical Notes";
+
+  const noteBody = document.createElement("div");
+  noteBody.className = "clinical-notes-body";
+  noteBody.textContent = note;
+
+  notePanel.append(noteSummary, noteBody);
+  return notePanel;
 }
 
 function updateWorkflowRail(activeLabel) {
@@ -1015,7 +1277,9 @@ function updateWorkflowRail(activeLabel) {
 function updateWorkflowPanel(nextState) {
   const severity = nextState?.severity || "-";
   const department = nextState?.target_department || "-";
+  const candidateCount = Array.isArray(nextState?.candidate_departments) ? nextState.candidate_departments.length : 0;
   const awaiting = nextState?.chat_closed ? "Closed" : nextState?.awaiting || "Describe symptoms";
+  const activeIntent = nextState?.active_intent || nextState?.intent || null;
   const routingSource = nextState?.department_match_source || null;
   const routingConfidence = Number.isFinite(Number(nextState?.department_match_confidence))
     ? Number(nextState.department_match_confidence)
@@ -1031,9 +1295,11 @@ function updateWorkflowPanel(nextState) {
 
   const activeLabel = nextState?.chat_closed
     ? "Booking"
-    : nextState?.awaiting === "doctor_selection" || nextState?.awaiting === "slot_selection"
+    : candidateCount > 1
+      ? "Multi-dept"
+    : activeIntent === "direct_booking" || nextState?.awaiting === "doctor_selection" || nextState?.awaiting === "slot_selection"
       ? "Booking"
-      : nextState?.target_department
+      : activeIntent === "triage_symptoms" || nextState?.target_department
         ? "RAG"
         : "Conversation";
 
@@ -1044,9 +1310,13 @@ function updateWorkflowPanel(nextState) {
     ? "Care flow paused or completed."
     : nextState?.chat_summary
       ? nextState.chat_summary
-      : nextState?.awaiting
-        ? `The assistant is waiting for ${nextState.awaiting.replaceAll("_", " ")}.`
-        : "Describe symptoms, ask for care, or continue the booking flow.";
+      : candidateCount > 1
+        ? "I found more than one likely department. The assistant is helping you keep the thread together and decide what to book first."
+      : activeIntent
+        ? `Current intent: ${activeIntent.replaceAll("_", " ")}.`
+        : nextState?.awaiting
+          ? `The assistant is waiting for ${nextState.awaiting.replaceAll("_", " ")}.`
+          : "Describe symptoms, ask for care, or continue the booking flow.";
   topbarCopy.textContent = copy;
 
   if (routingMeta) {
@@ -1061,15 +1331,27 @@ function updateWorkflowPanel(nextState) {
       routingMeta.textContent = `Department routing: ${department}\nSource: ${sourceLabel}\nConfidence: ${confidenceLabel}\nRetrieval: ${retrievalLabel}`;
     }
   }
+
+  if (nextState?.candidate_departments && nextState.candidate_departments.length > 1) {
+    const labels = nextState.candidate_departments
+      .map((candidate) => candidate?.department)
+      .filter(Boolean)
+      .join(", ");
+    routingMeta.textContent += `\nPossible departments: ${labels}`;
+  }
 }
 
 function renderState(nextState) {
-  state = nextState;
-  updateWorkflowPanel(nextState);
-  renderChatSummary(nextState?.chat_summary || "");
-  renderRecentHistory(nextState?.recent_history || nextState?.conversation_history || []);
-  renderActiveAppointments(nextState?.active_appointments || nextState?.confirmed_bookings || []);
-  renderTokenUsage(nextState?.token_usage || null);
+  state = normalizeChatState(nextState, state);
+  updateWorkflowPanel(state);
+  renderChatSummary(state?.chat_summary || "");
+  renderRecentHistory(state?.messages || state?.recent_history || []);
+  renderActiveAppointments(state?.upcoming_bookings || state?.active_appointments || []);
+  renderTokenUsage(state?.token_usage || null);
+  renderAnalyzedDocs(state?.analyzed_documents || []);
+  if (pendingUploadFiles.length === 0 && !state?.pending_file_name) {
+    setUploadStatus("", "default");
+  }
   scrollMessages(false);
   setChatTopButtonVisible(messages.scrollTop > 180);
 }
@@ -1086,6 +1368,12 @@ function addQuickAction(label, value) {
   quickActions.appendChild(button);
 }
 
+function formatDoctorExperience(doctor) {
+  const years = Number(doctor?.experience_years ?? doctor?.years_of_experience ?? 0);
+  const label = Number.isFinite(years) ? years : 0;
+  return `Experience: ${label} year${label === 1 ? "" : "s"}`;
+}
+
 function renderQuickActions() {
   clearQuickActions();
 
@@ -1093,9 +1381,28 @@ function renderQuickActions() {
     return;
   }
 
+  if (state.awaiting === "file_clarification") {
+    addQuickAction("Regarding current symptom", "Regarding current symptom");
+    addQuickAction("New symptom", "New symptom");
+    addQuickAction("Please analyze this file", "Please analyze this file");
+    return;
+  }
+
+  if (state.awaiting === "appointment_resolver" && Array.isArray(state.upcoming_bookings) && state.upcoming_bookings.length) {
+    state.upcoming_bookings.forEach((booking, index) => {
+      const label = `${index + 1}. ${booking.doctor || booking.doctor_name || "Doctor"} • ${formatDateTime(booking.time || booking.start_time)}`;
+      addQuickAction(label, String(index + 1));
+    });
+    addQuickAction("Cancel", "cancel");
+    addQuickAction("Change", "change");
+    return;
+  }
+
   if (state.awaiting === "doctor_selection" && Array.isArray(state.doctor_options)) {
     state.doctor_options.forEach((doctor, index) => {
-      addQuickAction(`${index + 1}. ${doctor.doctor_name}`, String(index + 1));
+      const years = Number(doctor?.experience_years ?? doctor?.years_of_experience ?? 0);
+      const experienceLabel = Number.isFinite(years) ? `${years} years experience` : "0 years experience";
+      addQuickAction(`${index + 1}. ${doctor.doctor_name} | ${experienceLabel}`, String(index + 1));
     });
     addQuickAction("No appointment", "no");
   }
@@ -1126,6 +1433,13 @@ function renderQuickActions() {
     });
   }
 
+  if (state.awaiting === "department_selection" && Array.isArray(state.candidate_departments)) {
+    state.candidate_departments.forEach((candidate, index) => {
+      addQuickAction(`${index + 1}. ${candidate.department}`, String(index + 1));
+    });
+    addQuickAction("No, not now", "no");
+  }
+
   if (state.awaiting === "reschedule_date_selection" && Array.isArray(state.reschedule_date_options)) {
     state.reschedule_date_options.forEach((option, index) => {
       addQuickAction(`${index + 1}. ${option.label}`, String(index + 1));
@@ -1145,6 +1459,25 @@ function autoResizeComposer() {
   input.style.height = `${Math.min(input.scrollHeight, 140)}px`;
 }
 
+function buildChatRequest(message, nextState = null) {
+  const sessionId = nextState?.session_id || nextState?.chat_session_id || currentSessionId();
+
+  // File was already cached server-side during /chat/upload — always send JSON,
+  // never re-send the file in FormData to /chat/stream.
+
+  return {
+    body: JSON.stringify({
+      message,
+      session_id: sessionId,
+      state: nextState || state || {},
+    }),
+    headers: {
+      "Content-Type": "application/json",
+      Authorization: `Bearer ${accessToken}`,
+    },
+  };
+}
+
 async function sendMessage(message) {
   if (!patientId || !accessToken) {
     setStatus("Login required");
@@ -1156,16 +1489,11 @@ async function sendMessage(message) {
   const assistantMessage = addTypingAssistantMessage();
 
   try {
+    const requestPayload = buildChatRequest(message, state);
     const response = await fetch("/chat/stream", {
       method: "POST",
-      headers: {
-        "Content-Type": "application/json",
-        Authorization: `Bearer ${accessToken}`,
-      },
-      body: JSON.stringify({
-        message,
-        state,
-      }),
+      headers: requestPayload.headers,
+      body: requestPayload.body,
     });
 
     if (!response.ok) {
@@ -1188,6 +1516,11 @@ async function sendMessage(message) {
       showChatClosed();
     } else {
       renderQuickActions();
+      if (pendingUploadFiles.length > 0) {
+        if (documentUpload) documentUpload.value = "";
+        clearAttachPill();
+        setUploadStatus("", "default");
+      }
       setStatus("Ready");
     }
   } catch (error) {
@@ -1253,22 +1586,31 @@ function validateSignupStepOne() {
 
 function resetChat() {
   hideChatClosed();
+  if (documentUpload) documentUpload.value = "";
+  clearAttachPill();
+  setUploadStatus("", "default");
+  renderAnalyzedDocs([]);
+  const greeting = currentUser
+    ? `Hello ${currentUser.name}. Describe your symptoms, book an appointment, or ask to cancel an appointment.`
+    : "Please sign in to begin.";
   state = {
     patient_profile: currentUser,
-    chat_session_id: newChatSessionId(),
-    recent_history: [],
-    conversation_history: [],
+    session_id: newChatSessionId(),
+    chat_session_id: null,
+    messages: [{ role: "assistant", text: greeting }],
+    recent_history: [{ role: "assistant", text: greeting }],
+    conversation_history: [{ role: "assistant", text: greeting }],
     chat_summary: "",
     chat_closed: false,
+    awaiting: null,
+    active_intent: null,
+    collected_data: {},
+    upcoming_bookings: [],
+    analyzed_documents: [],
     token_usage: { input_tokens: 0, output_tokens: 0, total_tokens: 0, llm_calls: 0 },
   };
   messages.replaceChildren();
-  addAssistantMessage(
-    currentUser
-      ? `Hello ${currentUser.name}. Describe your symptoms, book an appointment, or ask to cancel an appointment.`
-      : "Please sign in to begin.",
-    { intro: true, noAnimation: true }
-  );
+  addAssistantMessage(greeting, { intro: true, noAnimation: true });
   renderState(state);
   clearQuickActions();
   setStatus("Ready");
@@ -1553,21 +1895,32 @@ function adjustComposerHeight() {
 form.addEventListener("submit", async (event) => {
   event.preventDefault();
   const message = input.value.trim();
+  const hasFiles = pendingUploadFiles.length > 0;
 
-  if (!message) {
-    return;
-  }
+  if (!message && !hasFiles) return;
 
   if (state?.chat_closed) {
     showChatClosed();
     return;
   }
 
+  const effectiveMessage = message || (
+    pendingUploadFiles.length === 1
+      ? "Please analyze this medical document."
+      : `Please analyze these ${pendingUploadFiles.length} medical documents.`
+  );
+
   input.value = "";
   adjustComposerHeight();
-  addUserMessage(message);
   clearQuickActions();
-  await sendMessage(message);
+
+  if (hasFiles) {
+    addUserMessageWithFile(message, pendingUploadFiles.map(f => f.name));
+  } else {
+    addUserMessage(message);
+  }
+
+  await sendMessage(effectiveMessage);
 });
 
 input.addEventListener("input", adjustComposerHeight);
@@ -1629,10 +1982,74 @@ if (scrollTopBtn) {
   });
 }
 
-previousBookingsBtn.addEventListener("click", showPreviousBookings);
-upcomingBookingsBtn.addEventListener("click", showUpcomingBookings);
+previousBookingsBtn.addEventListener("click", () => showPreviousBookings());
+upcomingBookingsBtn.addEventListener("click", () => showUpcomingBookings());
 chatHistoryBtn.addEventListener("click", showChatHistory);
 closeProfilePanelBtn.addEventListener("click", hideProfilePanel);
+
+function showEditProfile() {
+  if (!currentUser) return;
+  showProfilePanel("Edit profile");
+
+  const form = document.createElement("form");
+  form.className = "edit-profile-form";
+  form.innerHTML = `
+    <label class="ep-label">
+      <span>Health issues / pre-existing conditions</span>
+      <textarea class="ep-textarea" id="epHealthIssues" rows="3" placeholder="e.g. Diabetes, Hypertension">${currentUser.health_issues || ""}</textarea>
+    </label>
+    <label class="ep-label">
+      <span>Mobile number</span>
+      <input class="ep-input" id="epMobile" type="tel" value="${currentUser.mobile_number || ""}" placeholder="+91 9876543210"/>
+    </label>
+    <label class="ep-label">
+      <span>Address</span>
+      <input class="ep-input" id="epAddress" type="text" value="${currentUser.address || ""}" placeholder="Street, City"/>
+    </label>
+    <div class="ep-actions">
+      <button type="submit" class="ep-save-btn" id="epSaveBtn">Save changes</button>
+      <span class="ep-msg" id="epMsg"></span>
+    </div>
+  `;
+
+  profilePanelBody.replaceChildren(form);
+
+  form.addEventListener("submit", async (e) => {
+    e.preventDefault();
+    const saveBtn = document.querySelector("#epSaveBtn");
+    const msg = document.querySelector("#epMsg");
+    saveBtn.disabled = true;
+    msg.textContent = "Saving…";
+
+    const payload = {
+      health_issues: document.querySelector("#epHealthIssues").value.trim() || null,
+      mobile_number: document.querySelector("#epMobile").value.trim() || null,
+      address: document.querySelector("#epAddress").value.trim() || null,
+    };
+
+    try {
+      const data = await authedJson("/auth/profile", {
+        method: "PATCH",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify(payload),
+      });
+      currentUser = data.user;
+      localStorage.setItem("currentUser", JSON.stringify(currentUser));
+      setPatientSummary(currentUser);
+      msg.textContent = "Saved!";
+      msg.style.color = "var(--violet)";
+      setTimeout(hideProfilePanel, 900);
+    } catch (err) {
+      msg.textContent = err.message || "Save failed.";
+      msg.style.color = "#dc2626";
+      saveBtn.disabled = false;
+    }
+  });
+}
+
+if (editProfileBtn) {
+  editProfileBtn.addEventListener("click", showEditProfile);
+}
 
 startNewChatBtn.addEventListener("click", () => {
   resetChat();
@@ -1705,6 +2122,71 @@ logoutBtn.addEventListener("click", () => {
 });
 
 window.addEventListener("resize", adjustComposerHeight);
+
+if (documentUpload) {
+  documentUpload.addEventListener("change", async () => {
+    const file = documentUpload.files?.[0] || null;
+    if (!file) return;
+
+    setUploadStatus(`Validating "${file.name}"…`, "sending");
+    setComposerDisabled(true);
+    clearAttachPill();
+
+    try {
+      // Step 1: POST /chat/upload — Azure GPT-4o medical relevance check + staging
+      const uploadForm = new FormData();
+      uploadForm.append("file", file);
+      uploadForm.append("session_id", currentSessionId() || "");
+
+      const uploadResp = await fetch("/chat/upload", {
+        method: "POST",
+        headers: { Authorization: `Bearer ${accessToken}` },
+        body: uploadForm,
+      });
+
+      if (!uploadResp.ok) {
+        const errData = await uploadResp.json().catch(() => ({}));
+        throw new Error(errData.detail || `Validation failed (${uploadResp.status})`);
+      }
+
+      const { document_token } = await uploadResp.json();
+
+      // Step 2: Consent dialog
+      const consent = confirm(
+        `"${file.name}" has been verified as a valid medical document.\n\n` +
+        `Store securely in your health vault for AI-assisted analysis?\n\n` +
+        `OK = store & analyze  |  Cancel = discard`
+      );
+
+      // Step 3: Confirm/discard — fire and forget
+      fetch("/chat/confirm-processing", {
+        method: "POST",
+        headers: { "Content-Type": "application/json", Authorization: `Bearer ${accessToken}` },
+        body: JSON.stringify({ document_token, consent_granted: consent }),
+      }).catch(err => console.warn("confirm-processing error:", err));
+
+      if (!consent) {
+        setUploadStatus("Document discarded.", "default");
+        clearAttachPill();
+        documentUpload.value = "";
+        setComposerDisabled(false);
+        return;
+      }
+
+      // Step 4: Stage pill — wait for user to type a question or just click Send
+      pendingUploadFiles.push(file);
+      showAttachPill(file);
+      setUploadStatus("", "default");
+      setComposerDisabled(false);
+      input.focus();
+
+    } catch (err) {
+      setUploadStatus(`Upload error: ${err.message}`, "error");
+      documentUpload.value = "";
+      setComposerDisabled(false);
+    }
+  });
+}
 
 async function bootstrapSession() {
   if (!currentUser || !accessToken) {

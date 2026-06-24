@@ -613,6 +613,79 @@ body.sidebar-collapsed .app-sidebar {
   font-size: 12px;
 }
 
+.upload-card {
+  display: grid;
+  gap: 10px;
+}
+
+.analyzed-docs-list {
+  display: grid;
+  gap: 8px;
+}
+
+.analyzed-doc-item {
+  display: grid;
+  gap: 3px;
+  padding: 10px 12px;
+  border-radius: 16px;
+  background: rgba(248, 250, 252, 0.92);
+  border: 1px solid rgba(148, 163, 184, 0.18);
+}
+
+.analyzed-doc-name {
+  font-size: 12px;
+  font-weight: 700;
+  color: var(--text);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.analyzed-doc-type {
+  font-size: 11px;
+  font-weight: 600;
+  color: var(--violet-strong);
+  text-transform: uppercase;
+  letter-spacing: 0.03em;
+}
+
+.analyzed-doc-dept {
+  font-size: 11px;
+  color: var(--muted);
+}
+
+.upload-status {
+  padding: 8px 10px;
+  border-radius: 14px;
+  background: rgba(248, 250, 252, 0.92);
+  border: 1px solid rgba(148, 163, 184, 0.16);
+  color: var(--muted-strong);
+  font-size: 12px;
+  line-height: 1.45;
+  overflow-wrap: anywhere;
+  min-height: 0;
+}
+
+.upload-status:empty {
+  display: none;
+}
+
+.upload-status[data-tone="waiting"] {
+  background: rgba(92, 92, 240, 0.08);
+  border-color: rgba(92, 92, 240, 0.16);
+}
+
+.upload-status[data-tone="sending"] {
+  background: rgba(34, 197, 94, 0.08);
+  border-color: rgba(34, 197, 94, 0.16);
+}
+
+.upload-status[data-tone="error"] {
+  background: rgba(220, 38, 38, 0.07);
+  border-color: rgba(220, 38, 38, 0.2);
+  color: #b42318;
+}
+
 .tokens-card {
   background: linear-gradient(180deg, rgba(255, 255, 255, 0.95), rgba(248, 250, 252, 0.92));
 }
@@ -812,11 +885,123 @@ body.sidebar-collapsed .app-sidebar {
 }
 
 .message-text {
-  white-space: pre-wrap;
+  white-space: normal;
   overflow-wrap: anywhere;
-  line-height: 1.55;
+  line-height: 1.6;
   font-size: 14px;
 }
+
+/* ── Markdown rendering inside assistant bubbles ── */
+.message-text h1,
+.message-text h2,
+.message-text h3 {
+  margin: 14px 0 6px;
+  font-weight: 700;
+  line-height: 1.3;
+}
+.message-text h1 { font-size: 17px; border-bottom: 1px solid rgba(0,0,0,.12); padding-bottom: 4px; }
+.message-text h2 { font-size: 15px; color: #4f46e5; }
+.message-text h3 { font-size: 14px; color: #374151; }
+
+.message-text p {
+  margin: 0 0 8px;
+}
+.message-text p:last-child { margin-bottom: 0; }
+
+.message-text ul {
+  margin: 4px 0 8px;
+  padding-left: 18px;
+  list-style: disc;
+}
+.message-text li {
+  margin: 2px 0;
+  line-height: 1.5;
+}
+
+.message-text hr {
+  border: none;
+  border-top: 1px solid rgba(0,0,0,.15);
+  margin: 12px 0;
+}
+
+.message-text strong { font-weight: 700; }
+.message-text em { font-style: italic; }
+.message-text code {
+  background: rgba(0,0,0,.07);
+  border-radius: 3px;
+  padding: 1px 4px;
+  font-family: monospace;
+  font-size: 12.5px;
+}
+
+.md-table-wrap {
+  overflow-x: auto;
+  margin: 8px 0 12px;
+  border-radius: 8px;
+  box-shadow: 0 1px 4px rgba(0,0,0,.1);
+}
+.md-table {
+  border-collapse: collapse;
+  width: 100%;
+  font-size: 13px;
+}
+.md-table th {
+  background: #4f46e5;
+  color: #fff;
+  text-align: left;
+  padding: 7px 12px;
+  font-weight: 600;
+  white-space: nowrap;
+}
+.md-table td {
+  border-bottom: 1px solid rgba(0,0,0,.08);
+  padding: 6px 12px;
+  vertical-align: top;
+}
+.md-table tr:nth-child(even) td { background: rgba(79,70,229,.04); }
+.md-table tr:last-child td { border-bottom: none; }
+
+/* ── Edit profile button & form ── */
+.edit-profile-btn {
+  margin-top: 10px;
+  width: 100%;
+  padding: 7px 0;
+  background: transparent;
+  border: 1px solid var(--violet, #4f46e5);
+  color: var(--violet, #4f46e5);
+  border-radius: 8px;
+  font-size: 13px;
+  font-weight: 600;
+  cursor: pointer;
+  transition: background 0.15s, color 0.15s;
+}
+.edit-profile-btn:hover { background: var(--violet, #4f46e5); color: #fff; }
+
+.edit-profile-form { display: flex; flex-direction: column; gap: 14px; padding: 4px 0; }
+.ep-label { display: flex; flex-direction: column; gap: 5px; font-size: 13px; font-weight: 600; color: #374151; }
+.ep-textarea, .ep-input {
+  font-size: 13px;
+  padding: 8px 10px;
+  border: 1px solid #d1d5db;
+  border-radius: 8px;
+  resize: vertical;
+  font-family: inherit;
+  transition: border-color 0.15s;
+}
+.ep-textarea:focus, .ep-input:focus { outline: none; border-color: var(--violet, #4f46e5); }
+.ep-actions { display: flex; align-items: center; gap: 12px; }
+.ep-save-btn {
+  padding: 8px 20px;
+  background: var(--violet, #4f46e5);
+  color: #fff;
+  border: none;
+  border-radius: 8px;
+  font-size: 13px;
+  font-weight: 600;
+  cursor: pointer;
+}
+.ep-save-btn:disabled { opacity: 0.6; cursor: default; }
+.ep-msg { font-size: 12px; font-weight: 500; }
 
 .streaming .bubble {
   position: relative;
@@ -862,6 +1047,10 @@ body.sidebar-collapsed .app-sidebar {
   color: var(--violet-strong);
   border: 1px solid rgba(109, 40, 217, 0.16);
   box-shadow: 0 10px 22px rgba(109, 40, 217, 0.05);
+  max-width: 100%;
+  white-space: normal;
+  text-align: left;
+  line-height: 1.35;
 }
 
 .quick-actions button:hover {
@@ -872,35 +1061,153 @@ body.sidebar-collapsed .app-sidebar {
   display: grid;
   grid-template-columns: minmax(0, 1fr) auto;
   gap: 12px;
-  padding: 16px 18px 18px;
+  padding: 14px 18px 16px;
   border-top: 1px solid rgba(148, 163, 184, 0.14);
   background: rgba(255, 255, 255, 0.62);
   backdrop-filter: blur(24px) saturate(150%);
 }
 
 .composer-shell {
-  display: grid;
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+
+.composer-input-row {
+  display: flex;
+  align-items: flex-end;
   gap: 8px;
 }
 
+.composer-text-shell {
+  flex: 1;
+  min-width: 0;
+  display: grid;
+  gap: 6px;
+}
+
+/* Paperclip attach button */
+.attach-label {
+  flex-shrink: 0;
+  width: 36px;
+  height: 36px;
+  display: grid;
+  place-items: center;
+  border-radius: 50%;
+  cursor: pointer;
+  color: var(--muted-strong);
+  background: rgba(248, 250, 252, 0.9);
+  border: 1px solid var(--border-strong);
+  transition: background 140ms ease, border-color 140ms ease, color 140ms ease;
+  margin-bottom: 22px; /* sit at same level as textarea bottom, above hint */
+}
+
+.attach-label:hover {
+  background: rgba(92, 92, 240, 0.1);
+  border-color: rgba(92, 92, 240, 0.32);
+  color: var(--violet);
+}
+
+.attach-label input[type="file"] {
+  display: none;
+}
+
+.attach-label svg {
+  pointer-events: none;
+}
+
+/* Attachment pills shown inside composer when files are queued */
+.attach-pills {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+  order: -1; /* appear above the input row */
+}
+
+.attach-pills:empty {
+  display: none;
+}
+
+.attach-pill {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  padding: 5px 6px 5px 10px;
+  border-radius: 999px;
+  background: rgba(92, 92, 240, 0.1);
+  border: 1px solid rgba(92, 92, 240, 0.24);
+  color: var(--violet-strong);
+  font-size: 12px;
+  font-weight: 600;
+  max-width: 260px;
+}
+
+.attach-pill-name {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.attach-pill-remove {
+  flex-shrink: 0;
+  width: 20px;
+  height: 20px;
+  border-radius: 50%;
+  background: rgba(92, 92, 240, 0.12);
+  border: none;
+  cursor: pointer;
+  color: var(--violet-strong);
+  padding: 0;
+  display: grid;
+  place-items: center;
+  font-size: 13px;
+  line-height: 1;
+  box-shadow: none;
+  transition: background 120ms;
+}
+
+.attach-pill-remove:hover {
+  background: rgba(92, 92, 240, 0.28);
+  transform: none;
+}
+
+/* File chip inside a user chat bubble */
+.msg-file-chip {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  padding: 4px 10px;
+  border-radius: 999px;
+  background: rgba(255, 255, 255, 0.2);
+  border: 1px solid rgba(255, 255, 255, 0.35);
+  font-size: 12px;
+  font-weight: 600;
+  margin-bottom: 6px;
+  max-width: 220px;
+  overflow: hidden;
+  white-space: nowrap;
+  text-overflow: ellipsis;
+}
+
 .composer textarea {
-  min-height: 54px;
+  min-height: 50px;
   max-height: 140px;
-  padding: 15px 16px;
+  padding: 13px 16px;
   border-radius: 20px;
   resize: none;
 }
 
 .composer-hint {
   color: var(--muted);
-  font-size: 12px;
+  font-size: 11px;
   line-height: 1.2;
-  padding-left: 4px;
+  padding-left: 2px;
 }
 
 .composer button[type="submit"] {
-  min-width: 96px;
+  min-width: 88px;
   align-self: end;
+  margin-bottom: 22px; /* mirror attach-label so both sit at textarea bottom */
   background: var(--violet);
   box-shadow: 0 18px 30px rgba(109, 40, 217, 0.16);
 }
@@ -919,10 +1226,18 @@ body.sidebar-collapsed .app-sidebar {
 
 .booking-item,
 .history-message {
+  display: grid;
+  gap: 10px;
   padding: 14px;
   border-radius: 18px;
   border: 1px solid rgba(148, 163, 184, 0.18);
   background: rgba(248, 250, 252, 0.9);
+}
+
+.booking-summary-shell {
+  display: grid;
+  gap: 8px;
+  min-width: 0;
 }
 
 .booking-summary {
@@ -930,6 +1245,7 @@ body.sidebar-collapsed .app-sidebar {
   grid-template-columns: minmax(150px, 1.2fr) minmax(120px, 0.9fr) minmax(160px, 1fr) auto;
   gap: 10px;
   align-items: center;
+  min-width: 0;
 }
 
 .booking-summary span,
@@ -939,12 +1255,14 @@ body.sidebar-collapsed .app-sidebar {
 }
 
 .clinical-notes-block {
+  display: block;
   grid-column: 1 / -1;
   margin-top: 4px;
   border: 1px solid rgba(148, 163, 184, 0.18);
   border-radius: 16px;
   background: rgba(255, 255, 255, 0.82);
   overflow: hidden;
+  min-width: 0;
 }
 
 .clinical-notes-block summary {
@@ -1234,7 +1552,6 @@ body.sidebar-collapsed .app-sidebar {
 .booking-card-button,
 .chip-button {
   width: 100%;
-  min-height: 64px;
   border: 1px solid rgba(148, 163, 184, 0.18);
   background: rgba(255, 255, 255, 0.9);
   color: var(--text);
@@ -1245,8 +1562,18 @@ body.sidebar-collapsed .app-sidebar {
   gap: 3px;
   align-content: start;
   min-width: 0;
-  overflow: hidden;
   box-shadow: 0 10px 24px rgba(15, 23, 42, 0.04);
+}
+
+.booking-card-button {
+  min-height: 128px;
+  overflow: visible;
+  align-content: start;
+}
+
+.chip-button {
+  min-height: 64px;
+  overflow: hidden;
 }
 
 .booking-card-button strong {
@@ -1267,6 +1594,11 @@ body.sidebar-collapsed .app-sidebar {
 .booking-card-title,
 .booking-card-meta {
   min-width: 0;
+}
+
+.booking-card-meta {
+  line-height: 1.4;
+  font-weight: 600;
 }
 
 .booking-card-button:hover,

@@ -1,4 +1,5 @@
 import json
+import asyncio
 import os
 import time
 
@@ -7,9 +8,12 @@ from dotenv import load_dotenv
 from app.services.llm_usage import record_llm_usage
 
 try:
-    from huggingface_hub import InferenceClient
+    from huggingface_hub import AsyncInferenceClient, InferenceClient
 except ModuleNotFoundError:
+    AsyncInferenceClient = None
     InferenceClient = None
+
+from app.inference.vision import HF_VISION_MODEL
 
 load_dotenv()
 
@@ -46,10 +50,40 @@ if HF_TOKEN and InferenceClient:
         token=HF_TOKEN,
         timeout=HF_SUMMARY_TIMEOUT_SECONDS,
     )
+    async_llm = AsyncInferenceClient(
+        model=HF_MODEL,
+        token=HF_TOKEN,
+        timeout=HF_TIMEOUT_SECONDS,
+    ) if AsyncInferenceClient else None
+    async_router_llm = AsyncInferenceClient(
+        model=HF_ROUTER_MODEL,
+        token=HF_TOKEN,
+        timeout=HF_ROUTER_TIMEOUT_SECONDS,
+    ) if AsyncInferenceClient else None
+    async_summary_llm = AsyncInferenceClient(
+        model=HF_SUMMARY_MODEL,
+        token=HF_TOKEN,
+        timeout=HF_SUMMARY_TIMEOUT_SECONDS,
+    ) if AsyncInferenceClient else None
+    vision_llm = InferenceClient(
+        model=HF_VISION_MODEL,
+        token=HF_TOKEN,
+        timeout=HF_TIMEOUT_SECONDS,
+    )
+    async_vision_llm = AsyncInferenceClient(
+        model=HF_VISION_MODEL,
+        token=HF_TOKEN,
+        timeout=HF_TIMEOUT_SECONDS,
+    ) if AsyncInferenceClient else None
 else:
     llm = None
     router_llm = None
     summary_llm = None
+    async_llm = None
+    async_router_llm = None
+    async_summary_llm = None
+    vision_llm = None
+    async_vision_llm = None
 
 
 def _trim_chat_history(chat_history: list[dict] | None, max_patient_turns: int | None = None) -> list[dict]:
@@ -164,6 +198,198 @@ def _chat_completion(
         )
 
 
+def _normalize_completion_content(content) -> str:
+    if isinstance(content, list):
+        return "".join(
+            part.get("text", "") if isinstance(part, dict) else str(part)
+            for part in content
+        ).strip()
+    return str(content or "").strip()
+
+
+def _multimodal_completion(
+    client,
+    messages: list[dict],
+    *,
+    max_tokens: int,
+    temperature: float,
+    model: str,
+    call_type: str,
+    node_name: str,
+    patient_id: str | None = None,
+    chat_session_id: str | None = None,
+) -> str:
+    print(f"--- [LLM INPUT PAYLOAD: {node_name.upper()}] ---")
+    print(json.dumps({"model": model, "messages": messages}, ensure_ascii=False, indent=2))
+
+    started_at = time.perf_counter()
+    response = None
+    content = ""
+    status = "ERROR"
+    prompt_log = json.dumps(messages, ensure_ascii=False)
+    try:
+        response = client.chat.completions.create(
+            messages=messages,
+            max_tokens=max_tokens,
+            temperature=temperature,
+        )
+        content = _normalize_completion_content(response.choices[0].message.content)
+        if not content:
+            raise RuntimeError(f"Model {model} returned an empty response.")
+        status = "SUCCESS"
+        return content
+    finally:
+        latency_ms = int((time.perf_counter() - started_at) * 1000)
+        record_llm_usage(
+            model=model,
+            call_type=call_type,
+            prompt=prompt_log,
+            completion=content,
+            response=response,
+            node_name=node_name,
+            session_id=chat_session_id,
+            patient_id=patient_id,
+            status=status,
+            latency_ms=latency_ms,
+        )
+
+
+async def _amultimodal_completion(
+    client,
+    messages: list[dict],
+    *,
+    max_tokens: int,
+    temperature: float,
+    model: str,
+    call_type: str,
+    node_name: str,
+    patient_id: str | None = None,
+    chat_session_id: str | None = None,
+) -> str:
+    print(f"--- [LLM INPUT PAYLOAD: {node_name.upper()}] ---")
+    print(json.dumps({"model": model, "messages": messages}, ensure_ascii=False, indent=2))
+
+    started_at = time.perf_counter()
+    response = None
+    content = ""
+    status = "ERROR"
+    prompt_log = json.dumps(messages, ensure_ascii=False)
+    try:
+        response = await client.chat.completions.create(
+            messages=messages,
+            max_tokens=max_tokens,
+            temperature=temperature,
+        )
+        content = _normalize_completion_content(response.choices[0].message.content)
+        if not content:
+            raise RuntimeError(f"Model {model} returned an empty response.")
+        status = "SUCCESS"
+        return content
+    finally:
+        latency_ms = int((time.perf_counter() - started_at) * 1000)
+        record_llm_usage(
+            model=model,
+            call_type=call_type,
+            prompt=prompt_log,
+            completion=content,
+            response=response,
+            node_name=node_name,
+            session_id=chat_session_id,
+            patient_id=patient_id,
+            status=status,
+            latency_ms=latency_ms,
+        )
+
+
+def _build_multimodal_messages(system_prompt: str, user_parts: list[dict]) -> list[dict]:
+    messages = [{"role": "system", "content": system_prompt}]
+    messages.append({"role": "user", "content": user_parts})
+    return messages
+
+
+def _format_image_message(image_data_url: str) -> dict:
+    return {"type": "image_url", "image_url": {"url": image_data_url}}
+
+
+async def _achat_completion(
+    client,
+    system_prompt: str,
+    user_prompt: str,
+    *,
+    max_tokens: int,
+    temperature: float,
+    model: str,
+    call_type: str,
+    node_name: str,
+    chat_history: list[dict] | None = None,
+    chat_summary: str | None = None,
+    include_history: bool = True,
+    history_turns: int | None = None,
+    patient_id: str | None = None,
+    chat_session_id: str | None = None,
+) -> str:
+    messages = [{"role": "system", "content": system_prompt}]
+
+    if include_history:
+        for turn in _trim_chat_history(chat_history, history_turns):
+            role = str(turn.get("role") or "user").strip().lower()
+            if role == "patient":
+                role = "user"
+            elif role not in {"system", "user", "assistant", "tool"}:
+                role = "user"
+            content = turn.get("content")
+            if content is None:
+                content = turn.get("text", "")
+            messages.append({"role": role, "content": str(content)})
+
+    if chat_summary and chat_summary.strip():
+        messages.append({"role": "system", "content": "Conversation summary so far:\n" + chat_summary.strip()})
+
+    messages.append({"role": "user", "content": user_prompt})
+
+    print(f"--- [LLM INPUT PAYLOAD: {node_name.upper()}] ---")
+    print(json.dumps({"model": model, "messages": messages}, ensure_ascii=False, indent=2))
+
+    started_at = time.perf_counter()
+    response = None
+    content = ""
+    status = "ERROR"
+    try:
+        response = await client.chat.completions.create(
+            messages=messages,
+            max_tokens=max_tokens,
+            temperature=temperature,
+        )
+
+        content = response.choices[0].message.content
+        if isinstance(content, list):
+            content = "".join(
+                part.get("text", "") if isinstance(part, dict) else str(part)
+                for part in content
+            )
+
+        content = (content or "").strip()
+        if not content:
+            raise RuntimeError(f"Model {model} returned an empty response.")
+        status = "SUCCESS"
+        return content
+    finally:
+        latency_ms = int((time.perf_counter() - started_at) * 1000)
+        full_prompt_log = f"{system_prompt}\n\n{user_prompt}"
+        record_llm_usage(
+            model=model,
+            call_type=call_type,
+            prompt=full_prompt_log,
+            completion=content,
+            response=response,
+            node_name=node_name,
+            session_id=chat_session_id,
+            patient_id=patient_id,
+            status=status,
+            latency_ms=latency_ms,
+        )
+
+
 def generate_text(
     system_prompt: str,
     user_prompt: str,
@@ -201,6 +427,177 @@ def generate_text(
         return _local_fallback(system_prompt, user_prompt)
 
 
+async def agenerate_text(
+    system_prompt: str,
+    user_prompt: str,
+    *,
+    node_name: str = "general",
+    chat_history: list[dict] | None = None,
+    chat_summary: str | None = None,
+    include_history: bool = True,
+    history_turns: int | None = None,
+    patient_id: str | None = None,
+    chat_session_id: str | None = None,
+) -> str:
+    try:
+        if not async_llm:
+            raise RuntimeError("Async Hugging Face LLM client is not configured.")
+        return await _achat_completion(
+            async_llm,
+            system_prompt=system_prompt,
+            user_prompt=user_prompt,
+            max_tokens=HF_MAX_TOKENS,
+            temperature=0.1,
+            model=HF_MODEL,
+            call_type="generation",
+            node_name=node_name,
+            chat_history=chat_history,
+            chat_summary=chat_summary,
+            include_history=include_history,
+            history_turns=history_turns,
+            patient_id=patient_id,
+            chat_session_id=chat_session_id,
+        )
+    except Exception as exc:
+        print(f"Async LLM call failed for {HF_MODEL}: {exc}")
+        return _local_fallback(system_prompt, user_prompt)
+
+
+async def astream_text(
+    system_prompt: str,
+    user_prompt: str,
+    *,
+    node_name: str = "stream",
+    chat_history: list[dict] | None = None,
+    chat_summary: str | None = None,
+    include_history: bool = False,
+    history_turns: int | None = None,
+    patient_id: str | None = None,
+    chat_session_id: str | None = None,
+):
+    """
+    Async generator — yields string tokens from HF with stream=True.
+    Uses the main async_llm client (same model as agenerate_text).
+    Falls back to yielding the full response in one chunk if streaming fails.
+    """
+    if not async_llm:
+        raise RuntimeError("Async HF LLM client not configured.")
+
+    messages = [{"role": "system", "content": system_prompt}]
+    if include_history and chat_history:
+        for turn in _trim_chat_history(chat_history, history_turns):
+            role = str(turn.get("role") or "user").strip().lower()
+            if role == "patient":
+                role = "user"
+            elif role not in {"system", "user", "assistant", "tool"}:
+                role = "user"
+            content = turn.get("content") or turn.get("text", "")
+            messages.append({"role": role, "content": str(content)})
+    if chat_summary and chat_summary.strip():
+        messages.append({"role": "system", "content": "Conversation summary:\n" + chat_summary.strip()})
+    messages.append({"role": "user", "content": user_prompt})
+
+    print(f"--- [LLM STREAM: {node_name.upper()}] ---")
+    print(json.dumps({"model": HF_MODEL, "messages": messages}, ensure_ascii=False, indent=2))
+
+    try:
+        stream = await async_llm.chat.completions.create(
+            messages=messages,
+            max_tokens=HF_MAX_TOKENS,
+            temperature=0.1,
+            stream=True,
+        )
+        async for chunk in stream:
+            if chunk.choices:
+                delta = chunk.choices[0].delta.content
+                if delta:
+                    yield delta
+    except Exception as exc:
+        print(f"astream_text failed for {HF_MODEL}, falling back to full response: {exc}")
+        # Fall back: yield the full response as one token so the caller still works
+        try:
+            fallback = await _achat_completion(
+                async_llm,
+                system_prompt=system_prompt,
+                user_prompt=user_prompt,
+                max_tokens=HF_MAX_TOKENS,
+                temperature=0.1,
+                model=HF_MODEL,
+                call_type="stream_fallback",
+                node_name=node_name,
+                chat_history=chat_history,
+                chat_summary=chat_summary,
+                include_history=include_history,
+                history_turns=history_turns,
+                patient_id=patient_id,
+                chat_session_id=chat_session_id,
+            )
+            yield fallback
+        except Exception as exc2:
+            print(f"astream_text fallback also failed: {exc2}")
+            yield _local_fallback(system_prompt, user_prompt)
+
+
+def generate_multimodal_text(
+    system_prompt: str,
+    user_parts: list[dict],
+    *,
+    node_name: str = "vision",
+    max_tokens: int = HF_MAX_TOKENS,
+    temperature: float = 0.1,
+    patient_id: str | None = None,
+    chat_session_id: str | None = None,
+) -> str:
+    try:
+        if not vision_llm:
+            raise RuntimeError("Hugging Face vision client is not configured.")
+        messages = _build_multimodal_messages(system_prompt, user_parts)
+        return _multimodal_completion(
+            vision_llm,
+            messages,
+            max_tokens=max_tokens,
+            temperature=temperature,
+            model=HF_VISION_MODEL,
+            call_type="vision",
+            node_name=node_name,
+            patient_id=patient_id,
+            chat_session_id=chat_session_id,
+        )
+    except Exception as exc:
+        print(f"Vision LLM call failed for {HF_VISION_MODEL}: {exc}")
+        return _local_fallback(system_prompt, json.dumps(user_parts, ensure_ascii=False))
+
+
+async def agenerate_multimodal_text(
+    system_prompt: str,
+    user_parts: list[dict],
+    *,
+    node_name: str = "vision",
+    max_tokens: int = HF_MAX_TOKENS,
+    temperature: float = 0.1,
+    patient_id: str | None = None,
+    chat_session_id: str | None = None,
+) -> str:
+    try:
+        if not async_vision_llm:
+            raise RuntimeError("Async Hugging Face vision client is not configured.")
+        messages = _build_multimodal_messages(system_prompt, user_parts)
+        return await _amultimodal_completion(
+            async_vision_llm,
+            messages,
+            max_tokens=max_tokens,
+            temperature=temperature,
+            model=HF_VISION_MODEL,
+            call_type="vision",
+            node_name=node_name,
+            patient_id=patient_id,
+            chat_session_id=chat_session_id,
+        )
+    except Exception as exc:
+        print(f"Async vision LLM call failed for {HF_VISION_MODEL}: {exc}")
+        return _local_fallback(system_prompt, json.dumps(user_parts, ensure_ascii=False))
+
+
 def generate_router_text(
     system_prompt: str,
     user_prompt: str,
@@ -212,6 +609,7 @@ def generate_router_text(
     history_turns: int | None = None,
     patient_id: str | None = None,
     chat_session_id: str | None = None,
+    raise_on_error: bool = False,
 ) -> str:
     try:
         if not router_llm:
@@ -235,6 +633,47 @@ def generate_router_text(
         return content
     except Exception as exc:
         print(f"Router LLM call failed for {HF_ROUTER_MODEL}: {exc}")
+        if raise_on_error:
+            raise
+        return _local_fallback(system_prompt, user_prompt)
+
+
+async def agenerate_router_text(
+    system_prompt: str,
+    user_prompt: str,
+    *,
+    node_name: str = "router",
+    chat_history: list[dict] | None = None,
+    chat_summary: str | None = None,
+    include_history: bool = True,
+    history_turns: int | None = None,
+    patient_id: str | None = None,
+    chat_session_id: str | None = None,
+    raise_on_error: bool = False,
+) -> str:
+    try:
+        if not async_router_llm:
+            raise RuntimeError("Async Hugging Face router client is not configured.")
+        return await _achat_completion(
+            async_router_llm,
+            system_prompt=system_prompt,
+            user_prompt=user_prompt,
+            max_tokens=HF_ROUTER_MAX_TOKENS,
+            temperature=0,
+            model=HF_ROUTER_MODEL,
+            call_type="router",
+            node_name=node_name,
+            chat_history=chat_history,
+            chat_summary=chat_summary,
+            include_history=include_history,
+            history_turns=history_turns,
+            patient_id=patient_id,
+            chat_session_id=chat_session_id,
+        )
+    except Exception as exc:
+        print(f"Async router LLM call failed for {HF_ROUTER_MODEL}: {exc}")
+        if raise_on_error:
+            raise
         return _local_fallback(system_prompt, user_prompt)
 
 
@@ -276,6 +715,41 @@ def summarize_chat_history(
         return chat_summary or ""
 
 
+async def asummarize_chat_history(
+    prompt: str,
+    *,
+    node_name: str = "memory_compactor",
+    chat_history: list[dict] | None = None,
+    chat_summary: str | None = None,
+    include_history: bool = True,
+    history_turns: int | None = None,
+    patient_id: str | None = None,
+    chat_session_id: str | None = None,
+) -> str:
+    try:
+        if not async_summary_llm:
+            raise RuntimeError("Async Hugging Face summary client is not configured.")
+        return await _achat_completion(
+            async_summary_llm,
+            system_prompt=HF_SYSTEM_PROMPT,
+            user_prompt=prompt,
+            max_tokens=HF_SUMMARY_MAX_TOKENS,
+            temperature=0,
+            model=HF_SUMMARY_MODEL,
+            call_type="summary",
+            node_name=node_name,
+            chat_history=chat_history,
+            chat_summary=chat_summary,
+            include_history=include_history,
+            history_turns=history_turns,
+            patient_id=patient_id,
+            chat_session_id=chat_session_id,
+        )
+    except Exception as exc:
+        print(f"Async summary LLM call failed for {HF_SUMMARY_MODEL}: {exc}")
+        return chat_summary or ""
+
+
 def _local_fallback(system_prompt: str, user_prompt: str) -> str:
     lowered = user_prompt.lower()
     latest_message = user_prompt
@@ -302,6 +776,16 @@ def _local_fallback(system_prompt: str, user_prompt: str) -> str:
         if "thank" in latest_lowered:
             return json.dumps({"action": "thanks_only", "profile_fields": [], "requested_department": None, "requested_doctor_name": None, "requested_date": None, "reason": "local thanks fallback"})
         return json.dumps({"action": "continue_current", "profile_fields": [], "requested_department": None, "requested_doctor_name": None, "requested_date": None, "reason": "local understanding fallback"})
+
+    if "Master Supervisor for a hospital AI assistant" in system_prompt:
+        return json.dumps(
+            {
+                "user_action_summary": "Fallback supervisor routing",
+                "next_agent": "continue_current",
+                "update_active_intent": None,
+                "extracted_facts": {},
+            }
+        )
 
     if "Supervisor Router Agent" in system_prompt:
         return json.dumps({"next_agent": "continue_current", "intent": None, "reason": "router fallback"})

@@ -138,6 +138,44 @@ def create_user_with_profile(
     return get_user_profile(str(user_id))
 
 
+def update_patient_profile(
+    patient_id: str,
+    *,
+    health_issues: str | None = None,
+    mobile_number: str | None = None,
+    address: str | None = None,
+):
+    """Update editable profile fields. Only supplied (non-None) fields are changed."""
+    updates: list[str] = []
+    params: list = []
+
+    if health_issues is not None:
+        updates.append("health_issues = %s")
+        params.append((health_issues.strip() or None))
+    if mobile_number is not None:
+        updates.append("mobile_number = %s")
+        params.append(mobile_number.strip() or None)
+    if address is not None:
+        updates.append("address = %s")
+        params.append(address.strip() or None)
+
+    if not updates:
+        return get_user_profile(patient_id)
+
+    params.append(patient_id)
+    with connect_db() as conn:
+        ensure_user_schema(conn)
+        with conn.cursor() as cur:
+            cur.execute(
+                f"UPDATE patient_profiles SET {', '.join(updates)} "
+                "WHERE user_id = %s;",
+                params,
+            )
+        conn.commit()
+
+    return get_user_profile(patient_id)
+
+
 def authenticate_user(email: str, password: str):
     email = _normalise_email(email)
     with connect_db() as conn:

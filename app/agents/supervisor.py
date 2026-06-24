@@ -1,624 +1,1013 @@
+import json
 import re
-from datetime import date, timedelta
+from datetime import date, datetime, timedelta, timezone
 
 from langchain_core.output_parsers import PydanticOutputParser
 
-from app.agents.schemas import SupervisorDecision, UserRequestUnderstanding
+from app.agents.schemas import CombinedSupervisorDecision
 from app.agents.state import GraphState
-from app.inference.llm import generate_router_text
-from app.services.appointments import normalize_department_name
-from app.services.memory_policy import get_memory_policy
+from app.agents.intake_utils import compact_booking_summary, compact_fact_summary, compact_state_summary
+from app.inference.llm import generate_router_text, generate_text
+from app.services.appointments import CANONICAL_DEPARTMENTS, DEPARTMENT_ALIASES, normalize_department_name, update_booking_note
+
+_TEMPORAL_TERMS = frozenset({
+    "today", "tonight", "this morning", "this afternoon", "this evening",
+    "this week", "this month", "now", "currently", "at the moment",
+    "scheduled", "right now", "soon", "shortly", "upcoming", "today's",
+})
 
 
-parser = PydanticOutputParser(pydantic_object=SupervisorDecision)
-understanding_parser = PydanticOutputParser(pydantic_object=UserRequestUnderstanding)
-MEMORY_POLICY = get_memory_policy("supervisor")
+parser = PydanticOutputParser(pydantic_object=CombinedSupervisorDecision)
 
-# 100% STATIC CACHEABLE PREFIXES
-STATIC_UNDERSTANDING_PROMPT = """You are the natural-language understanding layer for a hospital assistant.
-Classify the latest patient message using the conversation history already provided.
+STATIC_SUPERVISOR_PROMPT = """
+You are the Master Supervisor for a hospital AI assistant. You control the flow of conversation.
+You receive the latest user message, the recent chat history, and the current internal system state.
 
-Action meanings:
-- profile_query: asks account/profile details such as name, age, blood group, health issues, phone, email, address.
-- symptom_or_care: describes symptoms, asks medical help, says pain/illness is present, or changes to a new health concern.
-- direct_booking: asks to see/book/consult a doctor, department, specialist, date, or named doctor.
-- booking_lookup: asks to see, list, show, or check upcoming/previous bookings or appointments.
-- cancel_appointment: wants to cancel an appointment.
-- end_chat: wants to end/close/stop the chat.
-- thanks_only: only says thanks/thank you without asking to end.
-- non_medical: asks for something unrelated to healthcare or unsafe, such as weapons, explosives, bombs, crackers, hacking, recipes, homework.
-- continue_current: answers the current question/menu without changing topic.
-- unclear: cannot infer.
+Your job is to parse the user's intent and decide which specialist agent handles the next turn.
 
-If a department, doctor, or appointment date is explicitly requested, extract it.
-If the user says today/tomorrow/next day, convert it to YYYY-MM-DD.
-Appointment dates are allowed only from today through 7 days ahead.
-If the user says only "doctor" without a specific doctor name, leave requested_doctor_name null.
+# CONVERSATION DYNAMICS & CONTEXT RETENTION
+- The user can ask anything at any time. If they ask a random question mid-triage, route them to a QA/general agent, but DO NOT erase the `active_intent` or `collected_data`.
+- If the user provides a short answer like "sure", "yes", or "since morning", look at the `Awaiting` state to understand what they are replying to.
+- If the user wants to change topics entirely (e.g., goes from booking to symptoms), route to the new agent and change the intent.
 
-Return ONLY valid JSON matching this exact structure:
-{"action":"string","profile_fields":["string"],"requested_department":"string or null","requested_doctor_name":"string or null","requested_date":"YYYY-MM-DD or null","reason":"string"}"""
+# AGENT ROUTING RULES
+- `continue_current`: Use when the user answers an intake question, agrees to an assistant's proposal (like forwarding notes), or selects an active menu option.
+- `triage_router`: Use when the user describes NEW symptoms or a new illness.
+- `conversation_agent`: Use when the user is providing follow-up details about their symptoms (duration, onset, triggers).
+- `remedy_agent`: Use when the user explicitly asks for relief, home care, or we have enough symptom data to suggest care.
+- `appointment_booker`: Use when the user wants to book, check availability, or cancel.
+- `appointment_resolver`: Use when the user wants to cancel or change an appointment and there are multiple upcoming bookings.
+- `document_analyzer`: Use when the user uploaded a document and it relates to the current issue.
+- `general_qa`: Use when the user asks a medical question unrelated to their immediate symptoms, or asks about hospital policies.
+- `finish`: Use when the user wants to end the chat or says that's all.
 
-STATIC_SUPERVISOR_PROMPT = """You are the Supervisor Router Agent for a hospital chat graph.
-Your job is to decide whether the latest patient message should continue the current agent state or interrupt/divert to a different agent.
-
-Agent choices:
-- continue_current: patient is answering the current question/menu.
-- triage_router: patient gives new symptoms or changes the medical problem.
-- conversation_agent: patient is providing/needs intake details before remedy.
-- remedy_agent: patient asks for remedy, suggestions, relief, home care, or responds to remedy follow-up.
-- medical_rag: symptoms are known and the patient wants the right department/doctor.
-- appointment_booker: patient wants booking, appointment, doctor selection, slot selection, declines booking, or wants to cancel an appointment.
-- finish: patient clearly ends the chat or says they are done/better.
-
-Rules:
-- If the patient asks for something new, do not trap them in the old awaiting state.
-- Numeric doctor/slot choices, doctor names, slot choices, and booking declines should continue_current.
-- If the patient asks for a remedy while in a booking menu, route to remedy_agent.
-- If the patient asks for a doctor and symptoms are known but department is unknown, route to medical_rag.
-- If the patient asks for a doctor and department/options are already known, route to appointment_booker.
-- If the patient wants to cancel an appointment, route to appointment_booker.
-- If the assistant just asked whether to end the chat, only finish when the patient confirms ending.
-
-Return ONLY valid JSON matching this exact structure:
-{"next_agent":"continue_current|triage_router|conversation_agent|remedy_agent|medical_rag|appointment_booker|finish","intent":"triage_symptoms|direct_booking|null","reason":"string"}"""
-
-KNOWN_DEPARTMENTS = {
-    "general physician": "General Physician", "general": "General Physician", "physician": "General Physician",
-    "gastroenterology": "Gastroenterology", "gastro": "Gastroenterology",
-    "cardiology": "Cardiology", "cardiologist": "Cardiology", "heart": "Cardiology",
-    "neurology": "Neurology", "neurologist": "Neurology",
-    "orthopedics": "Orthopedics", "orthopedic": "Orthopedics", "ortho": "Orthopedics",
-    "oncology": "Oncology", "oncologist": "Oncology",
-    "pulmonology": "Pulmonology", "pulmonologist": "Pulmonology",
-    "psychiatry": "Psychiatry", "psychiatrist": "Psychiatry",
-    "nephrology": "Nephrology", "nephrologist": "Nephrology",
-    "endocrinology": "Endocrinology", "endocrinologist": "Endocrinology",
-    "hematology": "Hematology", "hematologist": "Hematology",
-    "dermatology": "Dermatology", "dermatologist": "Dermatology", "skin": "Dermatology",
+Return ONLY valid JSON:
+{
+  "user_action_summary": "Short description of what the user just did",
+  "next_agent": "<choose from routing rules>",
+  "update_active_intent": "<triage_symptoms | direct_booking | null_if_no_change>",
+  "extracted_facts": {"key": "value", "note": "only include NEW facts extracted from this turn"}
 }
+""".strip()
 
-_DEPARTMENT_HINT_WORDS = {
-    "department",
-    "dept",
-    "doctor",
-    "dr",
-    "specialist",
-    "specialists",
-    "clinic",
-    "consult",
-}
+
+def _clean_json(raw_output: str) -> str:
+    cleaned = (raw_output or "").replace("```json", "").replace("```", "").strip()
+    cleaned = re.sub(
+        r'"update_active_intent"\s*:\s*"null_if_no_change"',
+        '"update_active_intent": null',
+        cleaned,
+    )
+    cleaned = re.sub(
+        r"'update_active_intent'\s*:\s*'null_if_no_change'",
+        '"update_active_intent": null',
+        cleaned,
+    )
+    return cleaned
+
 
 def _route(next_agent: str, **updates):
     return {"next_agent": next_agent, "supervisor_checked_input": True, **updates}
 
-def _close_chat():
-    return _route("finish", awaiting=None, chat_closed=True, final_response="Take care. You can come back anytime if you need help.")
 
-def _clean_json(raw_output: str) -> str:
-    return raw_output.replace("```json", "").replace("```", "").strip()
-
-def _get_minimal_profile(profile: dict | None) -> str:
-    if not isinstance(profile, dict) or not profile:
-        return "Unknown"
-    return f"Name: {profile.get('name', 'Unknown')}, Age: {profile.get('age', 'Unknown')}, Health Issues: {profile.get('health_issues', 'None')}"
-
-def _summarise_appointments(appointments: list[dict] | None, limit: int = 2) -> str:
-    if not appointments: return "None"
-    return "; ".join([f"{a.get('doctor', 'Doctor')} ({a.get('department', 'Dept')}) at {a.get('time', a.get('start_time', 'Unknown'))}" for a in appointments[:limit]])
-
-def _summarise_booking(booking: dict | None) -> str:
-    if not booking: return "None"
-    return f"{booking.get('doctor', 'Doctor')} ({booking.get('department', 'Dept')}) at {booking.get('time', booking.get('start_time', 'Unknown'))}"
-
-def _compact_state_summary(state: GraphState) -> str:
-    parts = [
-        f"awaiting={state.get('awaiting') or 'None'}",
-        f"intent={state.get('intent') or 'None'}",
-        f"symptoms={', '.join(state.get('symptoms') or []) or 'None'}",
-        f"target_department={state.get('target_department') or 'None'}",
-        f"selected_doctor={state.get('selected_doctor_name') or 'None'}",
-        f"booking_active={bool(state.get('booking_active'))}",
-        f"remedy_given={bool(state.get('remedy_given'))}",
-        f"persisting={bool(state.get('persisting'))}",
-        f"chat_closed={bool(state.get('chat_closed'))}",
-        f"confirmed_booking={_summarise_booking(state.get('confirmed_booking'))}"
-    ]
-    return " | ".join(parts)
-
-def _understand_user_request(state: GraphState) -> UserRequestUnderstanding | None:
-    user_input = state.get("user_input") or ""
-    if not user_input.strip():
-        return None
-
-    dynamic_user_prompt = f"""Current date: {date.today().isoformat()}
-Current state: {_compact_state_summary(state)}
-Minimal profile: {_get_minimal_profile(state.get("patient_profile"))}
-Latest message: {user_input}"""
-
-    raw_output = generate_router_text(
-        system_prompt=STATIC_UNDERSTANDING_PROMPT,
-        user_prompt=dynamic_user_prompt,
-        node_name="supervisor",
-        chat_summary=state.get("chat_summary"),
-        include_history=True,
-        history_turns=MEMORY_POLICY.prompt_window_turns,
-        patient_id=str(state.get("patient_id") or ""),
-        chat_session_id=str(state.get("chat_session_id") or ""),
-    )
-    
-    clean_json = _clean_json(raw_output)
-    print(f"User request understanding JSON: {clean_json}")
-
-    try:
-        return understanding_parser.parse(clean_json)
-    except Exception as exc:
-        print(f"User request understanding parse failed: {exc}")
-        return None
-
-def _normalise_text(text: str) -> str:
-    return " ".join(text.strip().lower().replace("?", " ").replace(",", " ").split())
-
-def _extract_requested_department(text: str) -> str | None:
-    lowered = _normalise_text(text)
-    if not lowered:
-        return None
-    for keyword, department in KNOWN_DEPARTMENTS.items():
-        if keyword in lowered:
-            return department
-
-    known_departments = set(KNOWN_DEPARTMENTS.values())
-    words = [word for word in re.findall(r"[a-z]+", lowered) if word not in _DEPARTMENT_HINT_WORDS]
-    for size in range(3, 0, -1):
-        for index in range(len(words) - size + 1):
-            candidate = " ".join(words[index:index + size])
-            normalised = normalize_department_name(candidate)
-            if normalised in known_departments:
-                return normalised
-
-    for marker in ("department", "dept", "specialist", "doctor"):
-        if marker in lowered:
-            prefix = lowered.split(marker, 1)[0].strip()
-            prefix_words = [word for word in re.findall(r"[a-z]+", prefix) if word not in _DEPARTMENT_HINT_WORDS]
-            for size in range(min(3, len(prefix_words)), 0, -1):
-                candidate = " ".join(prefix_words[-size:])
-                normalised = normalize_department_name(candidate)
-                if normalised in known_departments:
-                    return normalised
-    return None
-
-def _looks_like_generic_doctor_request(text: str) -> bool:
-    lowered = _normalise_text(text)
-    if not lowered: return False
-    generic_phrases = ("a doctor", "the doctor", "any doctor", "see a doctor", "see doctor", "see a physician", "need a doctor", "want a doctor", "who is doctor", "doctor in", "doctor for", "specialist")
-    return any(phrase in lowered for phrase in generic_phrases)
-
-def _looks_like_booking_or_department_request(text: str) -> bool:
-    lowered = _normalise_text(text)
-    return any(
-        phrase in lowered
-        for phrase in (
-            "appointment",
-            "book",
-            "doctor",
-            "dr",
-            "department",
-            "specialist",
-            "consult",
-            "see a",
-            "reschedule",
-            "change date",
-            "change appointment",
-            "modify appointment",
-            "update appointment",
-        )
-    )
+def _current_intent(state: GraphState) -> str | None:
+    return state.get("active_intent") or state.get("intent")
 
 
-def _looks_like_reschedule_request(text: str) -> bool:
-    lowered = _normalise_text(text)
-    return any(
-        phrase in lowered
-        for phrase in (
-            "reschedule",
-            "change date",
-            "change my appointment",
-            "change appointment",
-            "modify appointment",
-            "update appointment",
-            "move appointment",
-            "postpone appointment",
-            "another date",
-        )
-    )
+def _current_facts(state: GraphState) -> dict:
+    collected = state.get("collected_facts") or state.get("collected_data") or state.get("collected_info") or {}
+    return dict(collected) if isinstance(collected, dict) else {}
 
-def _looks_like_booking_lookup(text: str) -> bool:
-    lowered = _normalise_text(text)
-    return any(term in lowered for term in ("upcoming booking", "upcoming appointment", "previous booking", "my bookings", "show appointments", "booking history"))
 
-def _looks_like_clinical_note_query(text: str) -> bool:
-    lowered = _normalise_text(text)
-    return any(
-        phrase in lowered
-        for phrase in (
-            "clinical note",
-            "forwarded symptoms",
-            "forwarded these symptoms",
-            "what did you send",
-            "what symptoms were forwarded",
-            "what was forwarded",
-            "symptoms forwarded",
-            "symptoms sent",
-            "note attached",
-            "message to dr",
-            "message to doctor",
-            "tell me about those symptoms",
-            "those symptoms",
-            "that note",
-            "summarize the note",
-            "summarise the note",
-            "summarize what you sent",
-            "summarise what you sent",
-        )
-    )
-
-def _looks_like_non_medical_or_unsafe(text: str) -> bool:
-    lowered = _normalise_text(text)
-    if not lowered: return False
-    unsafe_terms = ("bomb", "explosive", "detonator", "firecracker", "gun", "weapon", "poison", "hack", "malware", "sex", "drug")
-    if any(term in lowered for term in unsafe_terms): return True
-    off_topic_phrases = ("write code", "create website", "stock price", "weather", "movie", "recipe", "homework", "tell me a joke")
-    return any(phrase in lowered for phrase in off_topic_phrases)
-
-def _non_medical_response() -> str:
-    return ("I cannot help with that because this assistant is only for health-related support and doctor appointments. "
-            "If this is urgent, please contact local emergency services. Would you like help with symptoms or booking?")
-
-def _format_booking_lookup_response(state: GraphState) -> str:
-    bookings = state.get("active_appointments") or state.get("confirmed_bookings") or []
-    if not bookings:
-        return "I could not find any upcoming bookings for your account right now. Would you like to book an appointment?"
-    lines = ["Here are your upcoming bookings:"]
-    for index, booking in enumerate(bookings, start=1):
-        doctor = booking.get("doctor") or booking.get("doctor_name") or "Doctor"
-        department = booking.get("department") or "Department not listed"
-        time = booking.get("time") or booking.get("start_time") or "time not listed"
-        can_modify = booking.get("can_modify")
-        suffix = " - can change or cancel" if can_modify else " - locked within 24 hours"
-        note = booking.get("booking_note")
-        note_text = f" - clinical note: {note}" if note else ""
-        lines.append(f"{index}. {doctor} - {department} - {time}{suffix}{note_text}")
-    lines.append("")
-    lines.append("If you want to change an appointment, tell me which one and I will guide you through it.")
-    return "\n".join(lines)
-
-def _format_clinical_note_response(state: GraphState) -> str:
-    bookings = state.get("active_appointments") or state.get("confirmed_bookings") or []
-    latest_booking = state.get("confirmed_booking")
-    if isinstance(latest_booking, dict) and latest_booking.get("booking_note"):
-        note = latest_booking.get("booking_note")
-        doctor = latest_booking.get("doctor") or latest_booking.get("doctor_name") or "your doctor"
-        time = latest_booking.get("time") or latest_booking.get("start_time") or "your appointment"
-        return (
-            f"I forwarded a clinical note to {doctor} for {time}.\n\n"
-            f"Clinical note:\n{note}\n\n"
-            "You can also see it in your upcoming appointment card."
-        )
-
-    for booking in reversed(bookings):
-        if booking.get("booking_note"):
-            doctor = booking.get("doctor") or booking.get("doctor_name") or "your doctor"
-            time = booking.get("time") or booking.get("start_time") or "your appointment"
-            note = booking.get("booking_note")
-            return (
-                f"I forwarded a clinical note to {doctor} for {time}.\n\n"
-                f"Clinical note:\n{note}\n\n"
-                "You can also see it in your upcoming appointment card."
-            )
-
-    if state.get("note_forwarded"):
-        return "I've already forwarded your symptoms, but I could not find the saved clinical note in the current booking context."
-
-    return "I do not see a forwarded clinical note on this booking yet. If you'd like, I can help forward the latest symptoms now."
-
-def _extract_requested_doctor(text: str) -> str | None:
-    original = text.strip()
-    lowered = _normalise_text(original)
-    if "dr" not in lowered and "doctor" not in lowered: return None
-    if _looks_like_generic_doctor_request(original): return None
-    
-    doctor_text = original
-    for prefix in ("book appointment with", "book with", "appointment with", "with"):
-        index = doctor_text.lower().find(prefix)
-        if index >= 0:
-            doctor_text = doctor_text[index + len(prefix):].strip()
-            break
-
-    marker_match = re.search(r"\b(?:dr\.?|doctor)\b", doctor_text, flags=re.IGNORECASE)
-    if marker_match:
-        doctor_text = doctor_text[marker_match.start():].strip()
-        doctor_text = re.sub(r"^\s*(?:dr\.?|doctor)\s+", "", doctor_text, flags=re.IGNORECASE)
-
-    for stop_word in (" for ", " in ", " at ", " on ", " tomorrow", " today", " appointment", " booking", " department", " specialist"):
-        index = doctor_text.lower().find(stop_word)
-        if index > 0: doctor_text = doctor_text[:index].strip()
-
-    doctor_text = doctor_text.strip(" .,-")
-    compact = _normalise_text(doctor_text)
-    if not compact or compact in {"dr", "doctor"}: return None
-    if _looks_like_generic_doctor_request(doctor_text): return None
-    doctor_tokens = [token for token in re.split(r"\s+", doctor_text) if re.search(r"[a-z]", token, flags=re.IGNORECASE)]
-    if len(doctor_tokens) < 2: return None
-    return " ".join(doctor_tokens) or None
-
-def _extract_requested_date(text: str) -> str | None:
-    lowered = _normalise_text(text)
-    today = date.today()
-    if "today" in lowered: return today.isoformat()
-    if "tomorrow" in lowered: return (today + timedelta(days=1)).isoformat()
-    
-    month_match = re.search(r"\b(\d{1,2})(?:st|nd|rd|th)?\s+(january|february|march|april|may|june|july|august|september|october|november|december|jan|feb|mar|apr|jun|jul|aug|sep|sept|oct|nov|dec)\b", lowered)
-    month_numbers = {"jan":1,"january":1,"feb":2,"february":2,"mar":3,"march":3,"apr":4,"april":4,"may":5,"jun":6,"june":6,"jul":7,"july":7,"aug":8,"august":8,"sep":9,"sept":9,"september":9,"oct":10,"october":10,"nov":11,"november":11,"dec":12,"december":12}
-    
-    if month_match:
-        day = int(month_match.group(1))
-        month = month_numbers[month_match.group(2)]
-        try:
-            parsed = date(today.year, month, day)
-            if parsed < today: parsed = date(today.year + 1, month, day)
-            return parsed.isoformat()
-        except ValueError:
-            return None
-
-    for word in lowered.split():
-        try:
-            return date.fromisoformat(word).isoformat()
-        except ValueError:
+def _current_messages(state: GraphState) -> list[dict]:
+    messages = state.get("messages") or state.get("recent_history") or state.get("conversation_history") or []
+    normalized: list[dict] = []
+    for message in messages[-4:]:
+        if not isinstance(message, dict):
             continue
+        role = str(message.get("role") or "user").strip().lower()
+        if role == "patient":
+            role = "user"
+        elif role not in {"system", "user", "assistant", "tool"}:
+            role = "user"
+        content = message.get("content")
+        if content is None:
+            content = message.get("text", "")
+        normalized.append({"role": role, "content": str(content)})
+    return normalized
+
+
+def _format_facts(facts: dict) -> str:
+    if not facts:
+        return "None"
+    parts = []
+    for key, value in facts.items():
+        if value in (None, "", [], {}):
+            continue
+        parts.append(f"{key}={value}")
+    return "; ".join(parts) if parts else "None"
+
+
+def _format_bookings(bookings: list[dict] | None) -> str:
+    if not bookings:
+        return "None"
+    parts = []
+    for booking in bookings[:3]:
+        if not isinstance(booking, dict):
+            continue
+        doctor = booking.get("doctor") or booking.get("doctor_name") or "Doctor"
+        time = booking.get("time") or booking.get("start_time")
+        if doctor and time:
+            parts.append(f"{doctor} @ {time}")
+        elif doctor:
+            parts.append(str(doctor))
+    return " | ".join(parts) if parts else "None"
+
+
+def _extract_requested_department(text: str | None) -> str | None:
+    if not text:
+        return None
+
+    cleaned = " ".join(str(text).lower().replace("-", " ").replace("/", " ").split())
+    patterns = (
+        r"department(?:\s+of)?\s+([a-z ]+)",
+        r"with\s+the\s+([a-z ]+?)\s+department",
+        r"in\s+the\s+([a-z ]+?)\s+department",
+        r"for\s+the\s+([a-z ]+?)\s+department",
+    )
+    for pattern in patterns:
+        match = re.search(pattern, cleaned)
+        if match:
+            candidate = match.group(1).strip()
+            if candidate:
+                return normalize_department_name(candidate)
+
+    for candidate in CANONICAL_DEPARTMENTS:
+        if candidate and candidate.lower() in cleaned:
+            return normalize_department_name(candidate)
+
     return None
 
-def _normalise_requested_date(value: str | None, user_input: str) -> str | None:
-    if value:
-        try: return date.fromisoformat(value).isoformat()
-        except ValueError: pass
-    return _extract_requested_date(user_input)
 
-def _looks_like_profile_query(text: str) -> bool:
-    lowered = _normalise_text(text)
-    return any(term in lowered for term in ("my name", "my age", "blood group", "health issue", "mobile number", "my email", "my address", "my profile", "who am i"))
-
-def _looks_like_simple_thanks(text: str) -> bool:
-    return _normalise_text(text) in {"thanks", "thank you", "thankyou", "thanks a lot", "thank you so much"}
-
-def _has_active_care_context(state: GraphState) -> bool:
-    return bool(state.get("awaiting") or state.get("intent") or state.get("symptoms") or state.get("target_department") or state.get("booking_active") or state.get("remedy_given"))
-
-def _looks_like_symptom_or_care_request(text: str) -> bool:
-    lowered = _normalise_text(text)
-    return any(term in lowered for term in ("pain", "ache", "fever", "cough", "cold", "nausea", "vomit", "dizzy", "headache", "injury", "swelling", "bleeding", "rash", "itching", "chest", "leg", "back", "symptom", "not feeling well", "medical help"))
-
-def _should_interrupt_current_menu_for_symptoms(state: GraphState, text: str) -> bool:
-    if not _looks_like_symptom_or_care_request(text): return False
-    return state.get("awaiting") in {"doctor_selection", "slot_selection", "cancellation_selection", "end_confirmation"}
-
-def _route_new_symptoms():
-    return _route(
-        "triage_router",
-        awaiting=None,
-        intent=None,
-        remedy_requested=None,
-        booking_declined=None,
-        doctor_options=[],
-        slot_options=[],
-        cancellation_options=[],
-        reschedule_options=[],
-        reschedule_date_options=[],
-        reschedule_slot_options=[],
-        selected_booking_id=None,
-        target_department=None,
-        requested_department=None,
-        requested_doctor_name=None,
+def _state_summary(state: GraphState) -> str:
+    return (
+        f"State: Intent=[{_current_intent(state) or 'None'}] | "
+        f"Awaiting=[{state.get('awaiting') or 'None'}] | "
+        f"Known Facts: [{_format_facts(_current_facts(state))}] | "
+        f"Doctors: [{_format_bookings(state.get('upcoming_bookings') or state.get('confirmed_bookings'))}] | "
+        f"File: [{state.get('pending_file_name') or 'None'}]"
     )
 
-def _profile_response(state: GraphState, requested_fields: list[str] | None = None) -> str | None:
-    profile = state.get("patient_profile") or {}
-    if not profile: return "I could not find your profile details in this session. Please log in again."
-    return f"Hello {profile.get('name', 'there')}, your age is {profile.get('age', 'unknown')} and known health issues are {profile.get('health_issues', 'none')}."
+
+def _should_route_to_resolver(state: GraphState, user_input: str) -> bool:
+    lowered = " ".join((user_input or "").lower().split())
+    if not lowered or not any(term in lowered for term in ("cancel", "change", "modify", "resched", "reschedule")):
+        return False
+    bookings = state.get("upcoming_bookings") or state.get("confirmed_bookings") or []
+    return len(bookings) > 1
+
+
+def _merge_unique_dicts(existing: list[dict] | None, incoming: list[dict] | None) -> list[dict]:
+    merged: list[dict] = []
+    seen: set[tuple[str | None, str | None]] = set()
+
+    for item in list(existing or []) + list(incoming or []):
+        if not isinstance(item, dict):
+            continue
+        booking_id = str(item.get("booking_id") or "") or None
+        slot_id = str(item.get("slot_id") or "") or None
+        key = (booking_id, slot_id)
+        if key in seen:
+            continue
+        seen.add(key)
+        merged.append(item)
+
+    return merged
+
+
+def _latest_booking(state: GraphState) -> dict | None:
+    for source in (
+        state.get("upcoming_bookings"),
+        state.get("confirmed_bookings"),
+        state.get("active_appointments"),
+    ):
+        for booking in reversed(source or []):
+            if isinstance(booking, dict) and (booking.get("booking_id") or booking.get("slot_id")):
+                return booking
+    booking = state.get("confirmed_booking")
+    if isinstance(booking, dict) and (booking.get("booking_id") or booking.get("slot_id")):
+        return booking
+    return None
+
+
+def _is_affirmative(text: str) -> bool:
+    lowered = " ".join((text or "").lower().replace("'", "").split())
+    return lowered in {
+        "yes",
+        "y",
+        "yeah",
+        "yep",
+        "sure",
+        "ok",
+        "okay",
+        "please do",
+        "do it",
+        "go ahead",
+        "forward it",
+        "send it",
+    } or any(phrase in lowered for phrase in ("yes please", "sure please", "go ahead", "please forward"))
+
+
+def _looks_like_thanks(text: str) -> bool:
+    lowered = " ".join((text or "").lower().replace("'", "").split())
+    if not lowered:
+        return False
+    return any(
+        phrase in lowered
+        for phrase in (
+            "thank you",
+            "thanks",
+            "thx",
+            "appreciate it",
+        )
+    )
+
 
 def _looks_like_end_chat(text: str) -> bool:
-    lowered = text.strip().lower()
-    return lowered in {"bye", "goodbye", "end", "end chat", "close chat", "quit", "done", "that's all", "nothing else"} or any(phrase in lowered for phrase in ("end the chat", "stop the chat", "finish the chat", "i am done"))
+    lowered = " ".join((text or "").lower().replace("'", "").split())
+    if not lowered:
+        return False
+    return any(
+        phrase in lowered
+        for phrase in (
+            "end the chat",
+            "end chat",
+            "close the chat",
+            "that's all",
+            "thats all",
+            "that is all",
+            "i am done",
+            "bye",
+            "goodbye",
+            "no more",
+            "nothing else",
+        )
+    )
 
-def _looks_like_more_help(text: str) -> bool:
-    lowered = text.strip().lower()
-    return lowered in {"no", "continue", "more help", "help me"} or any(phrase in lowered for phrase in ("need more", "something else", "other help"))
 
-def _confirms_end_chat(text: str) -> bool:
-    lowered = text.strip().lower()
-    return lowered in {"yes", "y", "yeah", "yep", "sure", "ok", "okay", "confirm"} or _looks_like_end_chat(lowered)
+def _looks_like_billing_request(text: str) -> bool:
+    lowered = " ".join((text or "").lower().replace("'", "").split())
+    return any(term in lowered for term in ("billing", "payment", "invoice", "insurance", "bill"))
 
-def _dynamic_route(state: GraphState) -> dict | None:
-    if state.get("supervisor_checked_input"): return None
+
+def _looks_like_upcoming_booking_query(text: str) -> bool:
+    lowered = " ".join((text or "").lower().replace("'", "").split())
+    return any(term in lowered for term in ("upcoming booking", "upcoming bookings", "my bookings", "my appointment", "my appointments"))
+
+
+def _looks_like_clinical_note_query(text: str) -> bool:
+    lowered = " ".join((text or "").lower().replace("'", "").split())
+    return any(term in lowered for term in ("what symptoms were forwarded", "clinical note", "forwarded to my doctor", "forwarded notes"))
+
+
+def _looks_like_add_symptoms_request(text: str) -> bool:
+    lowered = " ".join((text or "").lower().replace("'", "").split())
+    return any(term in lowered for term in ("add these symptoms", "please add these symptoms", "forward these symptoms", "send these symptoms"))
+
+
+def _looks_like_new_symptoms(text: str) -> bool:
+    lowered = " ".join((text or "").lower().replace("'", "").split())
+    return any(term in lowered for term in (
+        "fever", "vomiting", "vomit", "pain", "burn", "rash", "cough", "nausea", "diarrhea",
+        "headache", "fatigue", "tired", "exhausted", "dizzy", "dizziness", "bleeding", "bleed",
+        "swollen", "swelling", "ache", "cramp", "chest", "breathless", "itching", "sore",
+        "weakness", "numb", "tingling", "injury", "hurt",
+    ))
+
+
+def _looks_like_general_doctor_request(text: str) -> bool:
+    lowered = " ".join((text or "").lower().replace("'", "").split())
+    return any(term in lowered for term in (
+        "see a doctor", "want to see a doctor", "doctor appointment", "need a doctor",
+        "show me a doctor", "find me a doctor", "book a doctor", "want a doctor",
+        "consult a doctor", "talk to a doctor", "speak to a doctor", "meet a doctor",
+        "book an appointment", "book appointment", "want to book", "see a specialist",
+        "see a specialist", "find a specialist", "book a specialist", "see a physician",
+        "want to see", "want to visit", "visit a doctor",
+    ))
+
+
+def _looks_like_remedy_request(text: str) -> bool:
+    lowered = " ".join((text or "").lower().replace("'", "").split())
+    return any(term in lowered for term in (
+        "remedy", "remedies", "home remedy", "what can i take", "what should i take",
+        "medicine for", "medication for", "any cure", "natural cure", "relieve",
+        "relief", "home care", "home treatment", "treat this", "treat it",
+        "what can i do", "how to treat", "how do i treat", "manage this",
+    ))
+
+
+def _looks_like_unsafe_non_medical(text: str) -> bool:
+    lowered = " ".join((text or "").lower().replace("'", "").split())
+    return any(term in lowered for term in ("bomb", "weapon", "hack", "kill", "make poison"))
+
+
+def _fallback_profile_response(state: GraphState) -> dict | None:
+    text = (state.get("user_input") or "").lower()
+    profile = state.get("patient_profile") or {}
+    if not profile:
+        return None
+    if any(term in text for term in ("my name", "my age", "who am i", "what is my name", "what is my age")):
+        response = f"Your profile shows {profile.get('name', 'Unknown')} and age {profile.get('age', 'Unknown')}. I am only for health-related support, so tell me your symptoms or ask about a doctor appointment."
+        return _route("finish", awaiting=None, final_response=response)
+    return None
+
+
+def _heuristic_supervisor_route(state: GraphState) -> dict | None:
     user_input = (state.get("user_input") or "").strip()
-    if not user_input: return None
-
-    understanding = _understand_user_request(state)
-    action = understanding.action if understanding else None
-
-    if action == "profile_query" or (not understanding and _looks_like_profile_query(user_input)):
-        return _route("finish", final_response=_profile_response(state, understanding.profile_fields if understanding else None))
-
-    if action == "non_medical" or _looks_like_non_medical_or_unsafe(user_input):
-        return _route("finish", awaiting=None, chat_closed=False, final_response=_non_medical_response())
-
-    if action == "booking_lookup" or _looks_like_booking_lookup(user_input):
-        return _route("finish", awaiting=state.get("awaiting"), chat_closed=False, final_response=_format_booking_lookup_response(state))
-
-    if _looks_like_clinical_note_query(user_input):
-        return _route("finish", awaiting=state.get("awaiting"), chat_closed=False, final_response=_format_clinical_note_response(state))
-
-    if action == "cancel_appointment":
-        return _route("appointment_booker", intent="direct_booking", awaiting=None)
-
-    if _looks_like_reschedule_request(user_input):
-        return _route("appointment_booker", intent="direct_booking", awaiting=None)
-
-    requested_department = understanding.requested_department if understanding else None
-    requested_doctor_name = understanding.requested_doctor_name if understanding else None
-    requested_date = _normalise_requested_date(understanding.requested_date if understanding else None, user_input)
-
-    if understanding and action == "direct_booking":
-        can_override_department = _looks_like_booking_or_department_request(user_input)
-        if not requested_department and can_override_department: requested_department = _extract_requested_department(user_input)
-        if not requested_doctor_name: requested_doctor_name = _extract_requested_doctor(user_input)
-
-    if not understanding:
-        requested_department = _extract_requested_department(user_input) if _looks_like_booking_or_department_request(user_input) else None
-        requested_doctor_name = _extract_requested_doctor(user_input)
-        requested_date = _extract_requested_date(user_input)
-
-    if action == "direct_booking" and not requested_department and not requested_doctor_name and state.get("symptoms") and not state.get("target_department"):
-        return _route("medical_rag", intent="direct_booking", awaiting=None, requested_date=requested_date)
-
-    if action == "direct_booking" or requested_department or requested_doctor_name:
-        updates = {"intent": "direct_booking", "awaiting": None, "doctor_options": [], "slot_options": [], "department_match_source": "direct_request", "department_match_confidence": 1.0, "department_match_reason": "User explicitly requested a department or doctor.", "retrieval_attempted": False, "retrieval_confidence": 0.0}
-        if requested_department:
-            updates["target_department"] = requested_department
-            updates["requested_department"] = requested_department
-        if requested_doctor_name: updates["requested_doctor_name"] = requested_doctor_name
-        if requested_date: updates["requested_date"] = requested_date
-        return _route("appointment_booker", **updates)
-
-    if requested_date and (state.get("target_department") or state.get("selected_doctor_id") or state.get("doctor_options") or state.get("intent") == "direct_booking"):
-        return _route("appointment_booker", intent="direct_booking", awaiting=None, requested_date=requested_date)
-
-    if _should_interrupt_current_menu_for_symptoms(state, user_input):
-        return _route_new_symptoms()
-
-    if state.get("awaiting") == "end_confirmation":
-        if action == "symptom_or_care": return _route_new_symptoms()
-        if _looks_like_reschedule_request(user_input):
-            return _route("appointment_booker", intent="direct_booking", awaiting=None)
-        if _confirms_end_chat(user_input): return _close_chat()
-        if _looks_like_more_help(user_input):
-            return _route("finish", awaiting=None, chat_closed=False, intent=None, final_response="Sure, I am still here. Tell me what you need next - symptoms, another appointment, or appointment cancellation.")
-
-    if action == "thanks_only" and not _has_active_care_context(state):
-        return _route("finish", awaiting=None, chat_closed=False, final_response="You're welcome. Tell me your symptoms, or let me know if you want to book or cancel an appointment.")
-
-    if action == "end_chat" or (not understanding and _looks_like_end_chat(user_input)):
-        return _route("finish", awaiting="end_confirmation", chat_closed=False, final_response="Would you like to end the chat now? Reply yes to end, or tell me what else you need help with.")
-
-    if not state.get("intent") and not state.get("awaiting"):
+    if not user_input:
         return None
 
-    dynamic_user_prompt = f"""Current date: {date.today().isoformat()}
-Current state: {_compact_state_summary(state)}
-Minimal profile: {_get_minimal_profile(state.get("patient_profile"))}
-Latest patient message: {user_input}"""
+    lowered = " ".join(user_input.lower().replace("'", "").split())
+    awaiting = state.get("awaiting")
+    profile_route = _fallback_profile_response(state)
+    if profile_route:
+        return profile_route
+
+    if _looks_like_unsafe_non_medical(lowered):
+        return _route(
+            "finish",
+            awaiting=None,
+            chat_closed=False,
+            final_response=(
+                "I am only for health-related support, symptoms, and doctor appointments. "
+                "If you need medical guidance, tell me your symptoms or ask about a doctor appointment."
+            ),
+        )
+
+    if _looks_like_end_chat(lowered):
+        return _route(
+            "finish",
+            awaiting=None,
+            chat_closed=True,
+            final_response="The chat is now closed. Take care, and you can start a new chat anytime if you need help again.",
+        )
+
+    if _looks_like_thanks(lowered):
+        return _route(
+            "finish",
+            awaiting=None,
+            chat_closed=False,
+            final_response="You're welcome. Tell me your symptoms if you still need health-related support.",
+        )
+
+    # Remedy persisting: go find the right department immediately without an LLM call.
+    if state.get("persisting") and not state.get("target_department") and state.get("symptoms"):
+        return _route(
+            "medical_rag",
+            active_intent="direct_booking",
+            intent="direct_booking",
+            awaiting=None,
+        )
+
+    if awaiting == "end_confirmation":
+        if _looks_like_new_symptoms(lowered):
+            return _route(
+                "triage_router",
+                awaiting=None,
+                intent=None,
+                active_intent=None,
+                doctor_options=[],
+                slot_options=[],
+                remedy_requested=False,
+            )
+        if _is_affirmative(lowered):
+            return _route(
+                "finish",
+                awaiting=None,
+                chat_closed=True,
+                final_response="The chat is now closed. Take care, and you can start a new chat anytime if you need help again.",
+            )
+        if _looks_like_thanks(lowered):
+            return _route(
+                "finish",
+                awaiting=None,
+                chat_closed=False,
+                final_response="You're welcome. Tell me your symptoms if you still need health-related support.",
+            )
+        return _route(
+            "finish",
+            awaiting="end_confirmation",
+            chat_closed=False,
+            final_response="reply yes to end the chat, or tell me your symptoms if you need more help.",
+        )
+
+    # Remedy-check: route to triage only for unambiguously NEW symptoms (fever,
+    # vomiting, rash, etc.) — not for "pain" or "ache" which are almost always
+    # the same existing symptom the patient is describing as persisting.
+    _UNAMBIGUOUS_NEW_SYMPTOMS = frozenset({
+        "fever", "vomiting", "vomit", "rash", "cough", "nausea", "diarrhea",
+        "headache", "fatigue", "dizzy", "dizziness", "bleeding", "bleed",
+        "swollen", "swelling", "cramp", "breathless", "itching",
+    })
+    if awaiting == "remedy_check" and any(term in lowered for term in _UNAMBIGUOUS_NEW_SYMPTOMS):
+        return _route(
+            "triage_router",
+            awaiting=None,
+            intent=None,
+            active_intent=None,
+            doctor_options=[],
+            slot_options=[],
+            remedy_requested=False,
+        )
+
+    if awaiting == "conversation":
+        if _looks_like_remedy_request(lowered) and state.get("symptoms"):
+            return _route("remedy_agent", awaiting=None, remedy_requested=True)
+        if _looks_like_general_doctor_request(lowered) and state.get("symptoms"):
+            return _route(
+                "medical_rag",
+                active_intent="direct_booking",
+                intent="direct_booking",
+                awaiting=None,
+            )
+        if (
+            not _looks_like_end_chat(lowered)
+            and not _looks_like_thanks(lowered)
+            and not _extract_requested_department(user_input)
+            and not _looks_like_upcoming_booking_query(lowered)
+            and not _looks_like_billing_request(lowered)
+            and not _looks_like_clinical_note_query(lowered)
+            and not _looks_like_add_symptoms_request(lowered)
+        ):
+            return _route("conversation_agent")
+
+    if _looks_like_billing_request(lowered):
+        return _route(
+            "finish",
+            awaiting=None,
+            chat_closed=False,
+            final_response="For billing or payment questions, please contact the hospital help desk. I can still help with symptoms or doctor appointments.",
+        )
+
+    if _looks_like_clinical_note_query(lowered):
+        booking = _latest_booking(state)
+        note = None
+        if booking:
+            note = booking.get("booking_note")
+        if note:
+            response = f"The clinical note forwarded to {booking.get('doctor') or booking.get('doctor_name') or 'your doctor'} was: {note}"
+        else:
+            response = "I could not find a forwarded clinical note in your current booking."
+        return _route("finish", awaiting=None, chat_closed=False, final_response=response)
+
+    if _looks_like_upcoming_booking_query(lowered):
+        bookings = state.get("upcoming_bookings") or state.get("confirmed_bookings") or state.get("active_appointments") or []
+        if bookings:
+            lines = []
+            for booking in bookings[:3]:
+                doctor = booking.get("doctor") or booking.get("doctor_name") or "Doctor"
+                time = booking.get("time") or booking.get("start_time") or "Unknown time"
+                lines.append(f"{doctor} at {time}")
+            response = "Your upcoming bookings are:\n" + "\n".join(lines)
+        else:
+            response = "I could not find any upcoming bookings right now."
+        return _route("finish", awaiting=None, chat_closed=False, final_response=response)
+
+    if _looks_like_add_symptoms_request(lowered) and (state.get("confirmed_booking") or state.get("upcoming_bookings")):
+        return _route("remedy_agent", awaiting=None, remedy_requested=True)
+
+    requested_department = _extract_requested_department(user_input)
+    if requested_department:
+        return _route(
+            "appointment_booker",
+            active_intent="direct_booking",
+            intent="direct_booking",
+            requested_department=requested_department,
+            target_department=requested_department,
+            awaiting=None,
+        )
+
+    if _looks_like_general_doctor_request(lowered) and state.get("symptoms"):
+        return _route(
+            "medical_rag",
+            active_intent="direct_booking",
+            intent="direct_booking",
+            awaiting=None,
+        )
+
+    if _looks_like_remedy_request(lowered) and state.get("symptoms"):
+        return _route("remedy_agent", awaiting=None, remedy_requested=True)
+
+    # Fast-path for known booking sub-states: skip the LLM when the user is
+    # simply picking from a menu we showed them. Special queries (upcoming
+    # bookings, billing, etc.) are handled above and take priority.
+    if awaiting in {
+        "doctor_selection",
+        "slot_selection",
+        "cancellation_selection",
+        "date_selection",
+        "reschedule_selection",
+        "reschedule_date_selection",
+        "reschedule_slot_selection",
+        "department_selection",
+        "symptom_follow_up",
+    }:
+        return _route("appointment_booker")
+
+    if awaiting == "appointment_resolver":
+        return _route("appointment_resolver", awaiting="appointment_resolver")
+
+    # Only re-triage if intake hasn't started yet (no questions asked).
+    # If we're mid-intake (questions_asked is non-empty), fall through to the
+    # LLM supervisor which has full context — prevents greeting resets.
+    if (
+        state.get("symptoms")
+        and not state.get("target_department")
+        and not state.get("requested_department")
+        and not state.get("questions_asked")
+    ):
+        return _route(
+            "triage_router",
+            active_intent=None,
+            intent=None,
+            awaiting=None,
+            doctor_options=[],
+            slot_options=[],
+        )
+
+    return None
+
+
+def _summarise_clinical_note(state: GraphState, user_text: str | None = None) -> str:
+    symptoms = [str(item).strip() for item in (state.get("symptoms") or []) if str(item).strip()]
+    collected = _current_facts(state)
+    note_parts: list[str] = []
+
+    if symptoms:
+        note_parts.append(f"Reported symptoms: {', '.join(symptoms)}")
+
+    for label, keys in (
+        ("Duration", ("duration",)),
+        ("Location", ("location",)),
+        ("Trigger/cause", ("cause", "trigger", "onset")),
+        ("Pattern", ("severity_pattern", "pattern")),
+        ("Associated symptoms", ("associated_symptoms",)),
+        ("Relevant history", ("history", "existing_conditions")),
+        ("Medications", ("medications",)),
+        ("Allergies", ("allergies",)),
+    ):
+        value = next((collected.get(key) for key in keys if collected.get(key)), None)
+        if value:
+            note_parts.append(f"{label}: {value}")
+
+    if state.get("remedy_text"):
+        note_parts.append(f"Recent remedy advice: {' '.join(str(state['remedy_text']).split())[:220]}")
+
+    if user_text and user_text.strip():
+        note_parts.append(f"Patient reply: {user_text.strip()}")
+
+    if not note_parts:
+        return "Patient requested the latest symptoms be forwarded to the upcoming doctor."
+
+    return "Clinical note forwarded from chat: " + "; ".join(note_parts)
+
+
+def _sync_state_aliases(updates: dict) -> dict:
+    synced = dict(updates)
+
+    if "session_id" in synced and "chat_session_id" not in synced:
+        synced["chat_session_id"] = synced["session_id"]
+    if "chat_session_id" in synced and "session_id" not in synced:
+        synced["session_id"] = synced["chat_session_id"]
+
+    if "active_intent" in synced and "intent" not in synced:
+        synced["intent"] = synced["active_intent"]
+    if "intent" in synced and "active_intent" not in synced:
+        synced["active_intent"] = synced["intent"]
+
+    if "collected_facts" in synced and "collected_data" not in synced:
+        synced["collected_data"] = synced["collected_facts"]
+    if "collected_data" in synced and "collected_facts" not in synced:
+        synced["collected_facts"] = synced["collected_data"]
+    if "collected_data" in synced and "collected_info" not in synced:
+        synced["collected_info"] = synced["collected_data"]
+    if "collected_info" in synced and "collected_data" not in synced:
+        synced["collected_data"] = synced["collected_info"]
+
+    if "upcoming_bookings" in synced:
+        synced["confirmed_bookings"] = list(synced["upcoming_bookings"])
+        synced["confirmed_booking"] = synced["upcoming_bookings"][-1] if synced["upcoming_bookings"] else None
+        synced["active_appointments"] = synced.get("active_appointments") or list(synced["upcoming_bookings"])
+    elif "confirmed_bookings" in synced:
+        synced["upcoming_bookings"] = list(synced["confirmed_bookings"])
+        synced["confirmed_booking"] = synced["confirmed_bookings"][-1] if synced["confirmed_bookings"] else None
+        synced["active_appointments"] = synced.get("active_appointments") or list(synced["confirmed_bookings"])
+
+    return synced
+
+
+def _apply_extracted_facts(state: GraphState, extracted_facts: dict | None) -> dict:
+    if not isinstance(extracted_facts, dict):
+        return {}
+
+    updates: dict = {}
+    collected = _current_facts(state)
+    upcoming_bookings = list(state.get("upcoming_bookings") or state.get("confirmed_bookings") or [])
+
+    for key, value in extracted_facts.items():
+        if value in (None, "", [], {}):
+            continue
+        if key == "note":
+            continue
+        if key in {"active_intent", "intent", "update_active_intent"}:
+            updates["active_intent"] = value
+            continue
+        if key in {"collected_data", "collected_info"} and isinstance(value, dict):
+            collected.update(value)
+            continue
+        if key == "upcoming_bookings" and isinstance(value, list):
+            upcoming_bookings = _merge_unique_dicts(upcoming_bookings, value)
+            continue
+        if key == "symptoms" and isinstance(value, list):
+            updates["symptoms"] = list(dict.fromkeys((state.get("symptoms") or []) + [str(item) for item in value if str(item).strip()]))
+            continue
+        collected[key] = value
+
+    if collected:
+        updates["collected_facts"] = collected
+        updates["collected_data"] = collected
+    if upcoming_bookings:
+        updates["upcoming_bookings"] = upcoming_bookings
+
+    return updates
+
+
+def _temporal_context_injection(user_input: str) -> str:
+    """
+    Pure string-matching step — no LLM call.
+    If the user's message contains time-sensitive terms, prepend a hidden
+    temporal context block so downstream agents know the current time.
+    """
+    lowered = user_input.lower()
+    if not any(term in lowered for term in _TEMPORAL_TERMS):
+        return user_input
+    now = datetime.now(timezone.utc)
+    tag = (
+        f"[Temporal Context: Current time is {now.strftime('%H:%M')} UTC, "
+        f"Date is {now.strftime('%Y-%m-%d')}, "
+        f"Day is {now.strftime('%A')}]\n"
+    )
+    return tag + user_input
+
+
+def _generate_supervisor_decision(state: GraphState) -> CombinedSupervisorDecision | None:
+    user_input = (state.get("user_input") or "").strip()
+    if not user_input:
+        return None
+
+    user_input_with_context = _temporal_context_injection(user_input)
+    dynamic_user_prompt = f"""{_state_summary(state)}
+Latest user message: {user_input_with_context}"""
 
     raw_output = generate_router_text(
         system_prompt=STATIC_SUPERVISOR_PROMPT,
         user_prompt=dynamic_user_prompt,
         node_name="supervisor",
+        chat_history=_current_messages(state),
         chat_summary=state.get("chat_summary"),
         include_history=True,
-        history_turns=MEMORY_POLICY.prompt_window_turns,
+        history_turns=4,
         patient_id=str(state.get("patient_id") or ""),
         chat_session_id=str(state.get("chat_session_id") or ""),
+        raise_on_error=True,
     )
-    
+
     clean_json = _clean_json(raw_output)
     print(f"Supervisor router JSON: {clean_json}")
 
     try:
-        decision = parser.parse(clean_json)
+        return parser.parse(clean_json)
     except Exception as exc:
         print(f"Supervisor router parse failed: {exc}")
         return None
 
-    if decision.next_agent == "continue_current":
-        return None
 
-    next_agent = decision.next_agent
-    updates = {}
-    if decision.intent: updates["intent"] = decision.intent
+def _fallback_route_after_node(state: GraphState) -> str:
+    awaiting = state.get("awaiting")
+    active_intent = _current_intent(state)
 
-    if next_agent == "remedy_agent":
-        updates.update({"awaiting": None, "intent": updates.get("intent") or "triage_symptoms", "remedy_requested": True, "doctor_options": [], "slot_options": []})
-        if not state.get("symptoms"): next_agent = "triage_router"
+    if state.get("final_response"):
+        return "finish"
 
-    if next_agent in {"medical_rag", "appointment_booker"}:
-        updates["intent"] = "direct_booking"
-        updates["awaiting"] = None
-        can_override_department = _looks_like_booking_or_department_request(user_input)
-        requested_department = _extract_requested_department(user_input) if can_override_department else None
-        requested_doctor_name = _extract_requested_doctor(user_input)
-        requested_date = _extract_requested_date(user_input)
-        updates["department_match_source"] = "direct_request"
-        updates["department_match_confidence"] = 1.0
-        updates["department_match_reason"] = "User explicitly requested a department or doctor."
-        updates["retrieval_attempted"] = False
-        updates["retrieval_confidence"] = 0.0
-        if requested_department:
-            updates["target_department"] = requested_department
-            updates["requested_department"] = requested_department
-        if requested_doctor_name: updates["requested_doctor_name"] = requested_doctor_name
-        if requested_date: updates["requested_date"] = requested_date
-        
-        if next_agent == "medical_rag" and not state.get("symptoms"):
-            next_agent = "triage_router"
-        elif next_agent == "appointment_booker" and state.get("symptoms") and not state.get("target_department") and not requested_department and not requested_doctor_name:
-            next_agent = "medical_rag"
+    if state.get("chat_closed"):
+        return "finish"
 
-    if next_agent == "triage_router":
-        updates.update({
-            "awaiting": None,
-            "intent": None,
-            "remedy_requested": None,
-            "booking_declined": None,
-            "doctor_options": [],
-            "slot_options": [],
-            "reschedule_options": [],
-            "reschedule_date_options": [],
-            "reschedule_slot_options": [],
-            "selected_booking_id": None,
-        })
+    if state.get("note_forwarded") and not awaiting:
+        return "finish"
 
-    if next_agent == "finish":
-        updates.update({"awaiting": None, "chat_closed": True, "final_response": "Take care. You can come back anytime if you need help."})
+    if awaiting == "remedy_check":
+        return "remedy_agent"
 
-    return _route(next_agent, **updates)
+    if awaiting == "conversation":
+        return "conversation_agent"
+
+    if awaiting == "file_clarification":
+        return "document_analyzer"
+
+    if awaiting == "appointment_resolver":
+        return "appointment_resolver"
+
+    if awaiting in {
+        "doctor_selection",
+        "slot_selection",
+        "cancellation_selection",
+        "date_selection",
+        "reschedule_selection",
+        "reschedule_date_selection",
+        "reschedule_slot_selection",
+        "department_selection",
+        "symptom_follow_up",
+    }:
+        return "appointment_booker"
+
+    if active_intent == "direct_booking":
+        if state.get("target_department") or state.get("requested_department") or state.get("requested_doctor_name"):
+            return "appointment_booker"
+        return "medical_rag"
+
+    # When the remedy didn't help, skip back to RAG for department matching.
+    if state.get("persisting") and not state.get("target_department"):
+        return "medical_rag"
+
+    if active_intent == "triage_symptoms":
+        if state.get("remedy_requested") or state.get("remedy_given"):
+            return "remedy_agent"
+        return "conversation_agent"
+
+    if state.get("symptoms"):
+        return "conversation_agent"
+
+    return "finish"
+
+
+def continue_current_node(state: GraphState):
+    user_input = (state.get("user_input") or "").strip()
+    awaiting = state.get("awaiting")
+    history = list(state.get("messages") or state.get("conversation_history") or [])
+
+    if awaiting == "file_clarification":
+        response = "I see you uploaded a document. Is this regarding your current symptom, or is this a completely new issue?"
+        history.append({"role": "assistant", "text": response})
+        return {
+            "awaiting": "file_clarification",
+            "conversation_history": history,
+            "messages": history[-10:],
+            "final_response": response,
+        }
+
+    if awaiting == "remedy_check" and user_input and _is_affirmative(user_input):
+        booking = _latest_booking(state)
+        if not booking:
+            response = (
+                "I can prepare the clinical note, but I could not find an upcoming booking to attach it to."
+            )
+            history.append({"role": "assistant", "text": response})
+            return {
+                "awaiting": None,
+                "note_forwarded": False,
+                "conversation_history": history,
+                "messages": history[-10:],
+                "final_response": response,
+            }
+
+        booking_note = _summarise_clinical_note(state, user_input)
+        updated_booking = update_booking_note(
+            booking_id=str(booking["booking_id"]),
+            patient_id=str(state.get("patient_id") or ""),
+            booking_note=booking_note,
+        )
+
+        if not updated_booking:
+            response = (
+                "I could not attach the clinical note to your upcoming appointment right now."
+            )
+            history.append({"role": "assistant", "text": response})
+            return {
+                "awaiting": None,
+                "note_forwarded": False,
+                "conversation_history": history,
+                "messages": history[-10:],
+                "final_response": response,
+            }
+
+        upcoming_bookings = list(state.get("upcoming_bookings") or state.get("confirmed_bookings") or [])
+        synced_bookings = []
+        for item in upcoming_bookings:
+            if not isinstance(item, dict):
+                continue
+            if item.get("booking_id") == updated_booking.get("booking_id") or item.get("slot_id") == updated_booking.get("slot_id"):
+                synced_bookings.append(updated_booking)
+            else:
+                synced_bookings.append(item)
+        if not synced_bookings:
+            synced_bookings = [updated_booking]
+
+        response = (
+            f"I've forwarded the note to {updated_booking['doctor']} for your upcoming appointment on {updated_booking['time']}."
+        )
+        history.append({"role": "assistant", "text": response})
+        return _sync_state_aliases(
+            {
+                "awaiting": None,
+                "note_forwarded": True,
+                "conversation_history": history,
+                "messages": history[-10:],
+                "upcoming_bookings": synced_bookings,
+                "active_appointments": synced_bookings,
+                "final_response": response,
+            }
+        )
+
+    return {"awaiting": None, "conversation_history": history, "messages": history[-10:]}
+
+
+def general_qa_node(state: GraphState):
+    user_text = (state.get("user_input") or "").strip()
+    history = list(state.get("messages") or state.get("conversation_history") or [])
+
+    dynamic_user_prompt = f"""Current date: {date.today().isoformat()}
+{_state_summary(state)}
+Latest user message: {user_text}
+Answer the user's hospital-related question clearly, safely, and concisely. If the question is medical and urgent, advise appropriate escalation."""
+
+    response = (
+        generate_text(
+        system_prompt=(
+            "You are a helpful hospital assistant answering general questions, policies, and simple medical explanations. "
+            "Be careful, concise, and do not invent facts."
+        ),
+        user_prompt=dynamic_user_prompt,
+        node_name="general_qa",
+        chat_history=history,
+        chat_summary=state.get("chat_summary"),
+        include_history=True,
+        history_turns=4,
+        patient_id=str(state.get("patient_id") or ""),
+        chat_session_id=str(state.get("chat_session_id") or ""),
+    )
+    ).strip()
+
+    if not response:
+        response = "I can help with general hospital questions. Please tell me what you need."
+
+    history.append({"role": "assistant", "text": response})
+    return {
+        "conversation_history": history,
+        "messages": history[-10:],
+        "final_response": response,
+        "awaiting": state.get("awaiting"),
+    }
+
 
 def supervisor_node(state: GraphState):
-    awaiting = state.get("awaiting")
-    print(f"SUPERVISOR | awaiting={awaiting} | intent={state.get('intent')} | collected={state.get('collected_info')}")
+    if state.get("final_response"):
+        return _route("finish")
 
-    if state.get("final_response"): return _route("finish")
+    # After a node completes and returns to supervisor, use fallback routing
+    # instead of re-running heuristics on the stale user_input. This prevents
+    # loops where medical_rag re-routes to itself because the heuristic still
+    # sees "book appointment" in user_input even after the department was found.
+    if state.get("supervisor_checked_input"):
+        return _route(_fallback_route_after_node(state))
 
-    dynamic_route = _dynamic_route(state)
-    if dynamic_route: return dynamic_route
+    user_input = state.get("user_input") or ""
+    heuristic_route = _heuristic_supervisor_route(state)
+    if heuristic_route:
+        return heuristic_route
 
-    if state.get("remedy_requested") and not state.get("remedy_given"): return _route("remedy_agent")
-    if awaiting == "conversation": return _route("conversation_agent")
-    if awaiting == "remedy_check": return _route("remedy_agent")
-    if awaiting == "end_confirmation": return _route("finish", awaiting="end_confirmation", chat_closed=False, final_response="Please reply yes to end the chat, or tell me what else you need help with.")
-    if awaiting in {"symptom_follow_up", "doctor_selection", "slot_selection", "cancellation_selection", "date_selection", "reschedule_selection", "reschedule_date_selection", "reschedule_slot_selection"}: return _route("appointment_booker")
-    if not state.get("intent"): return _route("triage_router")
-    if state.get("intent") == "direct_booking" and state.get("symptoms") and not state.get("target_department"): return _route("medical_rag")
-    if state.get("intent") == "direct_booking": return _route("appointment_booker")
-    if state.get("intent") and not _conversation_complete(state): return _route("conversation_agent")
-    if not state.get("remedy_given"): return _route("remedy_agent")
-    if state.get("persisting") and not state.get("target_department"): return _route("medical_rag")
-    if state.get("persisting") and state.get("target_department"): return _route("appointment_booker")
+    if _looks_like_end_chat(user_input):
+        return _route(
+            "finish",
+            awaiting=None,
+            chat_closed=True,
+            final_response="The chat is now closed. Take care, and you can start a new chat anytime if you need help again.",
+        )
 
-    return _route("finish")
+    if _looks_like_thanks(user_input) and state.get("note_forwarded"):
+        return _route(
+            "finish",
+            awaiting=None,
+            chat_closed=True,
+            final_response="You're welcome. Take care, and please reach out again if you need anything else.",
+        )
 
-def _conversation_complete(state: GraphState) -> bool:
-    if not state.get("symptoms") or state.get("awaiting") == "conversation": return False
-    collected = state.get("collected_info") or {}
-    questions_asked = state.get("questions_asked") or []
-    if len(questions_asked) >= 8: return True
-    return bool(collected.get("duration") and collected.get("location") and (collected.get("severity_pattern") or collected.get("pattern")) and (collected.get("cause") or collected.get("trigger") or collected.get("onset")))
+    if state.get("pending_file_data"):
+        return _route("document_analyzer")
+
+    if _should_route_to_resolver(state, user_input):
+        return _route("appointment_resolver", awaiting="appointment_resolver")
+
+    if state.get("awaiting") == "remedy_check" and _is_affirmative(user_input):
+        return _route("continue_current")
+
+    try:
+        decision = _generate_supervisor_decision(state)
+    except Exception as exc:
+        print(f"Supervisor router hard failure: {exc}")
+        response = "Currently we are facing heavy traffic, Please come back later"
+        return _route(
+            "finish",
+            awaiting="error_recovery",
+            chat_closed=False,
+            conversation_history=[*list(state.get("conversation_history") or []), {"role": "assistant", "text": response}],
+            messages=[*list(state.get("messages") or []), {"role": "assistant", "text": response}][-10:],
+            final_response=response,
+        )
+
+    current_intent = _current_intent(state)
+
+    if not decision:
+        return _route(_fallback_route_after_node(state))
+
+    updates = {
+        "user_action_summary": decision.user_action_summary,
+    }
+
+    if decision.update_active_intent is None:
+        updates["active_intent"] = current_intent
+    else:
+        updates["active_intent"] = decision.update_active_intent
+
+    updates.update(_apply_extracted_facts(state, decision.extracted_facts))
+    updates = _sync_state_aliases(updates)
+
+    next_agent = decision.next_agent
+
+    if next_agent == "continue_current":
+        if state.get("awaiting") == "remedy_check" and _is_affirmative(state.get("user_input") or ""):
+            return _route("continue_current", **updates)
+        return _route("continue_current", **updates)
+
+    if next_agent == "general_qa":
+        return _route("general_qa", **updates)
+
+    if next_agent == "triage_router":
+        updates.update(
+            {
+                "awaiting": None,
+                "remedy_requested": False,
+                "booking_declined": None,
+                "candidate_departments": [],
+                "doctor_options": [],
+                "slot_options": [],
+                "reschedule_options": [],
+                "reschedule_date_options": [],
+                "reschedule_slot_options": [],
+                "selected_booking_id": None,
+                "selected_doctor_id": None,
+                "selected_doctor_name": None,
+                "selected_slot_id": None,
+            }
+        )
+        return _route("triage_router", **updates)
+
+    if next_agent == "conversation_agent":
+        return _route("conversation_agent", **updates)
+
+    if next_agent == "remedy_agent":
+        updates.update({"awaiting": None, "remedy_requested": True})
+        return _route("remedy_agent", **updates)
+
+    if next_agent == "medical_rag":
+        return _route("medical_rag", **updates)
+
+    if next_agent == "appointment_booker":
+        if (
+            not state.get("target_department")
+            and not state.get("requested_department")
+            and not state.get("requested_doctor_name")
+        ):
+            return _route("medical_rag", **updates)
+        updates["active_intent"] = updates.get("active_intent") or "direct_booking"
+        updates["intent"] = updates["active_intent"]
+        updates["awaiting"] = None
+        return _route("appointment_booker", **updates)
+
+    if next_agent == "appointment_resolver":
+        updates["awaiting"] = "appointment_resolver"
+        return _route("appointment_resolver", **updates)
+
+    if next_agent == "document_analyzer":
+        updates["awaiting"] = "file_clarification"
+        return _route("document_analyzer", **updates)
+
+    if next_agent == "finish":
+        updates.update({"awaiting": None, "chat_closed": True})
+        return _route("finish", **updates)
+
+    return _route("finish", **updates)
+
 
 def route_from_supervisor(state: GraphState):
     return state.get("next_agent", "finish")

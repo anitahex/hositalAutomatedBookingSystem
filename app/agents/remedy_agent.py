@@ -1,9 +1,11 @@
+import asyncio
 import re
 
 from langchain_core.output_parsers import PydanticOutputParser
 from app.agents.schemas import RemedyFollowUpDecision, RemedyResponse
 from app.agents.state import GraphState
-from app.inference.llm import generate_text
+from app.agents.intake_utils import compact_booking_summary, compact_fact_summary, compact_state_summary
+from app.inference.llm import agenerate_text
 from app.services.appointments import update_booking_note
 from app.services.memory_policy import get_memory_policy
 
@@ -74,14 +76,14 @@ def _looks_like_decline_forward(text: str) -> bool:
 
 
 def _latest_booking(state: GraphState) -> dict | None:
-    booking = state.get("confirmed_booking")
-    if isinstance(booking, dict) and booking.get("booking_id"):
-        return booking
-
-    bookings = state.get("confirmed_bookings") or []
+    bookings = state.get("upcoming_bookings") or state.get("confirmed_bookings") or []
     for item in reversed(bookings):
         if isinstance(item, dict) and item.get("booking_id"):
             return item
+
+    booking = state.get("confirmed_booking")
+    if isinstance(booking, dict) and booking.get("booking_id"):
+        return booking
 
     appointments = state.get("active_appointments") or []
     for item in reversed(appointments):
@@ -134,15 +136,15 @@ def _summarise_clinical_note(state: GraphState, user_text: str | None = None) ->
 
 def _update_current_booking_context(state: GraphState, booking_note: str, booking: dict) -> dict:
     updated_booking = {**booking, "booking_note": booking_note}
-    confirmed_bookings = list(state.get("confirmed_bookings") or [])
+    upcoming_bookings = list(state.get("upcoming_bookings") or state.get("confirmed_bookings") or [])
     replaced = False
-    for index, item in enumerate(confirmed_bookings):
+    for index, item in enumerate(upcoming_bookings):
         if item.get("booking_id") == updated_booking.get("booking_id") or item.get("slot_id") == updated_booking.get("slot_id"):
-            confirmed_bookings[index] = updated_booking
+            upcoming_bookings[index] = updated_booking
             replaced = True
             break
     if not replaced:
-        confirmed_bookings.append(updated_booking)
+        upcoming_bookings.append(updated_booking)
 
     active_appointments = list(state.get("active_appointments") or [])
     for index, item in enumerate(active_appointments):
@@ -151,12 +153,13 @@ def _update_current_booking_context(state: GraphState, booking_note: str, bookin
             break
 
     return {
+        "upcoming_bookings": upcoming_bookings,
         "confirmed_booking": updated_booking,
-        "confirmed_bookings": confirmed_bookings,
-        "active_appointments": active_appointments or confirmed_bookings,
+        "confirmed_bookings": upcoming_bookings,
+        "active_appointments": active_appointments or upcoming_bookings,
     }
 
-def _classify_follow_up(state: GraphState, user_text: str) -> RemedyFollowUpDecision | None:
+async def _classify_follow_up(state: GraphState, user_text: str) -> RemedyFollowUpDecision | None:
     if _latest_booking(state):
         if _looks_like_affirmative_forward(user_text):
             return RemedyFollowUpDecision(
@@ -169,85 +172,64 @@ def _classify_follow_up(state: GraphState, user_text: str) -> RemedyFollowUpDeci
                 reason="Patient clearly declined forwarding the symptom update.",
             )
 
-    dynamic_user_prompt = f"Confirmed booking: {state.get('confirmed_booking')}\nPrevious remedy: {state.get('remedy_text')}\nLatest reply: {user_text}"
-    raw_output = generate_text(
+    dynamic_user_prompt = f"""Current state: {compact_state_summary(state)}
+Confirmed booking: {compact_booking_summary(state.get('upcoming_bookings') or state.get('confirmed_bookings'))}
+Collected facts: {compact_fact_summary(state.get('collected_data') or state.get('collected_info'))}
+Previous remedy: {state.get('remedy_text') or 'None'}
+Latest reply: {user_text}"""
+    raw_output = await agenerate_text(
         system_prompt=STATIC_FOLLOWUP_PROMPT,
         user_prompt=dynamic_user_prompt,
         node_name="remedy_agent",
         chat_summary=state.get("chat_summary"),
         include_history=True,
-        history_turns=MEMORY_POLICY.prompt_window_turns,
+        history_turns=min(4, MEMORY_POLICY.prompt_window_turns),
         patient_id=str(state.get("patient_id") or ""),
         chat_session_id=str(state.get("chat_session_id") or ""),
     )
     try: return follow_up_parser.parse(_clean_json(raw_output))
     except Exception: return None
 
-def remedy_agent_node(state: GraphState):
+async def remedy_agent_node(state: GraphState):
     if state.get("awaiting") == "remedy_check":
         user_text = state.get("user_input", "")
         updated_history = list(state.get("conversation_history") or [])
-        updated_history.append({"role": "patient", "text": user_text})
-        decision = _classify_follow_up(state, user_text)
+        decision = await _classify_follow_up(state, user_text)
         patient_status = decision.patient_status if decision else "unclear"
 
         if patient_status == "agrees_to_forward_note":
-            booking = _latest_booking(state)
-            if not booking:
-                note = _summarise_clinical_note(state, user_text)
-                response = (
-                    "I can prepare the clinical note, but I could not find an upcoming booking to attach it to."
-                    " If you have one, open your upcoming appointments and try again."
-                )
-                updated_history.append({"role": "assistant", "text": response})
-                return {"conversation_history": updated_history, "awaiting": None, "note_forwarded": False, "final_response": response}
-
-            booking_note = _summarise_clinical_note(state, user_text)
-            updated_booking = update_booking_note(
-                booking_id=str(booking["booking_id"]),
-                patient_id=str(state.get("patient_id") or ""),
-                booking_note=booking_note,
-            )
-            if not updated_booking:
-                response = (
-                    "I could not attach the clinical note to your upcoming appointment right now."
-                    " Please try again from your upcoming bookings if needed."
-                )
-                updated_history.append({"role": "assistant", "text": response})
-                return {"conversation_history": updated_history, "awaiting": None, "note_forwarded": False, "final_response": response}
-
-            response = (
-                f"I've forwarded these symptoms as a clinical note to {updated_booking['doctor']} for your upcoming appointment on {updated_booking['time']}.\n\n"
-                f"Clinical note: {updated_booking['booking_note']}\n\n"
-                "You can also see this note under your upcoming booking."
-            )
+            response = "I am ready to attach the note when the supervisor sends this turn through the continue flow."
             updated_history.append({"role": "assistant", "text": response})
-            context_updates = _update_current_booking_context(state, updated_booking["booking_note"], updated_booking)
-            return {
-                **context_updates,
-                "conversation_history": updated_history,
-                "awaiting": None,
-                "note_forwarded": True,
-                "final_response": response,
-            }
+            return {"conversation_history": updated_history, "messages": updated_history[-6:], "awaiting": None, "note_forwarded": False, "final_response": response}
 
         if patient_status == "persisting_or_worsening":
-            bridge = "I am sorry to hear the remedy has not helped. Since your symptoms are persisting, let me find the right doctor for you."
+            bridge = "I am sorry to hear the remedy has not helped. Since your symptoms are persisting, let me find the right specialist for you."
             updated_history.append({"role": "assistant", "text": bridge})
-            return {"conversation_history": updated_history, "awaiting": None, "persisting": True}
+            return {
+                "conversation_history": updated_history,
+                "messages": updated_history[-6:],
+                "awaiting": None,
+                "persisting": True,
+                "active_intent": "direct_booking",
+                "intent": "direct_booking",
+                "final_response": bridge,
+            }
         
         closing = "I'm glad you're feeling better! Take care, and let me know if symptoms return."
         updated_history.append({"role": "assistant", "text": closing})
-        return {"conversation_history": updated_history, "awaiting": None, "persisting": False, "final_response": closing}
+        return {"conversation_history": updated_history, "messages": updated_history[-6:], "awaiting": None, "persisting": False, "final_response": closing}
 
-    dynamic_user_prompt = f"Confirmed Booking Context: {state.get('confirmed_booking')}\nCurrent Symptoms: {state.get('symptoms')}\nCollected Context: {state.get('collected_info')}"
-    raw_output = generate_text(
+    dynamic_user_prompt = f"""Current state: {compact_state_summary(state)}
+Upcoming bookings: {compact_booking_summary(state.get('upcoming_bookings') or state.get('confirmed_bookings'))}
+Current symptoms: {', '.join(state.get('symptoms') or []) or 'None'}
+Collected facts: {compact_fact_summary(state.get('collected_data') or state.get('collected_info'))}"""
+    raw_output = await agenerate_text(
         system_prompt=STATIC_REMEDY_PROMPT,
         user_prompt=dynamic_user_prompt,
         node_name="remedy_agent",
         chat_summary=state.get("chat_summary"),
         include_history=True,
-        history_turns=MEMORY_POLICY.prompt_window_turns,
+        history_turns=min(4, MEMORY_POLICY.prompt_window_turns),
         patient_id=str(state.get("patient_id") or ""),
         chat_session_id=str(state.get("chat_session_id") or ""),
     )
@@ -258,9 +240,6 @@ def remedy_agent_node(state: GraphState):
     except Exception:
         full_response = "Please rest and seek medical care if symptoms are getting worse. Let me know how you feel soon."
 
-    if state.get("confirmed_booking"):
-        full_response += "\n\nIf you'd like, I can also forward these symptoms as a clinical note to your upcoming doctor."
-
     updated_history = list(state.get("conversation_history") or [])
     updated_history.append({"role": "assistant", "text": full_response})
-    return {"conversation_history": updated_history, "remedy_given": True, "remedy_text": full_response, "awaiting": "remedy_check", "final_response": full_response}
+    return {"conversation_history": updated_history, "messages": updated_history[-6:], "remedy_given": True, "remedy_text": full_response, "awaiting": "remedy_check", "final_response": full_response}

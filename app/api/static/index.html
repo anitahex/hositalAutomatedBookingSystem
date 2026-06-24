@@ -134,6 +134,7 @@
               <div><span>Blood group</span><strong id="patientBlood">-</strong></div>
               <div><span>Health issues</span><strong id="patientIssues">-</strong></div>
             </div>
+            <button class="edit-profile-btn" id="editProfileBtn" title="Edit health profile">Edit profile</button>
           </section>
 
           <section class="sidebar-card" id="workflowCard" aria-label="Workflow status">
@@ -197,6 +198,19 @@
             <div class="appointment-rail" id="activeAppointmentsPreview">
               <p class="panel-note">No active appointments loaded.</p>
             </div>
+          </section>
+
+          <section class="sidebar-card upload-card" id="uploadCard" aria-label="Analyzed documents">
+            <div class="card-head">
+              <div>
+                <p class="card-kicker">Documents</p>
+                <h2>Analyzed files</h2>
+              </div>
+            </div>
+            <div class="analyzed-docs-list" id="analyzedDocsList">
+              <p class="panel-note">No documents analyzed yet. Use 📎 in the chat to attach a file.</p>
+            </div>
+            <p class="upload-status" id="uploadStatus"></p>
           </section>
 
           <section class="sidebar-card tokens-card" aria-label="Token usage">
@@ -287,15 +301,26 @@
 
               <form class="composer" id="chatForm">
                 <div class="composer-shell">
-                  <textarea
-                    id="messageInput"
-                    name="message"
-                    rows="1"
-                    autocomplete="off"
-                    placeholder="Type symptoms, doctor choice, slot choice, or no"
-                    required
-                  ></textarea>
-                  <p class="composer-hint">Enter to send. Shift+Enter for a new line.</p>
+                  <div class="attach-pills" id="attachPills"></div>
+                  <div class="composer-input-row">
+                    <label class="attach-label" for="documentUpload" title="Attach a medical document (PDF, JPG, PNG)">
+                      <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+                        <path d="m21.44 11.05-9.19 9.19a6 6 0 0 1-8.49-8.49l8.57-8.57A4 4 0 1 1 18 8.84l-8.59 8.57a2 2 0 0 1-2.83-2.83l8.49-8.48"/>
+                      </svg>
+                      <input id="documentUpload" type="file" accept=".pdf,.jpg,.jpeg,.png,application/pdf,image/jpeg,image/png" />
+                    </label>
+                    <div class="composer-text-shell">
+                      <textarea
+                        id="messageInput"
+                        name="message"
+                        rows="1"
+                        autocomplete="off"
+                        placeholder="Describe symptoms, ask about your documents, or type a message…"
+                        required
+                      ></textarea>
+                      <p class="composer-hint">Enter to send · Shift+Enter for new line · 📎 to attach a medical file</p>
+                    </div>
+                  </div>
                 </div>
                 <button type="submit">Send</button>
               </form>

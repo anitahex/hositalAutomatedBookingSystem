@@ -10,6 +10,14 @@ from datetime import date, datetime, timedelta
 
 from app.agents.state import GraphState
 from app.agents.schemas import BookingMenuDecision
+from app.agents.intake_utils import (
+    compact_booking_summary,
+    compact_fact_summary,
+    compact_option_summary,
+    compact_state_summary,
+    extract_local_intake_info,
+    next_missing_intake_question,
+)
 from app.inference.llm import generate_text
 from app.services.memory_policy import get_memory_policy
 from langchain_core.output_parsers import PydanticOutputParser
@@ -110,10 +118,31 @@ def _choose_date_option(user_input: str, options: list[dict]) -> str | None:
 def format_numbered_options(items: list[dict], label_key: str, extra_keys: list[str]):
     lines = []
     for index, item in enumerate(items, start=1):
-        extra = ", ".join(str(item[key]) for key in extra_keys if item.get(key) is not None)
+        extra_parts = []
+        for key in extra_keys:
+            value = item.get(key)
+            if value is None:
+                continue
+            if key == "experience_years":
+                try:
+                    years = int(value)
+                except (TypeError, ValueError):
+                    years = value
+                if isinstance(years, int):
+                    suffix = "year" if years == 1 else "years"
+                    extra_parts.append(f"{years} {suffix} experience")
+                else:
+                    extra_parts.append(f"{years} years experience")
+            else:
+                extra_parts.append(str(value))
+        extra = ", ".join(extra_parts)
         suffix = f" ({extra})" if extra else ""
         lines.append(f"{index}. {item[label_key]}{suffix}")
     return "\n".join(lines)
+
+
+def _booking_list(state: GraphState) -> list[dict]:
+    return list(state.get("upcoming_bookings") or state.get("confirmed_bookings") or [])
 
 
 def choose_option(user_input: str, options: list[dict], id_key: str, name_key: str):
@@ -212,8 +241,40 @@ def _format_booking_options(bookings: list[dict]):
     return "\n".join(lines)
 
 
+def _format_department_options(departments: list[dict]) -> str:
+    lines = []
+    for index, item in enumerate(departments, start=1):
+        department = item.get("department") or "Unknown department"
+        matched_terms = item.get("matched_terms") or []
+        hint = ", ".join(str(term) for term in matched_terms[:2] if term)
+        suffix = f" ({hint})" if hint else ""
+        lines.append(f"{index}. {department}{suffix}")
+    return "\n".join(lines)
+
+
+def _document_booking_note(state: GraphState) -> str | None:
+    collected = state.get("collected_facts") or state.get("collected_data") or state.get("collected_info") or {}
+    if not isinstance(collected, dict):
+        collected = {}
+
+    parts: list[str] = []
+    summary = collected.get("document_summary") or collected.get("document_note")
+    relief = collected.get("document_temporary_relief")
+    advice = collected.get("document_specialist_advice")
+    context = state.get("file_clarification_context")
+
+    for value in (summary, relief, advice, context):
+        if value and str(value).strip():
+            parts.append(str(value).strip())
+
+    if not parts:
+        return None
+
+    return " | ".join(dict.fromkeys(parts))
+
+
 def ask_cancellation_choice(state: GraphState):
-    bookings = state.get("confirmed_bookings") or []
+    bookings = _booking_list(state)
     if not bookings:
         bookings = active_bookings_for_patient(state.get("patient_id"))
 
@@ -250,7 +311,7 @@ def _format_reschedule_booking_options(bookings: list[dict]):
 
 
 def ask_reschedule_choice(state: GraphState):
-    bookings = state.get("confirmed_bookings") or []
+    bookings = _booking_list(state)
     if not bookings:
         bookings = upcoming_bookings_for_patient(state.get("patient_id"))
 
@@ -270,6 +331,71 @@ def ask_reschedule_choice(state: GraphState):
         "final_response": (
             "Which appointment would you like to change?\n"
             f"{_format_reschedule_booking_options(bookings)}\n\n"
+            "Please reply with the appointment number or reference ID."
+        ),
+    }
+
+
+def ask_department_choice(state: GraphState):
+    departments = list(state.get("candidate_departments") or [])
+    if not departments:
+        return ask_preferred_doctor(state)
+
+    return {
+        "awaiting": "department_selection",
+        "candidate_departments": departments,
+        "final_response": (
+            "I can see more than one possible department for your symptoms.\n"
+            f"{_format_department_options(departments)}\n\n"
+            "Please reply with the department number or name you want to book first."
+        ),
+    }
+
+
+def appointment_resolver_node(state: GraphState):
+    bookings = _booking_list(state)
+    if not bookings:
+        bookings = active_bookings_for_patient(state.get("patient_id"))
+
+    if not bookings:
+        return {
+            "awaiting": None,
+            "appointment_resolver_options": [],
+            "final_response": "I could not find any active appointments to modify.",
+        }
+
+    user_text = " ".join((state.get("user_input") or "").lower().split())
+    if user_text:
+        selected = choose_option(state.get("user_input", ""), bookings, id_key="booking_id", name_key="doctor")
+        if selected:
+            base_state = {
+                **state,
+                "selected_booking_id": selected.get("booking_id"),
+                "selected_doctor_name": selected.get("doctor") or selected.get("doctor_name"),
+                "target_department": selected.get("department"),
+                "appointment_resolver_options": bookings,
+            }
+            if any(term in user_text for term in ("cancel", "delete")):
+                return ask_cancellation_choice(base_state)
+            if any(term in user_text for term in ("change", "resched", "reschedule", "modify")):
+                return ask_reschedule_choice(base_state)
+            return {
+                "awaiting": "appointment_resolver",
+                "selected_booking_id": selected.get("booking_id"),
+                "appointment_resolver_options": bookings,
+                "final_response": (
+                    f"You picked {selected.get('doctor') or selected.get('doctor_name')} on {selected.get('time') or selected.get('start_time')}."
+                    " Please say cancel or change to continue."
+                ),
+            }
+
+    lines = _format_booking_options(bookings)
+    return {
+        "awaiting": "appointment_resolver",
+        "appointment_resolver_options": bookings,
+        "final_response": (
+            "I found more than one upcoming appointment. Which one would you like to modify?\n"
+            f"{lines}\n\n"
             "Please reply with the appointment number or reference ID."
         ),
     }
@@ -309,7 +435,7 @@ def cancel_selected_appointment(state: GraphState):
 
     remaining = [
         booking
-        for booking in (state.get("confirmed_bookings") or [])
+        for booking in _booking_list(state)
         if booking.get("booking_id") != cancelled["booking_id"]
         and booking.get("slot_id") != cancelled["slot_id"]
     ]
@@ -318,6 +444,7 @@ def cancel_selected_appointment(state: GraphState):
         "awaiting": "end_confirmation",
         "booking_active": False,
         "cancellation_options": [],
+        "upcoming_bookings": remaining,
         "confirmed_bookings": remaining,
         "confirmed_booking": remaining[-1] if remaining else None,
         "final_response": (
@@ -381,6 +508,50 @@ def ask_reschedule_date(state: GraphState):
             f"{option_lines}\n\n"
             "Please reply with the date number."
         ),
+    }
+
+
+def choose_department_candidate(state: GraphState):
+    candidates = list(state.get("candidate_departments") or [])
+    if not candidates:
+        return ask_preferred_doctor(state)
+
+    text = state.get("user_input", "").strip().lower()
+    selected_index = None
+    if text.isdigit():
+        index = int(text) - 1
+        if 0 <= index < len(candidates):
+            selected_index = index
+
+    selected = None
+    if selected_index is not None:
+        selected = candidates[selected_index]
+    else:
+        for candidate in candidates:
+            department = str(candidate.get("department") or "").lower()
+            if department and department in text:
+                selected = candidate
+                break
+
+    if not selected:
+        return {
+            "awaiting": "department_selection",
+            "candidate_departments": candidates,
+            "final_response": (
+                "Please reply with one of the listed department numbers or names."
+            ),
+        }
+
+    remaining = [
+        candidate
+        for candidate in candidates
+        if candidate.get("department") != selected.get("department")
+    ]
+    return {
+        "awaiting": None,
+        "candidate_departments": remaining,
+        "requested_department": selected.get("department"),
+        "target_department": selected.get("department"),
     }
 
 
@@ -481,7 +652,7 @@ def apply_reschedule_slot(state: GraphState):
         "slot_id": str(booked["slot_id"]),
         "can_modify": bool(booked.get("can_modify", True)),
     }
-    remaining = list(state.get("confirmed_bookings") or [])
+    remaining = _booking_list(state)
     for index, booking in enumerate(remaining):
         if booking.get("booking_id") == confirmed_booking["booking_id"] or booking.get("slot_id") == confirmed_booking["slot_id"]:
             remaining[index] = confirmed_booking
@@ -492,6 +663,7 @@ def apply_reschedule_slot(state: GraphState):
     return {
         "awaiting": "end_confirmation",
         "booking_active": False,
+        "upcoming_bookings": remaining,
         "confirmed_booking": confirmed_booking,
         "confirmed_bookings": remaining,
         "reschedule_options": [],
@@ -528,7 +700,13 @@ def classify_booking_menu_reply(state: GraphState, menu_type: str) -> BookingMen
             reason="Patient declined booking from the displayed menu.",
         )
 
-    dynamic_user_prompt = f"Current menu: {menu_type}\nDoctor options: {state.get('doctor_options') or []}\nSlot options: {state.get('slot_options') or []}\nLatest reply: {state.get('user_input', '')}"
+    dynamic_user_prompt = f"""Current state: {compact_state_summary(state)}
+Current menu: {menu_type}
+Doctor options: {compact_option_summary(state.get('doctor_options'), 'doctor_name', ['department', 'experience_years', 'next_available_time'])}
+Slot options: {compact_option_summary(state.get('slot_options'), 'start_time', ['end_time'])}
+Booked context: {compact_booking_summary(state.get('upcoming_bookings') or state.get('confirmed_bookings'))}
+Collected facts: {compact_fact_summary(state.get('collected_data') or state.get('collected_info'))}
+Latest reply: {state.get('user_input', '')}"""
 
     raw_output = generate_text(
         system_prompt=STATIC_MENU_PROMPT,
@@ -536,7 +714,7 @@ def classify_booking_menu_reply(state: GraphState, menu_type: str) -> BookingMen
         node_name="appointment_booker",
         chat_summary=state.get("chat_summary"),
         include_history=True,
-        history_turns=MEMORY_POLICY.prompt_window_turns,
+        history_turns=min(4, MEMORY_POLICY.prompt_window_turns),
         patient_id=str(state.get("patient_id") or ""),
         chat_session_id=str(state.get("chat_session_id") or ""),
     )
@@ -554,31 +732,54 @@ def classify_booking_menu_reply(state: GraphState, menu_type: str) -> BookingMen
 def ask_symptom_follow_up(state: GraphState):
     symptoms = state.get("symptoms") or []
     symptom_text = ", ".join(symptoms) if symptoms else "your symptoms"
+    collected = state.get("collected_info") or {}
+    questions_asked = state.get("questions_asked") or []
+    history = list(state.get("conversation_history") or [])
+    question = next_missing_intake_question(
+        collected,
+        questions_asked,
+        "What feels most important about these symptoms right now?",
+    )
+    follow_up = question.strip()
+    if follow_up and follow_up[0].isupper():
+        follow_up = follow_up[0].lower() + follow_up[1:]
+    response = (
+        f"I noted: {symptom_text}. To help match the right department, "
+        f"{follow_up.rstrip('.')}"
+    )
+    if not response.endswith("?"):
+        response = response.rstrip(".") + "?"
+    history.append({"role": "assistant", "text": response})
 
     return {
         "awaiting": "symptom_follow_up",
-        "final_response": (
-            f"I noted: {symptom_text}. To help match you with the right care, "
-            "since when have you been feeling this, and is it getting better, worse, "
-            "or staying about the same?"
-        ),
+        "booking_active": False,
+        "conversation_history": history,
+        "questions_asked": questions_asked + [response],
+        "final_response": response,
     }
 
 
 def capture_symptom_follow_up(state: GraphState):
     answer = state.get("user_input", "").strip()
+    local_info = extract_local_intake_info(answer)
+    collected = {**(state.get("collected_info") or {}), **local_info}
+    if answer and not local_info.get("duration"):
+        collected.setdefault("duration", answer)
 
     return {
         "awaiting": None,
+        "booking_active": False,
         "follow_up_answer": answer,
         "symptom_duration": answer,
+        "collected_info": collected,
     }
 
 
 def ask_preferred_doctor(state: GraphState):
     requested_department_text = state.get("requested_department") or state.get("target_department")
-    department = normalize_department_name(requested_department_text or "General Physician")
     requested_doctor_name = state.get("requested_doctor_name")
+    has_explicit_department = bool(requested_department_text)
     if not _looks_like_specific_doctor_name(requested_doctor_name):
         requested_doctor_name = None
     requested_department = state.get("requested_department")
@@ -586,6 +787,28 @@ def ask_preferred_doctor(state: GraphState):
     severity = state.get("severity") or "moderate"
     symptoms = state.get("symptoms") or []
     symptom_text = ", ".join(symptoms) if symptoms else "your symptoms"
+
+    if not has_explicit_department and not requested_doctor_name:
+        if symptoms:
+            return ask_symptom_follow_up({
+                **state,
+                "intent": state.get("intent") or "triage_symptoms",
+                "booking_active": False,
+            })
+        return {
+            "awaiting": "conversation",
+            "booking_active": False,
+            "intent": state.get("intent") or "triage_symptoms",
+            "doctor_options": [],
+            "slot_options": [],
+            "final_response": "Please tell me what symptoms you are having so I can match the right department before booking.",
+        }
+
+    department = normalize_department_name(requested_department_text)
+    department_context = {
+        "requested_department": requested_department or department,
+        "target_department": department,
+    }
 
     if requested_date and not _valid_requested_date(requested_date):
         return _date_selection_response(
@@ -641,6 +864,7 @@ def ask_preferred_doctor(state: GraphState):
             return {
                 "awaiting": "doctor_selection",
                 "booking_active": True,
+                **department_context,
                 "target_department": fallback_department,
                 "requested_department": requested_department or department,
                 "doctor_options": fallback_doctors,
@@ -653,6 +877,7 @@ def ask_preferred_doctor(state: GraphState):
 
         return {
             "doctor_options": [],
+            **department_context,
             **_date_selection_response(
                 f"I could not find available doctors {requested_text}{date_text}. "
                 f"I also could not find any available {fallback_department} doctors right now. "
@@ -684,6 +909,7 @@ def ask_preferred_doctor(state: GraphState):
         return {
             "awaiting": "slot_selection",
             "booking_active": True,
+            **department_context,
             "target_department": doctor.get("department") or department,
             "doctor_options": [doctor],
             "selected_doctor_id": doctor["doctor_id"],
@@ -723,6 +949,7 @@ def ask_preferred_doctor(state: GraphState):
     return {
         "awaiting": "doctor_selection",
         "booking_active": True,
+        **department_context,
         "doctor_options": doctors,
         "final_response": (
             f"{intro}{severity_note}\n\n"
@@ -749,6 +976,10 @@ def ask_preferred_slot(state: GraphState):
         }
 
     requested_date = state.get("requested_date")
+    department_context = {
+        "requested_department": state.get("requested_department") or state.get("target_department"),
+        "target_department": state.get("target_department"),
+    }
     slots = (
         available_slots_for_doctor_on_date(selected["doctor_id"], requested_date, limit=5)
         if requested_date and _valid_requested_date(requested_date)
@@ -759,6 +990,7 @@ def ask_preferred_slot(state: GraphState):
         return {
             "selected_doctor_id": selected["doctor_id"],
             "selected_doctor_name": selected["doctor_name"],
+            **department_context,
             **_date_selection_response(
                 f"{selected['doctor_name']} has no open slots right now. "
             ),
@@ -773,6 +1005,7 @@ def ask_preferred_slot(state: GraphState):
     return {
         "awaiting": "slot_selection",
         "booking_active": True,
+        **department_context,
         "selected_doctor_id": selected["doctor_id"],
         "selected_doctor_name": selected["doctor_name"],
         "slot_options": slots,
@@ -800,10 +1033,18 @@ def book_preferred_slot(state: GraphState):
             )
         }
 
-    booked = book_selected_slot(
-        slot_id=selected["slot_id"],
-        patient_id=state.get("patient_id"),
-    )
+    booking_note = _document_booking_note(state)
+    try:
+        booked = book_selected_slot(
+            slot_id=selected["slot_id"],
+            patient_id=state.get("patient_id"),
+            booking_note=booking_note,
+        )
+    except TypeError:
+        booked = book_selected_slot(
+            slot_id=selected["slot_id"],
+            patient_id=state.get("patient_id"),
+        )
 
     if not booked:
         return {
@@ -821,12 +1062,44 @@ def book_preferred_slot(state: GraphState):
         "time": str(booked["start_time"]),
         "slot_id": str(booked["slot_id"]),
     }
-    confirmed_bookings = list(state.get("confirmed_bookings") or [])
+    confirmed_bookings = _booking_list(state)
     confirmed_bookings.append(confirmed_booking)
+    remaining_departments = [
+        candidate
+        for candidate in (state.get("candidate_departments") or [])
+        if str(candidate.get("department") or "") != confirmed_booking["department"]
+    ]
+
+    if remaining_departments:
+        next_departments = _format_department_options(remaining_departments)
+        return {
+            "awaiting": "department_selection",
+            "booking_active": False,
+            "candidate_departments": remaining_departments,
+            "upcoming_bookings": confirmed_bookings,
+            "confirmed_booking": confirmed_booking,
+            "confirmed_bookings": confirmed_bookings,
+            "doctor_options": [],
+            "slot_options": [],
+            "selected_doctor_id": None,
+            "selected_doctor_name": None,
+            "selected_slot_id": str(booked["slot_id"]),
+            "final_response": (
+                "Your appointment is booked and confirmed!\n\n"
+                f"Doctor: {booked['doctor_name']}\n"
+                f"Department: {booked['department']}\n"
+                f"Date & Time: {booked['start_time']}\n"
+                f"Reference ID: {booking_reference}\n\n"
+                "I can also help with the other department(s) we identified.\n"
+                f"{next_departments}\n\n"
+                "Please reply with the department number or name you want to book next, or say no to stop here."
+            ),
+        }
 
     return {
         "awaiting": "end_confirmation",
         "booking_active": False,
+        "upcoming_bookings": confirmed_bookings,
         "confirmed_booking": confirmed_booking,
         "confirmed_bookings": confirmed_bookings,
         "doctor_options": [],
@@ -848,6 +1121,15 @@ def book_preferred_slot(state: GraphState):
 
 def appointment_booker_node(state: GraphState):
     awaiting = state.get("awaiting")
+
+    if awaiting == "appointment_resolver":
+        return appointment_resolver_node(state)
+
+    if awaiting == "department_selection":
+        choice = choose_department_candidate(state)
+        if choice.get("awaiting") == "department_selection":
+            return choice
+        state = {**state, **choice}
 
     if awaiting == "cancellation_selection":
         return cancel_selected_appointment(state)
@@ -890,6 +1172,7 @@ def appointment_booker_node(state: GraphState):
             return {
                 "awaiting": None,
                 "booking_active": False,
+                "active_intent": "triage_symptoms",
                 "intent": "triage_symptoms",
                 "remedy_requested": True,
                 "doctor_options": [],
@@ -904,6 +1187,7 @@ def appointment_booker_node(state: GraphState):
             return {
                 "awaiting": None,
                 "booking_active": False,
+                "active_intent": "triage_symptoms",
                 "intent": "triage_symptoms",
                 "booking_declined": True,
                 "doctor_options": [],
@@ -925,6 +1209,10 @@ def appointment_booker_node(state: GraphState):
         return book_preferred_slot(state)
 
     collected = state.get("collected_info") or {}
+    candidate_departments = state.get("candidate_departments") or []
+    if candidate_departments and not state.get("requested_department") and not state.get("target_department") and not state.get("requested_doctor_name"):
+        return ask_department_choice(state)
+
     has_conversation_context = bool(
         collected.get("duration")
         or collected.get("cause")
@@ -937,7 +1225,7 @@ def appointment_booker_node(state: GraphState):
         and not state.get("follow_up_answer")
         and not has_conversation_context
         and not state.get("remedy_given")
-        and state.get("intent") != "direct_booking"
+        and (state.get("active_intent") or state.get("intent")) != "direct_booking"
     ):
         return ask_symptom_follow_up(state)
 

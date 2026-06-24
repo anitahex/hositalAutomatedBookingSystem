@@ -1,14 +1,40 @@
 fastapi
+uvicorn
+python-multipart>=0.0.9
+pydantic
+python-dotenv
+
+# Hugging Face — agents, routing, answer composition
 huggingface-hub
 langchain-core
 langchain-huggingface
-langgraph
-minio
-pandas
-psycopg2-binary
-pydantic
-python-dotenv
-qdrant-client
 sentence-transformers
+
+# LangGraph orchestration
+langgraph
+
+# Database
+psycopg2-binary
+pandas
+
+# PDF / image extraction
+pdf2image
+pdfplumber
+pymupdf
+pillow
+
+# Vector DB — global clinical-reference RAG only
+qdrant-client
+
+# Azure OpenAI — ingestion path only (Guardrail 1 + Tier 2 extraction)
+openai>=1.0
+
+# Azure Blob Storage — vault + summary JSON
+azure-storage-blob>=12.0
+aiohttp
+
+# WebSocket support
+websockets
+
+# Testing
 pytest
-uvicorn
