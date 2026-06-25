@@ -1340,7 +1340,7 @@ def appointment_booker_node(state: GraphState):
                 # Second attempt (clarify again)
                 slots = state.get("slot_options", [])
                 if slots:
-                    options_text = format_numbered_options(slots, "time", ["date"])
+                    options_text = format_slot_options(slots)
                     return {
                         "awaiting": "slot_selection_retry_2",
                         "slot_options": slots,
@@ -1378,7 +1378,7 @@ def appointment_booker_node(state: GraphState):
                 # First attempt (initial clarification)
                 slots = state.get("slot_options", [])
                 if slots:
-                    options_text = format_numbered_options(slots, "time", ["date"])
+                    options_text = format_slot_options(slots)
                     return {
                         "awaiting": "slot_selection_retry_1",
                         "slot_options": slots,

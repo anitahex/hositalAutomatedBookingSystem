@@ -19,8 +19,6 @@ const sidebarHandleLabel = document.querySelector("#sidebarHandleLabel");
 const scrollTopBtn = document.querySelector("#scrollTopBtn");
 const routingMeta = document.querySelector("#routingMeta");
 const topbarCopy = document.querySelector("#topbarCopy");
-const chatSummary = document.querySelector("#chatSummary");
-const recentHistory = document.querySelector("#recentHistory");
 const activeAppointmentsPreview = document.querySelector("#activeAppointmentsPreview");
 const documentUpload = document.querySelector("#documentUpload");
 const uploadStatus = document.querySelector("#uploadStatus");
@@ -1180,43 +1178,8 @@ function renderTokenUsage(usage) {
   tokenCalls.textContent = formatNumber(summary.llm_calls);
 }
 
-function renderChatSummary(summary) {
-  chatSummary.textContent = summary && String(summary).trim() ? summary : "Waiting for a little context.";
-}
-
-function renderRecentHistory(history) {
-  recentHistory.replaceChildren();
-
-  if (!Array.isArray(history) || !history.length) {
-    const empty = document.createElement("p");
-    empty.className = "panel-note";
-    empty.textContent = "No recent turns yet.";
-    recentHistory.appendChild(empty);
-    return;
-  }
-
-  history.slice(-5).forEach((turn, index) => {
-    const item = document.createElement("article");
-    item.className = "history-turn";
-
-    const meta = document.createElement("div");
-    meta.className = "history-turn-meta";
-
-    const role = document.createElement("span");
-    role.textContent = turn.role || turn.sender || (index % 2 === 0 ? "patient" : "assistant");
-
-    const time = document.createElement("span");
-    time.textContent = formatDateTime(turn.created_at || turn.timestamp);
-
-    meta.append(role, time);
-
-    const text = document.createElement("p");
-    text.textContent = turn.text || turn.content || turn.message || "";
-
-    item.append(meta, text);
-    recentHistory.appendChild(item);
-  });
-}
+function renderChatSummary() {}
+function renderRecentHistory() {}
 
 function renderActiveAppointments(bookings) {
   activeAppointmentsPreview.replaceChildren();

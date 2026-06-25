@@ -613,6 +613,83 @@ def _heuristic_supervisor_route(state: GraphState) -> dict | None:
     return None
 
 
+_CLINICAL_NOTE_PROMPT = """You are a hospital clinical documentation specialist. Generate a CONCISE yet COMPREHENSIVE pre-appointment summary (max 10-12 lines).
+
+## PRE-APPOINTMENT CLINICAL SUMMARY
+
+**Patient:** [Name], [Age], [Blood Group] | **Date:** [Date]
+
+**Chief Complaint:**
+[1 sentence with patient's main complaint, severity, and functional impact]
+
+**History:**
+- Duration: [timeline] | Onset: [sudden/gradual] | Pattern: [constant/intermittent]
+- Location: [anatomical area] | Associated: [other symptoms or "None"]
+- Trigger: [cause or "Unknown"] | Medications tried: [list or "None"]
+
+**Medical Background:**
+[Allergies, existing conditions, relevant history - or "None reported"]
+
+**Clinical Note for Doctor:**
+[2-3 sentences: Why this department is appropriate, what to assess, any red flags]
+
+**Recommended Department:** [Department]
+
+**Home Care Recommendations:**
+[2-3 specific, actionable care tips]
+
+---
+
+CRITICAL:
+- Capture EXACT details patient mentioned (severity, duration, location, medications)
+- Be SPECIFIC, not generic
+- Include FUNCTIONAL IMPACT in chief complaint
+- Max 10-12 lines total, no repetition
+- Omit fields where patient didn't provide data (don't say "unknown")"""
+
+
+def _generate_clinical_note(state: GraphState, user_text: str | None = None) -> str:
+    """Call LLM to generate a full structured clinical summary from whatever state data exists."""
+    collected = _current_facts(state)
+    profile = state.get("patient_profile") or {}
+    symptoms = [str(s).strip() for s in (state.get("symptoms") or []) if str(s).strip()]
+    department = state.get("target_department") or "General Physician"
+
+    user_prompt = (
+        f"Patient: {profile.get('name', 'Unknown')}, Age {profile.get('age', '?')}, "
+        f"Blood Group {profile.get('blood_group', '?')}\n"
+        f"Date: {date.today().isoformat()}\n\n"
+        f"Symptoms: {', '.join(symptoms) or 'Not specified'}\n"
+        f"Severity: {collected.get('severity') or state.get('severity') or ''}\n"
+        f"Duration: {collected.get('duration') or ''}\n"
+        f"Location: {collected.get('location') or ''}\n"
+        f"Onset/Trigger: {collected.get('cause') or collected.get('trigger') or collected.get('onset') or ''}\n"
+        f"Pattern: {collected.get('severity_pattern') or collected.get('pattern') or ''}\n"
+        f"Associated Symptoms: {collected.get('associated_symptoms') or ''}\n"
+        f"Functional Impact: {collected.get('functional_impact') or ''}\n"
+        f"Medications Tried: {collected.get('medications') or ''}\n"
+        f"Allergies: {profile.get('allergies') or collected.get('allergies') or ''}\n"
+        f"Existing Conditions: {profile.get('health_issues') or collected.get('existing_conditions') or ''}\n"
+        f"Department: {department}\n"
+    )
+    if user_text and user_text.strip():
+        user_prompt += f"Additional patient note: {user_text.strip()}\n"
+
+    try:
+        return generate_text(
+            system_prompt=_CLINICAL_NOTE_PROMPT,
+            user_prompt=user_prompt,
+            node_name="supervisor_clinical_note",
+            chat_summary=state.get("chat_summary"),
+            include_history=False,
+            history_turns=0,
+            patient_id=str(state.get("patient_id") or ""),
+            chat_session_id=str(state.get("chat_session_id") or ""),
+        ).strip()
+    except Exception:
+        return _summarise_clinical_note(state, user_text)
+
+
 def _summarise_clinical_note(state: GraphState, user_text: str | None = None) -> str:
     # Prefer the pre-checkup report note generated during intake when available
     if state.get("pre_checkup_note"):
@@ -901,7 +978,7 @@ def continue_current_node(state: GraphState):
             booking_note = (
                 state.get("pre_checkup_summary")
                 or state.get("pre_checkup_clinical_note")
-                or _summarise_clinical_note(state)
+                or _generate_clinical_note(state)
             )
             updated_booking = update_booking_note(
                 booking_id=str(booking["booking_id"]),
@@ -984,7 +1061,11 @@ def continue_current_node(state: GraphState):
                 "final_response": response,
             }
 
-        booking_note = _summarise_clinical_note(state, user_input)
+        booking_note = (
+            state.get("pre_checkup_summary")
+            or state.get("pre_checkup_clinical_note")
+            or _generate_clinical_note(state, user_input)
+        )
         updated_booking = update_booking_note(
             booking_id=str(booking["booking_id"]),
             patient_id=str(state.get("patient_id") or ""),
