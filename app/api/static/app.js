@@ -353,9 +353,11 @@ async function refreshActiveAppointments() {
     const bookings = data.bookings || [];
 
     if (state) {
+      // DB is authoritative — replace, don't merge, so stale bookings from a
+      // previous user's session cannot survive a login with a different account.
       state = normalizeChatState({
         active_appointments: bookings,
-        upcoming_bookings: mergeBookingLists(state.upcoming_bookings, bookings),
+        upcoming_bookings: bookings,
       }, state);
     }
 

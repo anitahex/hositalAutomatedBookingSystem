@@ -159,13 +159,16 @@ def _prepare_chat_state(payload: dict, user: dict):
 
     if patient_id:
         try:
+            # Always use the DB as the authoritative source for appointments.
+            # Never merge with client-sent state — that would leak bookings
+            # from a previous user's session if the same browser logs in as
+            # a different account without a full page reload.
             appointments = upcoming_bookings_for_patient(patient_id, limit=5)
             state["active_appointments"] = appointments
+            state["upcoming_bookings"] = appointments
+            state["confirmed_bookings"] = appointments
             if appointments:
-                merged_bookings = _merge_booking_lists(state.get("upcoming_bookings"), appointments)
-                state["upcoming_bookings"] = merged_bookings
-                state["confirmed_bookings"] = merged_bookings
-                state["confirmed_booking"] = merged_bookings[-1]
+                state["confirmed_booking"] = appointments[-1]
         except Exception as exc:
             logger.warning("Could not load active appointments for %s: %s", patient_id, exc)
 

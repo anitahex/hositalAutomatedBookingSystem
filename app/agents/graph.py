@@ -211,7 +211,12 @@ async def arun_patient_chat(
     current_state.pop("next_agent", None)
     current_state["supervisor_checked_input"] = False
 
-    thread_id = str(current_state.get("session_id") or current_state.get("chat_session_id") or patient_id or "default-session")
+    # Namespace thread_id by patient so LangGraph checkpoints are strictly
+    # per-user. Using only session_id risks cross-user state leakage if the
+    # session_id falls back to patient_id or the literal "default-session".
+    _pid = str(patient_id or current_state.get("patient_id") or "anon")
+    _sid = str(current_state.get("session_id") or current_state.get("chat_session_id") or "default")
+    thread_id = f"{_pid}::{_sid}"
     result = await graph.ainvoke(
         current_state,
         config={"configurable": {"thread_id": thread_id}},
