@@ -331,12 +331,13 @@ def _fallback_profile_response(state: GraphState) -> dict | None:
 
 
 def _heuristic_supervisor_route(state: GraphState) -> dict | None:
+    awaiting = state.get("awaiting")
+
     user_input = (state.get("user_input") or "").strip()
     if not user_input:
         return None
 
     lowered = " ".join(user_input.lower().replace("'", "").split())
-    awaiting = state.get("awaiting")
     profile_route = _fallback_profile_response(state)
     if profile_route:
         return profile_route
@@ -376,6 +377,12 @@ def _heuristic_supervisor_route(state: GraphState) -> dict | None:
             intent="direct_booking",
             awaiting=None,
         )
+
+    # User is answering the "should I forward your report?" question.
+    # Must be checked BEFORE _in_booking_decision which would wrongly
+    # intercept "yes" when checkup_summary_shown + target_department are set.
+    if awaiting == "report_forwarding_decision":
+        return _route("continue_current")
 
     if awaiting == "end_confirmation":
         if _looks_like_new_symptoms(lowered):
@@ -463,6 +470,16 @@ def _heuristic_supervisor_route(state: GraphState) -> dict | None:
             )
 
     if awaiting == "conversation":
+        # During conversation intake, keep asking questions - don't route away yet
+        # Only route away if user explicitly asks for remedy or booking or other actions
+        questions_asked = state.get("questions_asked") or []
+
+        # If we haven't asked 5 questions yet, continue conversation
+        if len(questions_asked) < 5:
+            if not _looks_like_end_chat(lowered) and not _looks_like_thanks(lowered):
+                return _route("conversation_agent")
+
+        # After 5 questions, then check for explicit requests
         if _looks_like_remedy_request(lowered) and state.get("symptoms"):
             return _route("remedy_agent", awaiting=None, remedy_requested=True)
         if _looks_like_general_doctor_request(lowered) and state.get("symptoms"):
@@ -472,16 +489,14 @@ def _heuristic_supervisor_route(state: GraphState) -> dict | None:
                 intent="direct_booking",
                 awaiting=None,
             )
-        if (
-            not _looks_like_end_chat(lowered)
-            and not _looks_like_thanks(lowered)
-            and not _extract_requested_department(user_input)
-            and not _looks_like_upcoming_booking_query(lowered)
-            and not _looks_like_billing_request(lowered)
-            and not _looks_like_clinical_note_query(lowered)
-            and not _looks_like_add_symptoms_request(lowered)
-        ):
-            return _route("conversation_agent")
+        # If conversation is done and no explicit request, proceed to checkup report
+        if state.get("symptoms"):
+            return _route(
+                "checkup_report",
+                awaiting=None,
+                active_intent="triage_symptoms",
+                intent="triage_symptoms"
+            )
 
     if _looks_like_billing_request(lowered):
         return _route(
@@ -520,14 +535,28 @@ def _heuristic_supervisor_route(state: GraphState) -> dict | None:
 
     requested_department = _extract_requested_department(user_input)
     if requested_department:
-        return _route(
-            "appointment_booker",
-            active_intent="direct_booking",
-            intent="direct_booking",
-            requested_department=requested_department,
-            target_department=requested_department,
-            awaiting=None,
-        )
+        # Only route to booking if we already have symptoms
+        # Otherwise ask triage_router to collect symptoms first
+        if state.get("symptoms"):
+            return _route(
+                "appointment_booker",
+                active_intent="direct_booking",
+                intent="direct_booking",
+                requested_department=requested_department,
+                target_department=requested_department,
+                awaiting=None,
+            )
+        else:
+            # User requested department but no symptoms collected yet
+            # Start triage to ask about symptoms
+            return _route(
+                "triage_router",
+                active_intent="triage_symptoms",
+                intent="triage_symptoms",
+                requested_department=requested_department,
+                target_department=requested_department,
+                awaiting=None,
+            )
 
     if _looks_like_general_doctor_request(lowered) and state.get("symptoms"):
         return _route(
@@ -545,7 +574,11 @@ def _heuristic_supervisor_route(state: GraphState) -> dict | None:
     # bookings, billing, etc.) are handled above and take priority.
     if awaiting in {
         "doctor_selection",
+        "doctor_selection_retry_1",
+        "doctor_selection_retry_2",
         "slot_selection",
+        "slot_selection_retry_1",
+        "slot_selection_retry_2",
         "cancellation_selection",
         "date_selection",
         "reschedule_selection",
@@ -742,9 +775,9 @@ Latest user message: {user_input_with_context}"""
 def _fallback_route_after_node(state: GraphState) -> str:
     awaiting = state.get("awaiting")
     active_intent = _current_intent(state)
-
-    if state.get("final_response"):
-        return "finish"
+    intake_complete = state.get("intake_complete")
+    questions_asked = len(state.get("questions_asked", []))
+    print(f"[FALLBACK_ROUTE] awaiting={awaiting}, active_intent={active_intent}, intake_complete={intake_complete}, questions={questions_asked}")
 
     if state.get("chat_closed"):
         return "finish"
@@ -755,8 +788,21 @@ def _fallback_route_after_node(state: GraphState) -> str:
     if awaiting == "remedy_check":
         return "remedy_agent"
 
+    # report_forwarding_decision: booking was just confirmed and the question
+    # "Should I forward your report?" was shown. Deliver to user — the NEXT
+    # user message (yes/no) re-enters via _heuristic_supervisor_route which
+    # has the explicit fast-path to continue_current.
+    if awaiting == "report_forwarding_decision":
+        return "finish"
+
+    # end_confirmation: booking flow is done (report forwarded or skipped).
+    # Deliver to user — don't loop back to appointment_booker via the
+    # active_intent="direct_booking" fallthrough below.
+    if awaiting == "end_confirmation":
+        return "finish"
+
     if awaiting == "conversation":
-        return "conversation_agent"
+        return "finish"
 
     if awaiting == "file_clarification":
         return "document_analyzer"
@@ -764,9 +810,17 @@ def _fallback_route_after_node(state: GraphState) -> str:
     if awaiting == "appointment_resolver":
         return "appointment_resolver"
 
+    # Booking menus (doctor list, slot list, etc.) were just shown by appointment_booker.
+    # Deliver the response to the user — don't call appointment_booker again on the same
+    # turn. The next user message re-enters via _heuristic_supervisor_route which has
+    # the fast-path that sends booking sub-states back to appointment_booker.
     if awaiting in {
         "doctor_selection",
+        "doctor_selection_retry_1",
+        "doctor_selection_retry_2",
         "slot_selection",
+        "slot_selection_retry_1",
+        "slot_selection_retry_2",
         "cancellation_selection",
         "date_selection",
         "reschedule_selection",
@@ -776,7 +830,7 @@ def _fallback_route_after_node(state: GraphState) -> str:
         "symptom_follow_up",
         "booking_decision",
     }:
-        return "appointment_booker"
+        return "finish"
 
     if active_intent == "direct_booking":
         if state.get("target_department") or state.get("requested_department") or state.get("requested_doctor_name"):
@@ -788,13 +842,22 @@ def _fallback_route_after_node(state: GraphState) -> str:
         return "medical_rag"
 
     if active_intent == "triage_symptoms":
-        if state.get("remedy_requested") or state.get("remedy_given"):
+        questions_asked = len(state.get("questions_asked", []))
+        intake_complete = state.get("intake_complete")
+        print(f"[SUPERVISOR_HEURISTIC] triage_symptoms: questions={questions_asked}, intake_complete={intake_complete}")
+        # After 6 intake questions, show department recommendation and offer booking
+        # Check BOTH intake_complete flag AND question count to handle state merging issues
+        if intake_complete or questions_asked >= 6 or state.get("remedy_requested") or state.get("remedy_given"):
+            print(f"[SUPERVISOR_HEURISTIC] Intake complete! checkup_summary_shown={state.get('checkup_summary_shown')}, has_booking={bool(_latest_booking(state))}")
             # First visit (no prior booking): show pre-checkup summary + department match
             # instead of giving home remedies. Remedy path is kept only for patients
             # who already have a booking and want to forward new symptoms.
             if not state.get("checkup_summary_shown") and not _latest_booking(state):
+                print(f"[SUPERVISOR_HEURISTIC] Routing to checkup_report")
                 return "checkup_report"
+            print(f"[SUPERVISOR_HEURISTIC] Routing to remedy_agent")
             return "remedy_agent"
+        print(f"[SUPERVISOR_HEURISTIC] Intake not complete, routing to conversation_agent")
         return "conversation_agent"
 
     if state.get("symptoms"):
@@ -817,6 +880,94 @@ def continue_current_node(state: GraphState):
             "messages": history[-10:],
             "final_response": response,
         }
+
+    if awaiting == "report_forwarding_decision":
+        booking = _latest_booking(state)
+        if not booking:
+            response = "I could not find your appointment to attach the report to."
+            history.append({"role": "assistant", "text": response})
+            return {
+                "awaiting": None,
+                "note_forwarded": False,
+                "conversation_history": history,
+                "messages": history[-10:],
+                "final_response": response,
+            }
+
+        if _is_affirmative(user_input):
+            # Prefer the full GPT-generated clinical summary (shown to the patient)
+            # as it contains the complete structured clinical details.
+            # Fall back to the technical report, then to an inline-generated note.
+            booking_note = (
+                state.get("pre_checkup_summary")
+                or state.get("pre_checkup_clinical_note")
+                or _summarise_clinical_note(state)
+            )
+            updated_booking = update_booking_note(
+                booking_id=str(booking["booking_id"]),
+                patient_id=str(state.get("patient_id") or ""),
+                booking_note=booking_note,
+            )
+
+            if not updated_booking:
+                response = "I could not attach the clinical note right now. It will still be available in your appointment record."
+                history.append({"role": "assistant", "text": response})
+                return {
+                    "awaiting": "end_confirmation",
+                    "note_forwarded": False,
+                    "conversation_history": history,
+                    "messages": history[-10:],
+                    "final_response": response,
+                }
+
+            upcoming_bookings = list(state.get("upcoming_bookings") or state.get("confirmed_bookings") or [])
+            synced_bookings = []
+            for item in upcoming_bookings:
+                if not isinstance(item, dict):
+                    continue
+                if item.get("booking_id") == updated_booking.get("booking_id") or item.get("slot_id") == updated_booking.get("slot_id"):
+                    synced_bookings.append(updated_booking)
+                else:
+                    synced_bookings.append(item)
+            if not synced_bookings:
+                synced_bookings = [updated_booking]
+
+            doctor_name = updated_booking.get("doctor") or updated_booking.get("doctor_name", "your doctor")
+            response = (
+                f"✓ **Clinical report sent!**\n\n"
+                f"Your detailed clinical summary has been forwarded to {doctor_name} "
+                f"for your appointment on {updated_booking.get('time') or updated_booking.get('start_time')}.\n\n"
+                f"{doctor_name} will review it before you arrive and may have additional questions during your visit.\n\n"
+                f"**Appointment confirmed.** Please arrive 10 minutes early. Take care!"
+            )
+            history.append({"role": "assistant", "text": response})
+            return _sync_state_aliases(
+                {
+                    "awaiting": "end_confirmation",
+                    "note_forwarded": True,
+                    "conversation_history": history,
+                    "messages": history[-10:],
+                    "upcoming_bookings": synced_bookings,
+                    "confirmed_bookings": synced_bookings,
+                    "active_appointments": synced_bookings,
+                    "final_response": response,
+                }
+            )
+        else:
+            # User declined to forward report
+            response = (
+                "No problem! Your appointment is still confirmed, but the clinical report won't be forwarded. "
+                f"You can discuss all the details with {booking.get('doctor') or 'your doctor'} during your visit.\n\n"
+                "Take care!"
+            )
+            history.append({"role": "assistant", "text": response})
+            return {
+                "awaiting": "end_confirmation",
+                "note_forwarded": False,
+                "conversation_history": history,
+                "messages": history[-10:],
+                "final_response": response,
+            }
 
     if awaiting == "remedy_check" and user_input and _is_affirmative(user_input):
         booking = _latest_booking(state)
@@ -923,18 +1074,23 @@ Answer the user's hospital-related question clearly, safely, and concisely. If t
 
 
 def supervisor_node(state: GraphState):
-    if state.get("final_response"):
-        return _route("finish")
-
     # After a node completes and returns to supervisor, use fallback routing
     # instead of re-running heuristics on the stale user_input. This prevents
     # loops where medical_rag re-routes to itself because the heuristic still
     # sees "book appointment" in user_input even after the department was found.
-    if state.get("supervisor_checked_input"):
-        return _route(_fallback_route_after_node(state))
+
+    awaiting = state.get("awaiting")
+    supervisor_checked = state.get("supervisor_checked_input")
+    print(f"[SUPERVISOR_NODE] awaiting={awaiting}, supervisor_checked={supervisor_checked}")
+
+    if supervisor_checked:
+        route = _fallback_route_after_node(state)
+        print(f"[SUPERVISOR_NODE] Using fallback route: {route}")
+        return _route(route)
 
     user_input = state.get("user_input") or ""
     heuristic_route = _heuristic_supervisor_route(state)
+    print(f"[SUPERVISOR_NODE] Heuristic route result: {heuristic_route}")
     if heuristic_route:
         return heuristic_route
 
@@ -1062,4 +1218,7 @@ def supervisor_node(state: GraphState):
 
 
 def route_from_supervisor(state: GraphState):
-    return state.get("next_agent", "finish")
+    next_agent = state.get("next_agent", "finish")
+    awaiting = state.get("awaiting")
+    print(f"[ROUTE_FROM_SUPERVISOR] Returning: {next_agent}, awaiting={awaiting}")
+    return next_agent

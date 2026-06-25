@@ -221,22 +221,24 @@ function safeText(value, fallback = "-") {
 }
 
 function mergeBookingLists(existing = [], incoming = []) {
-  const merged = [];
-  const seen = new Set();
+  // Use a Map so a booking appearing in both lists is merged, with `incoming`
+  // fields overwriting `existing` — this ensures an updated booking_note from
+  // the backend replaces the stale version already held in client state.
+  const map = new Map();
 
-  [...(existing || []), ...(incoming || [])].forEach((booking) => {
-    if (!booking || typeof booking !== "object") {
-      return;
-    }
+  [...(existing || [])].forEach((booking) => {
+    if (!booking || typeof booking !== "object") return;
     const key = `${booking.booking_id || ""}::${booking.slot_id || ""}`;
-    if (seen.has(key)) {
-      return;
-    }
-    seen.add(key);
-    merged.push(booking);
+    map.set(key, booking);
   });
 
-  return merged;
+  [...(incoming || [])].forEach((booking) => {
+    if (!booking || typeof booking !== "object") return;
+    const key = `${booking.booking_id || ""}::${booking.slot_id || ""}`;
+    map.set(key, map.has(key) ? { ...map.get(key), ...booking } : booking);
+  });
+
+  return Array.from(map.values());
 }
 
 function normalizeChatState(nextState, fallbackState = null) {
@@ -577,6 +579,8 @@ async function readChatStream(response, assistantMessage) {
   if (buffer.trim()) {
     const event = JSON.parse(buffer);
     if (event.type === "status_token") {
+      // Don't return early - still need to finish the message
+      finishStreamingMessage(assistantMessage);
       return finalPayload;
     }
     if (event.type === "start_response") {
@@ -1243,6 +1247,31 @@ function renderActiveAppointments(bookings) {
   });
 }
 
+function renderMarkdown(text) {
+  // Escape HTML first to prevent XSS
+  const escaped = text
+    .replace(/&/g, "&amp;")
+    .replace(/</g, "&lt;")
+    .replace(/>/g, "&gt;");
+
+  return escaped
+    // Headings: ## and ###
+    .replace(/^### (.+)$/gm, "<h4>$1</h4>")
+    .replace(/^## (.+)$/gm, "<h3>$1</h3>")
+    .replace(/^# (.+)$/gm, "<h2>$1</h2>")
+    // Bold
+    .replace(/\*\*(.+?)\*\*/g, "<strong>$1</strong>")
+    // Horizontal rule
+    .replace(/^---+$/gm, "<hr>")
+    // Bullet list items
+    .replace(/^[-•] (.+)$/gm, "<li>$1</li>")
+    // Wrap consecutive <li> in <ul>
+    .replace(/(<li>[\s\S]*?<\/li>)(\s*(?!<li>))/g, "<ul>$1</ul>$2")
+    // Paragraphs: blank lines become breaks
+    .replace(/\n{2,}/g, "<br><br>")
+    .replace(/\n/g, "<br>");
+}
+
 function buildClinicalNotesBlock(note, compact = false) {
   if (!note) {
     return document.createDocumentFragment();
@@ -1250,13 +1279,14 @@ function buildClinicalNotesBlock(note, compact = false) {
 
   const notePanel = document.createElement("details");
   notePanel.className = compact ? "clinical-notes-block compact" : "clinical-notes-block";
+  notePanel.open = true;
 
   const noteSummary = document.createElement("summary");
   noteSummary.textContent = "Clinical Notes";
 
   const noteBody = document.createElement("div");
   noteBody.className = "clinical-notes-body";
-  noteBody.textContent = note;
+  noteBody.innerHTML = renderMarkdown(note);
 
   notePanel.append(noteSummary, noteBody);
   return notePanel;
@@ -1409,7 +1439,7 @@ function renderQuickActions() {
 
   if (state.awaiting === "slot_selection" && Array.isArray(state.slot_options)) {
     state.slot_options.forEach((slot, index) => {
-      const time = new Date(slot.start_time).toLocaleString();
+      const time = new Date(slot.start_time).toLocaleString(undefined, { dateStyle: "short", timeStyle: "short" });
       addQuickAction(`${index + 1}. ${time}`, String(index + 1));
     });
     addQuickAction("No appointment", "no");
@@ -1448,7 +1478,7 @@ function renderQuickActions() {
 
   if (state.awaiting === "reschedule_slot_selection" && Array.isArray(state.reschedule_slot_options)) {
     state.reschedule_slot_options.forEach((slot, index) => {
-      const time = new Date(slot.start_time).toLocaleString();
+      const time = new Date(slot.start_time).toLocaleString(undefined, { dateStyle: "short", timeStyle: "short" });
       addQuickAction(`${index + 1}. ${time}`, String(index + 1));
     });
   }
@@ -1805,9 +1835,9 @@ async function showChatHistory() {
     const shell = document.createElement("div");
     shell.className = "history-browser";
 
-    const sessionList = document.createElement("nav");
-    sessionList.className = "history-session-list";
-    sessionList.setAttribute("aria-label", "Chat sessions");
+    const sidebar = document.createElement("nav");
+    sidebar.className = "history-sidebar";
+    sidebar.setAttribute("aria-label", "Chat sessions");
 
     const transcript = document.createElement("section");
     transcript.className = "history-transcript";
@@ -1815,41 +1845,47 @@ async function showChatHistory() {
     const buildMeta = (session) => ({
       dateLabel: formatDateLabel(session.started_at || session.date),
       messageCount: session.message_count || (session.messages || []).length,
-      sessionId: session.chat_session_id || "legacy-session",
     });
 
     const renderMessage = (message) => {
-      const item = document.createElement("article");
-      item.className = `history-message ${message.role}`;
+      const isPatient = message.role === "patient" || message.role === "user";
+      const item = document.createElement("div");
+      item.className = `hx-bubble ${isPatient ? "hx-bubble--patient" : "hx-bubble--assistant"}`;
 
-      const role = document.createElement("span");
-      role.textContent = message.role;
-      const text = document.createElement("p");
-      text.textContent = message.text || "";
+      const bubble = document.createElement("div");
+      bubble.className = "hx-bubble-body";
+      bubble.innerHTML = renderMarkdown(message.text || "");
+
       const time = document.createElement("time");
-      time.textContent = formatDateTime(message.created_at);
+      time.className = "hx-bubble-time";
+      time.textContent = message.created_at
+        ? new Date(message.created_at).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" })
+        : "";
 
-      item.append(role, text, time);
+      item.append(bubble, time);
       return item;
     };
 
-    function renderSession(session, selectedButton) {
-      sessionList.querySelectorAll("button").forEach((button) => {
-        button.classList.toggle("active", button === selectedButton);
+    function renderSession(session, selectedCard) {
+      sidebar.querySelectorAll(".history-session-card").forEach((c) => {
+        c.classList.toggle("active", c === selectedCard);
       });
 
       transcript.replaceChildren();
 
       const header = document.createElement("div");
       header.className = "history-transcript-header";
-      const title = document.createElement("h3");
-      title.textContent = session.title || "Conversation";
-      const meta = document.createElement("p");
+
+      const titleEl = document.createElement("h3");
+      titleEl.className = "history-transcript-title";
+      titleEl.textContent = session.title || "Conversation";
+
       const details = buildMeta(session);
-      meta.textContent = `${details.dateLabel} - ${details.messageCount} messages`;
-      const sessionId = document.createElement("code");
-      sessionId.textContent = details.sessionId;
-      header.append(title, meta, sessionId);
+      const metaEl = document.createElement("span");
+      metaEl.className = "history-transcript-meta";
+      metaEl.textContent = `${details.dateLabel} · ${details.messageCount} messages`;
+
+      header.append(titleEl, metaEl);
       transcript.appendChild(header);
 
       const thread = document.createElement("div");
@@ -1861,26 +1897,30 @@ async function showChatHistory() {
     }
 
     sessions.forEach((session, index) => {
-      const button = document.createElement("button");
-      button.type = "button";
-      button.className = "history-session-button";
+      const card = document.createElement("button");
+      card.type = "button";
+      card.className = "history-session-card";
 
-      const title = document.createElement("strong");
-      title.textContent = session.title || "Conversation";
-      const meta = document.createElement("span");
       const details = buildMeta(session);
-      meta.textContent = `${details.dateLabel} - ${details.messageCount} messages`;
 
-      button.append(title, meta);
-      button.addEventListener("click", () => renderSession(session, button));
-      sessionList.appendChild(button);
+      const cardTitle = document.createElement("span");
+      cardTitle.className = "hsc-title";
+      cardTitle.textContent = session.title || "Conversation";
+
+      const cardMeta = document.createElement("span");
+      cardMeta.className = "hsc-meta";
+      cardMeta.textContent = `${details.dateLabel} · ${details.messageCount} messages`;
+
+      card.append(cardTitle, cardMeta);
+      card.addEventListener("click", () => renderSession(session, card));
+      sidebar.appendChild(card);
 
       if (index === 0) {
-        renderSession(session, button);
+        renderSession(session, card);
       }
     });
 
-    shell.append(sessionList, transcript);
+    shell.append(sidebar, transcript);
     profilePanelBody.appendChild(shell);
   } catch (error) {
     renderEmptyPanel(error.message);

@@ -118,7 +118,7 @@ def available_departments(limit: int = 20):
                     MIN(s.start_time) AS next_available_time
                 FROM doctors d
                 JOIN appointment_slots s ON s.doctor_id = d.doctor_id
-                WHERE s.start_time > NOW()
+                WHERE s.start_time > NOW() + INTERVAL '30 minutes'
                     AND s.start_time <= NOW() + INTERVAL '7 days'
                     AND NOT EXISTS (
                         SELECT 1
@@ -256,7 +256,7 @@ def available_doctors_for_department(department: str, limit: int = 5):
                 FROM doctors d
                 JOIN appointment_slots s ON s.doctor_id = d.doctor_id
                 WHERE d.department = %s
-                    AND s.start_time > NOW()
+                    AND s.start_time > NOW() + INTERVAL '30 minutes'
                     AND s.start_time <= NOW() + INTERVAL '7 days'
                     AND NOT EXISTS (
                         SELECT 1
@@ -304,7 +304,7 @@ def available_doctors_for_department_on_date(department: str, requested_date: st
                 FROM doctors d
                 JOIN appointment_slots s ON s.doctor_id = d.doctor_id
                 WHERE d.department = %s
-                    AND s.start_time > NOW()
+                    AND s.start_time > NOW() + INTERVAL '30 minutes'
                     AND s.start_time <= NOW() + INTERVAL '7 days'
                     AND DATE(s.start_time) = %s
                     AND NOT EXISTS (
@@ -353,7 +353,7 @@ def available_doctors_by_name(name: str, limit: int = 5):
                 FROM doctors d
                 JOIN appointment_slots s ON s.doctor_id = d.doctor_id
                 WHERE d.name ILIKE %s
-                    AND s.start_time > NOW()
+                    AND s.start_time > NOW() + INTERVAL '30 minutes'
                     AND s.start_time <= NOW() + INTERVAL '7 days'
                     AND NOT EXISTS (
                         SELECT 1
@@ -405,7 +405,7 @@ def available_doctors_by_name_on_date(name: str, requested_date: str, limit: int
                 FROM doctors d
                 JOIN appointment_slots s ON s.doctor_id = d.doctor_id
                 WHERE d.name ILIKE %s
-                    AND s.start_time > NOW()
+                    AND s.start_time > NOW() + INTERVAL '30 minutes'
                     AND s.start_time <= NOW() + INTERVAL '7 days'
                     AND DATE(s.start_time) = %s
                     AND NOT EXISTS (
@@ -446,7 +446,7 @@ def available_slots_for_doctor(doctor_id: str, limit: int = 5):
                 FROM appointment_slots s
                 JOIN doctors d ON s.doctor_id = d.doctor_id
                 WHERE s.doctor_id = %s
-                    AND s.start_time > NOW()
+                    AND s.start_time > NOW() + INTERVAL '30 minutes'
                     AND s.start_time <= NOW() + INTERVAL '7 days'
                     AND NOT EXISTS (
                         SELECT 1
@@ -486,7 +486,7 @@ def available_slots_for_doctor_on_date(doctor_id: str, requested_date: str, limi
                 FROM appointment_slots s
                 JOIN doctors d ON s.doctor_id = d.doctor_id
                 WHERE s.doctor_id = %s
-                    AND s.start_time > NOW()
+                    AND s.start_time > NOW() + INTERVAL '30 minutes'
                     AND s.start_time <= NOW() + INTERVAL '7 days'
                     AND DATE(s.start_time) = %s
                     AND NOT EXISTS (
@@ -540,7 +540,7 @@ def book_selected_slot(slot_id: str, patient_id: str | None = None, booking_note
                     FROM appointment_slots s
                     JOIN doctors d ON s.doctor_id = d.doctor_id
                     WHERE s.slot_id = %s
-                        AND s.start_time > NOW()
+                        AND s.start_time > NOW() + INTERVAL '30 minutes'
                         AND s.start_time <= NOW() + INTERVAL '7 days'
                         AND NOT EXISTS (
                             SELECT 1
@@ -616,7 +616,8 @@ def book_selected_slot(slot_id: str, patient_id: str | None = None, booking_note
 def _normalized_booking_note(note: str | None) -> str | None:
     if not note:
         return None
-    cleaned = " ".join(str(note).strip().split())
+    # Only strip leading/trailing whitespace; preserve internal newlines and markdown structure
+    cleaned = str(note).strip()
     return cleaned or None
 
 

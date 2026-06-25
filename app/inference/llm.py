@@ -14,18 +14,18 @@ AZURE_ENDPOINT = os.getenv("AZURE_CONV_ENDPOINT") or os.getenv("AZURE_OPENAI_END
 AZURE_API_KEY = os.getenv("AZURE_CONV_API_KEY") or os.getenv("AZURE_OPENAI_API_KEY", "")
 AZURE_API_VERSION = os.getenv("AZURE_CONV_API_VERSION") or os.getenv("AZURE_OPENAI_API_VERSION", "2024-07-18")
 
-CONV_DEPLOYMENT = os.getenv("AZURE_CONV_DEPLOYMENT", "gpt-5.4-mini")
-ROUTER_DEPLOYMENT = os.getenv("AZURE_ROUTER_DEPLOYMENT", CONV_DEPLOYMENT)
-SUMMARY_DEPLOYMENT = os.getenv("AZURE_SUMMARY_DEPLOYMENT", CONV_DEPLOYMENT)
+CONV_DEPLOYMENT = os.getenv("AZURE_CONV_DEPLOYMENT", "gpt-4o")
+ROUTER_DEPLOYMENT = os.getenv("AZURE_ROUTER_DEPLOYMENT", "gpt-4o")
+SUMMARY_DEPLOYMENT = os.getenv("AZURE_SUMMARY_DEPLOYMENT", "gpt-4o")
 VISION_DEPLOYMENT = os.getenv("AZURE_VISION_DEPLOYMENT", "gpt-4o")
 
-MAX_TOKENS = int(os.getenv("AZURE_MAX_TOKENS", "512"))
-ROUTER_MAX_TOKENS = int(os.getenv("AZURE_ROUTER_MAX_TOKENS", "180"))
-SUMMARY_MAX_TOKENS = int(os.getenv("AZURE_SUMMARY_MAX_TOKENS", "256"))
+MAX_TOKENS = int(os.getenv("AZURE_MAX_TOKENS", "1024"))
+ROUTER_MAX_TOKENS = int(os.getenv("AZURE_ROUTER_MAX_TOKENS", "512"))
+SUMMARY_MAX_TOKENS = int(os.getenv("AZURE_SUMMARY_MAX_TOKENS", "512"))
 PROMPT_WINDOW_TURNS = int(os.getenv("AZURE_PROMPT_WINDOW_TURNS", "2"))
 SYSTEM_PROMPT = os.getenv(
     "AZURE_SYSTEM_PROMPT",
-    "You are a careful hospital assistant. Follow the user instructions exactly.",
+    "You are a clinical AI assistant for a hospital triage and intake system. You are knowledgeable about medical symptoms, anatomy, and appropriate clinical referrals. Always prioritize patient safety. Provide clear, evidence-based guidance and always recommend professional medical evaluation when appropriate.",
 )
 
 # Aliases so any module that imports these names keeps working

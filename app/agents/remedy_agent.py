@@ -13,24 +13,41 @@ parser = PydanticOutputParser(pydantic_object=RemedyResponse)
 follow_up_parser = PydanticOutputParser(pydantic_object=RemedyFollowUpDecision)
 MEMORY_POLICY = get_memory_policy("remedy_agent")
 
-STATIC_REMEDY_PROMPT = """You are a compassionate medical assistant agent. Review the patient's symptoms and context, then provide 2 brief, personalised care tips.
-- If 'Confirmed Booking' is empty/None, DO NOT offer a new booking.
-- If 'Confirmed Booking' contains data, close your response by asking if they would like you to forward these new symptoms as a clinical note to their upcoming doctor.
+STATIC_REMEDY_PROMPT = """You are a clinically-trained medical assistant providing evidence-based initial care guidance for a patient's symptoms.
+
+Your task: Based on the patient's symptoms and medical history, provide 2 practical, evidence-based care tips tailored to their specific symptoms.
+
+GUIDELINES:
+1. Be specific to their symptoms: "Since you have lower back pain with sciatica symptoms, avoid prolonged sitting and apply heat to the affected area."
+2. Include both immediate relief (what to do now) and ongoing management (what to monitor).
+3. Always include when to seek urgent care: "Seek immediate care if you develop sudden paralysis, complete loss of sensation, or loss of bowel/bladder control."
+4. Recommend follow-up: "Schedule a follow-up with an orthopedic specialist or physical therapist if symptoms persist beyond 2 weeks."
+5. If a booking is confirmed, ask if they'd like to forward new symptoms as a clinical note to their doctor.
+6. If no booking, recommend they seek specialist evaluation based on the severity.
+
+SAFETY FIRST: Do not provide medication recommendations (that's for doctors). Recommend rest, ice/heat, over-the-counter options patients already know about, and professional evaluation.
 
 Return ONLY valid JSON matching this exact structure:
-{"remedy_text":"string","follow_up_question":"string"}"""
+{"remedy_text":"string (2-3 sentences of practical guidance)","follow_up_question":"string (warm, specific to their situation)"}"""
 
-STATIC_FOLLOWUP_PROMPT = """You are a hospital assistant interpreting a patient's reply after remedy advice. Use meaning and context, not keyword matching.
+STATIC_FOLLOWUP_PROMPT = """You are a clinical assistant interpreting a patient's response after remedy advice. Use clinical judgment and semantic understanding, NOT keyword matching.
 
-Classify the reply:
-- improving: patient says the remedy helped or they feel better.
-- persisting_or_worsening: patient says symptoms continue, worsened, did not improve, or they want doctor help now.
-- agrees_to_forward_note: patient agrees to forward new symptoms to the booked doctor.
-- declines_forward_note: patient declines forwarding the note.
-- unclear: not enough information.
+Your task: Classify the patient's response to determine their symptom status and next clinical action.
+
+CLASSIFICATIONS:
+- improving: Patient reports symptoms are getting better, relief, improvement, or they tried the remedy and felt better.
+- persisting_or_worsening: Patient says symptoms haven't improved, are still there, got worse, or they're concerned and want medical help.
+- agrees_to_forward_note: Patient explicitly agrees to forward their symptoms to their booked doctor (yes, please do, go ahead, sure).
+- declines_forward_note: Patient explicitly declines to forward the note (no, not now, skip, later).
+- unclear: Response doesn't clearly map to above categories; needs clarification.
+
+IMPORTANT:
+- Read for meaning, not keywords. "I'm okay for now" ≠ improving if they also say "but still having pain."
+- If symptoms are persisting but they have a booking, they may agree OR decline to forward the note — these are separate classifications.
+- Clinical judgment: if symptoms are severe or worsening, recommend escalation even if patient hasn't explicitly asked.
 
 Return ONLY valid JSON matching this exact structure:
-{"patient_status":"improving|persisting_or_worsening|agrees_to_forward_note|declines_forward_note|unclear","reason":"string"}"""
+{"patient_status":"improving|persisting_or_worsening|agrees_to_forward_note|declines_forward_note|unclear","reason":"string (brief explanation of your classification)"}"""
 
 def _clean_json(raw_output: str) -> str:
     return raw_output.replace("```json", "").replace("```", "").strip()
@@ -214,7 +231,19 @@ async def remedy_agent_node(state: GraphState):
                 "intent": "direct_booking",
                 "final_response": bridge,
             }
-        
+
+        # Handle unclear responses - ask for clarification instead of assuming improving
+        if patient_status == "unclear":
+            clarification = "I didn't quite understand your response. Are you feeling better with the remedy suggestions, or is the pain still ongoing? Please let me know so I can help you further."
+            updated_history.append({"role": "assistant", "text": clarification})
+            return {
+                "conversation_history": updated_history,
+                "messages": updated_history[-6:],
+                "awaiting": "remedy_check",
+                "final_response": clarification,
+            }
+
+        # Default: assume improving (handles "improving" and other status values)
         closing = "I'm glad you're feeling better! Take care, and let me know if symptoms return."
         updated_history.append({"role": "assistant", "text": closing})
         return {"conversation_history": updated_history, "messages": updated_history[-6:], "awaiting": None, "persisting": False, "final_response": closing}

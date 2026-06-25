@@ -147,25 +147,41 @@ def _heuristic_department_candidates(
     scores: dict[str, float] = defaultdict(float)
     evidence: dict[str, list[str]] = defaultdict(list)
 
+    # PRIORITY: Check for exact/high-confidence symptom matches first
     for department, terms in DEPARTMENT_SYMPTOM_RULES.items():
         for term in terms:
             if term in text:
                 scores[department] += 1.0
                 evidence[department].append(term)
 
+    # If no matches, return empty
+    if not scores:
+        return []
+
     candidates = sorted(
         (
             {
                 "department": department,
-                "confidence": min(0.95, 0.55 + (scores[department] * 0.1)),
+                "confidence": min(0.99, 0.60 + (scores[department] * 0.15)),  # Increased confidence for strong matches
                 "matched_terms": evidence[department][:4],
                 "reason": f"Matched {', '.join(evidence[department][:3])}.",
             }
             for department in scores
+            if department != DEFAULT_DEPARTMENT  # Prioritize specific departments
         ),
         key=lambda item: float(item["confidence"]),
         reverse=True,
     )
+
+    # Append default department as fallback only if no specific matches found above
+    if not candidates and scores.get(DEFAULT_DEPARTMENT):
+        candidates.append({
+            "department": DEFAULT_DEPARTMENT,
+            "confidence": 0.55,
+            "matched_terms": evidence[DEFAULT_DEPARTMENT][:4],
+            "reason": f"Matched {', '.join(evidence[DEFAULT_DEPARTMENT][:3])}.",
+        })
+
     return candidates
 
 

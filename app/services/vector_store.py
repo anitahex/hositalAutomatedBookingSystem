@@ -3,6 +3,7 @@ import os
 from dotenv import load_dotenv
 from qdrant_client import QdrantClient
 from qdrant_client.http.exceptions import ResponseHandlingException, UnexpectedResponse
+from qdrant_client.models import Distance, PointStruct, VectorParams
 
 
 load_dotenv()
@@ -56,6 +57,31 @@ def run_qdrant_operation(operation):
             "QDRANT_MODE=local. For remote mode, check QDRANT_URL and "
             "QDRANT_API_KEY in .env, and make sure the Qdrant cluster is reachable."
         ) from exc
+
+
+def recreate_clinical_collection():
+    client = qdrant_client()
+    client.recreate_collection(
+        collection_name=QDRANT_COLLECTION,
+        vectors_config=VectorParams(size=VECTOR_SIZE, distance=Distance.COSINE),
+    )
+
+
+def upsert_clinical_points(records: list[dict]):
+    client = qdrant_client()
+    points = [
+        PointStruct(
+            id=r["row_number"],
+            vector=r["embedding"],
+            payload={
+                "department": r["department"],
+                "disease_name": r["disease_name"],
+                "chunk_text": r["chunk_text"],
+            },
+        )
+        for r in records
+    ]
+    client.upsert(collection_name=QDRANT_COLLECTION, points=points)
 
 
 def search_clinical_knowledge(query_vector: list[float], limit: int = 1):

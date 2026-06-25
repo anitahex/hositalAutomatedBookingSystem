@@ -1,9 +1,36 @@
 from datetime import date
+import json
 
 from app.agents.intake_utils import compact_fact_summary
 from app.agents.state import GraphState
-from app.inference.llm import generate_text
+from app.inference.llm import generate_text, generate_router_text
 from app.services.appointments import normalize_department_name
+
+# INTELLIGENT CLINICAL ANALYZER — Deep analysis of symptom pattern
+STATIC_CLINICAL_ANALYZER_PROMPT = """You are an expert clinical analyst. Analyze the patient's symptoms, severity, triggers, and functional impact to:
+1. Understand the clinical picture (not just keywords)
+2. Identify the most likely clinical issue
+3. Recommend the appropriate medical department
+4. Provide specific, actionable home care advice
+
+Return ONLY valid JSON:
+{
+  "clinical_analysis": "2-3 sentences explaining what's happening clinically based on the full symptom picture",
+  "recommended_department": "Single department name from list below",
+  "reasoning": "Why this department is best for this specific clinical picture",
+  "home_care_advice": "3-4 specific, actionable tips tailored to their exact symptoms and triggers",
+  "severity_assessment": "mild|moderate|severe|emergency"
+}
+
+DEPARTMENTS (pick ONE that best fits):
+General Physician, Cardiology, Gastroenterology, Orthopedics, Neurology, Dermatology, Ophthalmology, ENT, Pediatrics, Psychiatry, Oncology, Pulmonology
+
+CRITICAL:
+- Analyze the FULL clinical picture, not just keywords
+- Consider triggers, patterns, functional impact, severity together
+- Provide SPECIFIC advice based on their exact symptoms
+- Example: Patient with "rash on back worse when sweating" → Sports-related fungal risk → Dermatology + advice on moisture-wicking
+- Different scenario: "rash all over after new medication" → Allergic reaction → General Physician + stop medication advice"""
 
 # OPTIMIZED FOR GPT-4o — CONCISE CLINICAL SUMMARY
 STATIC_CHECKUP_PROMPT = """You are a hospital clinical documentation specialist. Generate a CONCISE yet COMPREHENSIVE pre-appointment summary (max 10-12 lines).
@@ -136,86 +163,85 @@ def _format_report_as_clinical_note(report: dict) -> str:
 
 
 def checkup_report_node(state: GraphState):
-    # Idempotency guard — if summary was already shown, skip regeneration
-    if state.get("checkup_summary_shown"):
-        history = list(state.get("conversation_history") or [])
-        response = (
-            "Your clinical summary has been prepared and will be shared with your doctor. "
-            "Would you like me to find available appointment slots for you? (yes / no)"
-        )
-        if response not in [h.get("text") for h in history[-2:]]:
-            history.append({"role": "assistant", "text": response})
-        return {
-            "conversation_history": history,
-            "messages": history[-6:],
-            "awaiting": "booking_decision",
-            "active_intent": "direct_booking",
-            "intent": "direct_booking",
-            "final_response": response,
-        }
-
     symptoms = state.get("symptoms") or []
     collected = state.get("collected_data") or state.get("collected_info") or {}
     history = list(state.get("conversation_history") or [])
+    profile = state.get("patient_profile") or {}
 
-    # Department routing - Pure LLM (skip RAG for speed)
-    from app.inference.llm import generate_router_text
-
+    # STEP 1: INTELLIGENT CLINICAL ANALYSIS
+    # Build comprehensive context for the analyzer
     symptoms_str = ", ".join(symptoms) if symptoms else "Not specified"
     location = collected.get('location', '')
     duration = collected.get('duration', '')
     pattern = collected.get('pattern') or collected.get('severity_pattern', '')
-    associated = collected.get('associated_symptoms', '')
+    triggers = collected.get('triggers') or collected.get('trigger') or collected.get('cause', '')
+    functional_impact = collected.get('functional_impact') or collected.get('impact_on_daily_life', '')
+    severity = state.get('severity', 'moderate')
 
-    router_prompt = (
-        f"Patient symptoms: {symptoms_str}\n"
-        f"Location: {location}\n"
-        f"Duration: {duration}\n"
-        f"Pattern: {pattern}\n"
-        f"Associated symptoms: {associated}\n"
-        f"Severity: {state.get('severity', 'moderate')}\n\n"
-        f"Recommend the SINGLE best department from these options:\n"
-        f"General Physician, Cardiology, Gastroenterology, Orthopedics, Neurology, Dermatology, Ophthalmology, ENT, Pediatrics, Psychiatry, Oncology, Pulmonology\n\n"
-        f"Output ONLY the exact department name from the list above, nothing else."
+    analyzer_prompt = (
+        f"Patient: {profile.get('name', 'Patient')}, Age {profile.get('age', 'unknown')}\n"
+        f"\n"
+        f"SYMPTOMS & CLINICAL PICTURE:\n"
+        f"Main symptoms: {symptoms_str}\n"
+        f"Location: {location if location else 'Not specified'}\n"
+        f"Duration: {duration if duration else 'Not specified'}\n"
+        f"Pattern: {pattern if pattern else 'Not specified'}\n"
+        f"Triggers/What makes it worse: {triggers if triggers else 'Not identified'}\n"
+        f"Functional impact: {functional_impact if functional_impact else 'Not mentioned'}\n"
+        f"Severity assessment: {severity}\n"
+        f"Associated symptoms: {collected.get('associated_symptoms') or 'None'}\n"
+        f"\n"
+        f"Analyze the FULL clinical picture and provide intelligent, personalized recommendations."
     )
 
-    router_resp = generate_router_text(
-        system_prompt="You are a clinical department router. Match patients to the most appropriate medical department based on their symptoms. Be decisive and specific.",
-        user_prompt=router_prompt,
-        node_name="checkup_report_router",
+    analysis_resp = generate_text(
+        system_prompt=STATIC_CLINICAL_ANALYZER_PROMPT,
+        user_prompt=analyzer_prompt,
+        node_name="clinical_analyzer",
+        chat_summary=state.get("chat_summary"),
         include_history=False,
         history_turns=0,
-    )
-    department = router_resp.strip() if router_resp else "General Physician"
+        patient_id=str(state.get("patient_id") or ""),
+        chat_session_id=str(state.get("chat_session_id") or ""),
+    ).strip()
 
-    # Clean up response and normalize to match database departments
-    department = department.split('\n')[0].strip() if department else "General Physician"
-    department = normalize_department_name(department)
+    # Parse the analysis — strip markdown code fences the LLM may wrap around JSON
+    analysis = {}
+    try:
+        clean_resp = analysis_resp.replace("```json", "").replace("```", "").strip()
+        analysis = json.loads(clean_resp)
+    except:
+        # Fallback if JSON parsing fails
+        analysis = {
+            "clinical_analysis": "Clinical assessment in progress",
+            "recommended_department": "General Physician",
+            "reasoning": "Awaiting full assessment",
+            "home_care_advice": "Rest and monitor symptoms. Seek care if symptoms worsen.",
+            "severity_assessment": severity
+        }
 
-    # Build structured report
-    pre_checkup_report = _build_pre_checkup_report(state, department)
-    clinical_note = _format_report_as_clinical_note(pre_checkup_report)
+    department = normalize_department_name(analysis.get("recommended_department", "General Physician"))
+    clinical_analysis = analysis.get("clinical_analysis", "")
+    reasoning = analysis.get("reasoning", "")
+    home_care = analysis.get("home_care_advice", "")
 
-    # Generate comprehensive clinical summary for doctor
-    profile = state.get("patient_profile") or {}
-
-    # Build concise context with ALL collected information
+    # STEP 2: GENERATE COMPREHENSIVE CLINICAL SUMMARY
     user_prompt = (
         f"Patient: {profile.get('name', 'Unknown')}, Age {profile.get('age', '?')}, Blood Group {profile.get('blood_group', '?')}\n"
         f"Date: {date.today().isoformat()}\n"
         f"\n"
-        f"Symptoms: {', '.join(symptoms) if symptoms else 'None'}\n"
-        f"Severity: {state.get('severity', 'Moderate')}\n"
-        f"Duration: {collected.get('duration', '')}\n"
-        f"Location: {collected.get('location', '')}\n"
-        f"Onset: {collected.get('cause') or collected.get('trigger') or collected.get('onset', '')}\n"
-        f"Pattern: {collected.get('pattern') or collected.get('severity_pattern', '')}\n"
+        f"Symptoms: {symptoms_str}\n"
+        f"Severity: {severity}\n"
+        f"Duration: {duration}\n"
+        f"Location: {location}\n"
+        f"Onset/Trigger: {triggers}\n"
+        f"Pattern: {pattern}\n"
         f"Associated Symptoms: {collected.get('associated_symptoms', '')}\n"
+        f"Functional Impact: {functional_impact}\n"
         f"Medications Tried: {collected.get('medications', '')}\n"
         f"Allergies: {profile.get('allergies') or collected.get('allergies', '')}\n"
         f"Existing Conditions: {profile.get('health_issues') or collected.get('existing_conditions', '')}\n"
-        f"Medical History: {collected.get('history', '')}\n"
-        f"Department: {department or 'General Medicine'}\n"
+        f"Department: {department}\n"
     )
 
     comprehensive_summary = generate_text(
@@ -229,23 +255,22 @@ def checkup_report_node(state: GraphState):
         chat_session_id=str(state.get("chat_session_id") or ""),
     ).strip()
 
-    if not comprehensive_summary:
-        dept_name = department or "General Medicine"
-        sym_text = ", ".join(symptoms) if symptoms else "your reported symptoms"
-        comprehensive_summary = (
-            f"## Pre-Appointment Clinical Summary\n\n"
-            f"**Chief Complaint:** {sym_text}\n"
-            f"**Severity:** {state.get('severity') or 'Moderate'}\n"
-            f"**Recommended Department:** {dept_name}\n\n"
-            f"Your clinical information will be shared with the {dept_name} doctor to ensure they have full context about your symptoms."
-        )
+    # STEP 3: BUILD STRUCTURED REPORT FOR DOCTOR
+    pre_checkup_report = _build_pre_checkup_report(state, department)
+    clinical_note = _format_report_as_clinical_note(pre_checkup_report)
 
-    # Add consent message
+    # STEP 4: DISPLAY INTELLIGENT ANALYSIS + REMEDY
     response = (
+        f"## CLINICAL ANALYSIS\n\n"
+        f"**What's happening:** {clinical_analysis}\n\n"
+        f"**Why {department}:** {reasoning}\n\n"
+        f"**IMMEDIATE HOME CARE (before your appointment):**\n"
+        f"{home_care}\n\n"
+        f"---\n\n"
+        f"## DETAILED CLINICAL SUMMARY\n"
         f"{comprehensive_summary}\n\n"
         f"---\n\n"
-        f"**This clinical summary will be attached to your appointment and shared with your doctor before you arrive.**\n\n"
-        f"Would you like me to find available appointment slots for you? (yes / no)"
+        f"**Would you like to book an appointment with a {department} doctor?** (yes / no)"
     )
 
     history.append({"role": "assistant", "text": response})
@@ -256,6 +281,9 @@ def checkup_report_node(state: GraphState):
         "pre_checkup_report": pre_checkup_report,
         "pre_checkup_clinical_note": clinical_note,
         "pre_checkup_summary": comprehensive_summary,
+        "clinical_analysis": clinical_analysis,
+        "home_care_advice": home_care,
+        "analysis_reasoning": reasoning,
         "checkup_summary_shown": True,
         "target_department": department,
         "candidate_departments": [],

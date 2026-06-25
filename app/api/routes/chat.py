@@ -553,6 +553,7 @@ async def chat_stream(request: Request, user: dict = Depends(current_user)):
                 safety_disclaimer=SAFETY_DISCLAIMER,
             )
         except Exception as exc:
+            logger.error("event_stream error: %s", exc, exc_info=True)
             yield _stream_event("error", message=str(exc))
 
     return StreamingResponse(event_stream(), media_type="application/x-ndjson")

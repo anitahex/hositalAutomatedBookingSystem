@@ -6,7 +6,7 @@ Remedy logic lives in remedy_agent.py.
 """
 
 import re
-from datetime import date, datetime, timedelta
+from datetime import date, datetime, timedelta, timezone
 
 from app.agents.state import GraphState
 from app.agents.schemas import BookingMenuDecision
@@ -115,7 +115,31 @@ def _choose_date_option(user_input: str, options: list[dict]) -> str | None:
     return None
 
 
-def format_numbered_options(items: list[dict], label_key: str, extra_keys: list[str]):
+_IST = timedelta(hours=5, minutes=30)
+
+
+def _fmt_time(iso_str: str) -> str:
+    """Convert UTC naive timestamp to IST for display: 'Today 2:30 PM' / 'Jun 27 9 AM'."""
+    try:
+        dt_ist = datetime.fromisoformat(str(iso_str)) + _IST
+        now_ist = datetime.now(timezone.utc).replace(tzinfo=None) + _IST
+        today_ist = now_ist.date()
+        tomorrow_ist = today_ist + timedelta(days=1)
+        hour = dt_ist.hour % 12 or 12
+        ampm = "AM" if dt_ist.hour < 12 else "PM"
+        time_str = f"{hour}:{dt_ist.minute:02d} {ampm}" if dt_ist.minute else f"{hour} {ampm}"
+        if dt_ist.date() == today_ist:
+            return f"Today {time_str}"
+        elif dt_ist.date() == tomorrow_ist:
+            return f"Tomorrow {time_str}"
+        else:
+            return f"{dt_ist.strftime('%b %d')} {time_str}"
+    except Exception:
+        return str(iso_str)
+
+
+def format_numbered_options(items: list[dict], label_key: str, extra_keys: list[str], bold_label: bool = False):
+    _TIME_KEYS = {"next_available_time", "start_time", "end_time"}
     lines = []
     for index, item in enumerate(items, start=1):
         extra_parts = []
@@ -133,11 +157,58 @@ def format_numbered_options(items: list[dict], label_key: str, extra_keys: list[
                     extra_parts.append(f"{years} {suffix} experience")
                 else:
                     extra_parts.append(f"{years} years experience")
+            elif key in _TIME_KEYS:
+                extra_parts.append(_fmt_time(str(value)))
             else:
                 extra_parts.append(str(value))
         extra = ", ".join(extra_parts)
         suffix = f" ({extra})" if extra else ""
-        lines.append(f"{index}. {item[label_key]}{suffix}")
+        raw_label = item[label_key]
+        label = _fmt_time(str(raw_label)) if label_key in _TIME_KEYS else str(raw_label)
+        if bold_label:
+            label = f"**{label}**"
+        lines.append(f"{index}. {label}{suffix}")
+    return "\n".join(lines)
+
+
+def _slots_to_ist(slots: list[dict]) -> list[dict]:
+    """Return a copy of slots with start_time/end_time shifted to IST (naive ISO strings).
+    The JS frontend treats naive ISO strings as local time, so sending IST values
+    ensures buttons display the correct local time without needing a 'Z' suffix."""
+    result = []
+    for slot in slots:
+        s = dict(slot)
+        for key in ("start_time", "end_time"):
+            if s.get(key):
+                try:
+                    s[key] = (datetime.fromisoformat(s[key]) + _IST).isoformat()
+                except Exception:
+                    pass
+        result.append(s)
+    return result
+
+
+def format_slot_options(slots: list[dict]) -> str:
+    """Format already-IST slot list as '1. Today 2:30 PM – 3 PM'.
+    Input slots must already have start_time/end_time in IST (call _slots_to_ist first)."""
+    now_ist = datetime.now(timezone.utc).replace(tzinfo=None) + _IST
+    today_ist = now_ist.date()
+    tomorrow_ist = today_ist + timedelta(days=1)
+
+    def _hm(dt: datetime) -> str:
+        h = dt.hour % 12 or 12
+        ampm = "AM" if dt.hour < 12 else "PM"
+        return f"{h}:{dt.minute:02d} {ampm}" if dt.minute else f"{h} {ampm}"
+
+    lines = []
+    for index, slot in enumerate(slots, start=1):
+        try:
+            s = datetime.fromisoformat(str(slot.get("start_time", "")))
+            e = datetime.fromisoformat(str(slot["end_time"]))
+            day = "Today" if s.date() == today_ist else ("Tomorrow" if s.date() == tomorrow_ist else s.strftime("%b %d"))
+            lines.append(f"{index}. {day} {_hm(s)} – {_hm(e)}")
+        except Exception:
+            lines.append(f"{index}. {slot.get('start_time', '')}")
     return "\n".join(lines)
 
 
@@ -234,8 +305,9 @@ def _looks_like_specific_doctor_name(value: str | None) -> bool:
 def _format_booking_options(bookings: list[dict]):
     lines = []
     for index, booking in enumerate(bookings, start=1):
+        time_str = booking.get("time") or booking.get("start_time") or "Unknown time"
         lines.append(
-            f"{index}. {booking['doctor']} ({booking['department']}) at {booking['time']} "
+            f"{index}. {booking['doctor']} ({booking['department']}) at {time_str} "
             f"- Reference: {booking['booking_id']}"
         )
     return "\n".join(lines)
@@ -253,10 +325,19 @@ def _format_department_options(departments: list[dict]) -> str:
 
 
 def _document_booking_note(state: GraphState) -> str | None:
-    # Pre-checkup report (generated from intake chat) takes priority
+    # Priority 1: Pre-checkup clinical note from AI intake (most comprehensive)
+    if state.get("pre_checkup_clinical_note"):
+        return str(state["pre_checkup_clinical_note"])
+
+    # Priority 2: Pre-checkup note (legacy)
     if state.get("pre_checkup_note"):
         return str(state["pre_checkup_note"])
 
+    # Priority 3: Pre-checkup summary
+    if state.get("pre_checkup_summary"):
+        return str(state["pre_checkup_summary"])
+
+    # Fallback: Build from collected data (document uploads, etc.)
     collected = state.get("collected_facts") or state.get("collected_data") or state.get("collected_info") or {}
     if not isinstance(collected, dict):
         collected = {}
@@ -307,8 +388,9 @@ def _format_reschedule_booking_options(bookings: list[dict]):
     lines = []
     for index, booking in enumerate(bookings, start=1):
         change_state = "can change date" if booking.get("can_modify", True) else "locked"
+        time_str = booking.get("time") or booking.get("start_time") or "Unknown time"
         lines.append(
-            f"{index}. {booking['doctor']} ({booking['department']}) at {booking['time']} "
+            f"{index}. {booking['doctor']} ({booking['department']}) at {time_str} "
             f"- Reference: {booking['booking_id']} [{change_state}]"
         )
     return "\n".join(lines)
@@ -933,6 +1015,7 @@ def ask_preferred_doctor(state: GraphState):
         extra_keys=["department", "experience_years", "next_available_time"]
         if requested_doctor_name
         else ["experience_years", "next_available_time"],
+        bold_label=True,
     )
 
     severity_note = ""
@@ -1000,11 +1083,9 @@ def ask_preferred_slot(state: GraphState):
             ),
         }
 
-    slot_lines = format_numbered_options(
-        slots,
-        label_key="start_time",
-        extra_keys=["end_time"],
-    )
+    # Convert UTC slot times to IST so both message text and frontend buttons are consistent
+    ist_slots = _slots_to_ist(slots)
+    slot_lines = format_slot_options(ist_slots)
 
     return {
         "awaiting": "slot_selection",
@@ -1012,10 +1093,10 @@ def ask_preferred_slot(state: GraphState):
         **department_context,
         "selected_doctor_id": selected["doctor_id"],
         "selected_doctor_name": selected["doctor_name"],
-        "slot_options": slots,
+        "slot_options": ist_slots,
         "final_response": (
-            f"Available slots for {selected['doctor_name']}"
-            f"{f' on {requested_date}' if requested_date else ''}:\n{slot_lines}\n\n"
+            f"Available slots for **{selected['doctor_name']}**"
+            f"{f' on {requested_date}' if requested_date else ''}:\n\n{slot_lines}\n\n"
             "Please reply with the slot number you prefer. "
             "If you would like to skip booking for now, reply 'no'."
         ),
@@ -1074,6 +1155,12 @@ def book_preferred_slot(state: GraphState):
         if str(candidate.get("department") or "") != confirmed_booking["department"]
     ]
 
+    # Build confirmation message with clinical summary notice
+    clinical_note_suffix = (
+        "\n✓ Your clinical intake summary has been attached to this appointment "
+        "and will be available to the doctor before you arrive."
+    ) if state.get("pre_checkup_clinical_note") or state.get("pre_checkup_summary") else ""
+
     if remaining_departments:
         next_departments = _format_department_options(remaining_departments)
         return {
@@ -1093,7 +1180,8 @@ def book_preferred_slot(state: GraphState):
                 f"Doctor: {booked['doctor_name']}\n"
                 f"Department: {booked['department']}\n"
                 f"Date & Time: {booked['start_time']}\n"
-                f"Reference ID: {booking_reference}\n\n"
+                f"Reference ID: {booking_reference}\n"
+                f"{clinical_note_suffix}\n\n"
                 "I can also help with the other department(s) we identified.\n"
                 f"{next_departments}\n\n"
                 "Please reply with the department number or name you want to book next, or say no to stop here."
@@ -1101,7 +1189,7 @@ def book_preferred_slot(state: GraphState):
         }
 
     return {
-        "awaiting": "end_confirmation",
+        "awaiting": "report_forwarding_decision",
         "booking_active": False,
         "upcoming_bookings": confirmed_bookings,
         "confirmed_booking": confirmed_booking,
@@ -1112,13 +1200,15 @@ def book_preferred_slot(state: GraphState):
         "selected_doctor_name": None,
         "selected_slot_id": str(booked["slot_id"]),
         "final_response": (
-            "Your appointment is booked and confirmed!\n\n"
-            f"Doctor: {booked['doctor_name']}\n"
-            f"Department: {booked['department']}\n"
-            f"Date & Time: {booked['start_time']}\n"
-            f"Reference ID: {booking_reference}\n\n"
-            "Please arrive 10 minutes early. Would you like help with anything else, "
-            "or should we end the chat?"
+            "✓ Your appointment is booked and confirmed!\n\n"
+            f"**Doctor:** {booked['doctor_name']}\n"
+            f"**Department:** {booked['department']}\n"
+            f"**Date & Time:** {booked['start_time']}\n"
+            f"**Reference ID:** {booking_reference}\n\n"
+            "---\n\n"
+            f"**Should I forward your detailed clinical report to {booked['doctor_name']} before your appointment?**\n\n"
+            "This will include all the symptoms, their patterns, triggers, and recommendations we discussed. "
+            "It helps the doctor prepare better for your visit. (yes / no)"
         ),
     }
 
@@ -1169,7 +1259,7 @@ def appointment_booker_node(state: GraphState):
     if awaiting == "symptom_follow_up":
         return capture_symptom_follow_up(state)
 
-    if awaiting in {"doctor_selection", "slot_selection"}:
+    if awaiting in {"doctor_selection", "doctor_selection_retry_1", "doctor_selection_retry_2", "slot_selection", "slot_selection_retry_1", "slot_selection_retry_2"}:
         decision = classify_booking_menu_reply(state, awaiting)
 
         if decision and decision.action == "request_remedy":
@@ -1203,8 +1293,164 @@ def appointment_booker_node(state: GraphState):
                 ),
             }
 
+        # Handle unclear responses in menus with escalation after 2 attempts
+        # Use awaiting state value itself to track attempts (no custom state key persistence)
+        if decision and decision.action == "unclear":
+            # Check which attempt we're on based on awaiting state
+            if awaiting == "doctor_selection_retry_2":
+                # Third attempt (escalate)
+                return {
+                    "awaiting": None,
+                    "booking_active": False,
+                    "final_response": (
+                        "I'm having trouble understanding your choice. "
+                        "Let me connect you with a specialist who can help with your appointment."
+                    ),
+                }
+            elif awaiting == "doctor_selection_retry_1":
+                # Second attempt (clarify again)
+                doctors = state.get("doctor_options", [])
+                if doctors:
+                    options_text = format_numbered_options(doctors, "doctor_name", ["experience_years", "next_available_time"])
+                    return {
+                        "awaiting": "doctor_selection_retry_2",
+                        "doctor_options": doctors,
+                        "final_response": (
+                            "I still need you to pick a doctor. Which one would you like to book with?\n"
+                            f"{options_text}\n\n"
+                            "Please reply with the doctor number (1, 2, 3, etc.)"
+                        ),
+                    }
+                else:
+                    return {
+                        "awaiting": "doctor_selection_retry_2",
+                        "final_response": "I still need you to select a doctor. Please reply with a doctor number (1, 2, 3, etc.)",
+                    }
+            elif awaiting == "slot_selection_retry_2":
+                # Third attempt (escalate)
+                return {
+                    "awaiting": None,
+                    "booking_active": False,
+                    "final_response": (
+                        "I'm having trouble understanding your time slot choice. "
+                        "Let me help you differently."
+                    ),
+                }
+            elif awaiting == "slot_selection_retry_1":
+                # Second attempt (clarify again)
+                slots = state.get("slot_options", [])
+                if slots:
+                    options_text = format_numbered_options(slots, "time", ["date"])
+                    return {
+                        "awaiting": "slot_selection_retry_2",
+                        "slot_options": slots,
+                        "final_response": (
+                            "I still need you to pick a time slot. Which one works for you?\n"
+                            f"{options_text}\n\n"
+                            "Please reply with the slot number (1, 2, 3, etc.)"
+                        ),
+                    }
+                else:
+                    return {
+                        "awaiting": "slot_selection_retry_2",
+                        "final_response": "I still need you to select a time slot. Please reply with a slot number (1, 2, 3, etc.)",
+                    }
+            elif awaiting == "doctor_selection":
+                # First attempt (initial clarification)
+                doctors = state.get("doctor_options", [])
+                if doctors:
+                    options_text = format_numbered_options(doctors, "doctor_name", ["experience_years", "next_available_time"])
+                    return {
+                        "awaiting": "doctor_selection_retry_1",
+                        "doctor_options": doctors,
+                        "final_response": (
+                            "I need you to pick a doctor. Which one would you like to book with?\n"
+                            f"{options_text}\n\n"
+                            "Please reply with the doctor number (1, 2, 3, etc.)"
+                        ),
+                    }
+                else:
+                    return {
+                        "awaiting": "doctor_selection_retry_1",
+                        "final_response": "I need you to select a doctor. Please reply with a doctor number (1, 2, 3, etc.)",
+                    }
+            elif awaiting == "slot_selection":
+                # First attempt (initial clarification)
+                slots = state.get("slot_options", [])
+                if slots:
+                    options_text = format_numbered_options(slots, "time", ["date"])
+                    return {
+                        "awaiting": "slot_selection_retry_1",
+                        "slot_options": slots,
+                        "final_response": (
+                            "I need you to pick a time slot. Which one works for you?\n"
+                            f"{options_text}\n\n"
+                            "Please reply with the slot number (1, 2, 3, etc.)"
+                        ),
+                    }
+                else:
+                    return {
+                        "awaiting": "slot_selection_retry_1",
+                        "final_response": "I need you to select a time slot. Please reply with a slot number (1, 2, 3, etc.)",
+                    }
+
+        # Handle parse failures (decision is None) - treat as unclear
+        if decision is None and awaiting in {"doctor_selection", "doctor_selection_retry_1", "doctor_selection_retry_2", "slot_selection", "slot_selection_retry_1", "slot_selection_retry_2"}:
+            if awaiting in {"doctor_selection_retry_2", "slot_selection_retry_2"}:
+                # Third attempt failed - escalate
+                return {
+                    "awaiting": None,
+                    "booking_active": False,
+                    "final_response": "I'm having trouble processing your response. Let me help you differently.",
+                }
+            elif awaiting in {"doctor_selection", "slot_selection"}:
+                # First attempt - move to retry_1
+                if awaiting == "doctor_selection":
+                    return {
+                        "awaiting": "doctor_selection_retry_1",
+                        "final_response": "Sorry, I didn't understand. Please reply with a doctor number (1, 2, 3, etc.)",
+                    }
+                else:
+                    return {
+                        "awaiting": "slot_selection_retry_1",
+                        "final_response": "Sorry, I didn't understand. Please reply with a slot number (1, 2, 3, etc.)",
+                    }
+            else:
+                # Second attempt (retry_1) failed - move to retry_2
+                if awaiting == "doctor_selection_retry_1":
+                    return {
+                        "awaiting": "doctor_selection_retry_2",
+                        "final_response": "Sorry, I still didn't understand. Please reply with a doctor number (1, 2, 3, etc.)",
+                    }
+                elif awaiting == "doctor_selection_retry_2":
+                    # Final attempt failed - escalate and give up
+                    return {
+                        "awaiting": None,
+                        "booking_active": False,
+                        "final_response": "I couldn't process your selection. A hospital staff member will help you book an appointment. Thank you for your patience.",
+                    }
+                elif awaiting == "slot_selection_retry_1":
+                    return {
+                        "awaiting": "slot_selection_retry_2",
+                        "final_response": "Sorry, I still didn't understand. Please reply with a slot number (1, 2, 3, etc.)",
+                    }
+                else:  # slot_selection_retry_2
+                    # Final attempt failed - escalate and give up
+                    return {
+                        "awaiting": None,
+                        "booking_active": False,
+                        "final_response": "I couldn't process your slot selection. A hospital staff member will help you book an appointment. Thank you for your patience.",
+                    }
+
         if decision and decision.action == "select_option" and decision.selected_value:
             state = {**state, "user_input": decision.selected_value}
+
+    # If escalation happened (awaiting=None after retry_2) with no actionable
+    # booking context, stop. If target_department / requested_department /
+    # requested_doctor_name is set this is a fresh valid entry — fall through
+    # to ask_preferred_doctor below.
+    if not awaiting and not state.get("target_department") and not state.get("requested_department") and not state.get("requested_doctor_name") and not state.get("candidate_departments"):
+        return {"awaiting": None, "booking_active": False}
 
     if awaiting == "doctor_selection":
         return ask_preferred_slot(state)

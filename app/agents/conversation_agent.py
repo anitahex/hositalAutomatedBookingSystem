@@ -18,23 +18,40 @@ parser = PydanticOutputParser(pydantic_object=ConversationDecision)
 MEMORY_POLICY = get_memory_policy("conversation_agent")
 
 # 100% STATIC CACHEABLE PREFIX
-STATIC_CONVERSATION_PROMPT = """You are the backend AI reasoning engine for a hospital intake assistant. You are NOT chatting directly with the patient. 
-Your job is to silently track what information has been collected and generate the NEXT empathetic question for the frontend to display.
+STATIC_CONVERSATION_PROMPT = """You are a clinical intake specialist. Your job is to LISTEN deeply and ask DYNAMIC, PROBING questions based on what the patient actually said.
 
-Important intake details usually include duration, onset/trigger/cause, location, pattern, associated symptoms, allergies, existing conditions, and medications.
+DO NOT use generic questions. DO NOT assume "not asked" means "doesn't exist".
 
-IMPORTANT rules:
-- Write your warm, empathetic question ONLY inside the "next_question" JSON field.
-- Ask ONE question at a time.
-- Never ask something already answered.
-- Do not repeat a duration/time question. If the patient already gave a timeframe, ask about a trigger or another clinically useful detail instead.
-- If there is enough context to give tailored care guidance safely, set has_enough_info to true.
+RULES:
+1. **Read the patient's message carefully** - extract ALL clinical details mentioned
+2. **Follow up on specifics they mentioned** - if they say "leg pain", ask if it's related to their back; if they mention a medication, ask what happened when they took it
+3. **Ask ONE dynamic question** based on their actual symptoms, not a template
+4. **Probe for severity** - if pain, ask where it radiates; if weakness, ask what movements are affected
+5. **Probe for context** - if symptoms started recently, ask what changed in their life; if they've had it before, ask what's different this time
+6. **Probe for triggers & patterns** - what makes it worse/better? time of day? certain activities? weather? stress?
+7. **Probe for functional impact** - how does this affect daily life? work? sleep? exercise?
+8. **Look for red flags** - ask about loss of function, numbness, tingling, balance issues, vision changes, fever, spreading
+9. **Never ask the same thing twice** - track what's been discussed
+10. **Be specific, not generic** - e.g., instead of "how long", ask "Did this start this week, last week, or longer ago?"
+
+SYMPTOM-SPECIFIC PROBING:
+- Skin conditions: onset, triggers (products/detergents/stress/weather), spread pattern, discharge/weeping, itchiness severity, sleep impact
+- Pain: exact location, radiation pattern, constant vs intermittent, aggravating activities, relieving positions, impact on work/sitting/standing
+- Fever/illness: temperature, associated symptoms, duration, exposed to sick people recently
+- Weakness/numbness: which body part, when did it start, spreading or stable, affecting movements
+
+EXAMPLES OF EXCELLENT DYNAMIC QUESTIONS:
+- If "itching + rash": "When did this start—this week or earlier? And did it appear suddenly or gradually spread?"
+- If "pimples all over back": "Are they painful, just itchy, or both? And did something change recently—new soap, detergent, or clothing?"
+- If "back pain": "Where exactly—lower back, mid-back, or upper back? And does it feel like muscle pain or something deeper?"
+- If "for 5 days": "On a scale where 0 is no pain and 10 is worst pain ever, where are you right now?"
+- If "worsens in evening": "What are you doing during the day—sitting at desk, heavy lifting, or something else?"
 
 CRITICAL: Do NOT output conversational text or markdown. Output ONLY valid JSON matching this exact structure:
 {"intent":"continue_intake|direct_booking","has_enough_info":true|false,"next_question":"string or null","collected_info":{"key":"value"}}"""
 
-MAX_INTAKE_QUESTIONS = 5
-OPEN_ENDED_FALLBACK = "What feels most important about this symptom that I have not asked yet?"
+MAX_INTAKE_QUESTIONS = 6
+OPEN_ENDED_FALLBACK = "Is there anything else about your symptoms that feels important or concerning that I haven't asked?"
 
 def _clean_json(raw_output: str) -> str:
     return (raw_output or "").replace("```json", "").replace("```", "").strip()
@@ -73,23 +90,14 @@ def _build_fallback_decision(merged_collected: dict, questions_asked: list[str])
 def _conversation_intake_complete(collected: dict | None, questions_asked: list[str] | None) -> bool:
     collected = collected or {}
     questions_asked = questions_asked or []
+    # MUST ask at least MAX_INTAKE_QUESTIONS (6) to get thorough clinical details
+    # Do NOT allow early exit based on field collection alone
     if len(questions_asked) >= MAX_INTAKE_QUESTIONS:
-        return True
-    has_duration = bool(collected.get("duration"))
-    has_location = bool(collected.get("location"))
-    has_pattern = bool(collected.get("severity_pattern") or collected.get("pattern"))
-    has_cause = bool(collected.get("cause") or collected.get("trigger") or collected.get("onset"))
-    # Classic 4-field completion (location-bearing symptoms like chest pain, knee pain)
-    if has_duration and has_location and has_pattern and has_cause:
-        return True
-    # Relaxed: systemic/non-localised symptoms (fatigue, nausea, anxiety, etc.) have no body location
-    if has_duration and has_pattern and has_cause:
-        return True
-    if has_duration and has_location and has_cause:
         return True
     return False
 
 def conversation_agent_node(state: GraphState):
+    print(f"[CONVERSATION_AGENT_NODE] ENTRY - awaiting={state.get('awaiting')}, questions={len(state.get('questions_asked', []))}")
     history = state.get("messages") or state.get("conversation_history") or []
     symptoms = state.get("symptoms") or []
     existing_collected = state.get("collected_data") or state.get("collected_info") or {}
@@ -105,22 +113,25 @@ def conversation_agent_node(state: GraphState):
             "awaiting": state.get("awaiting") or None,
         }
 
-    # Fast-path: once we've hit the question cap, skip the LLM and complete intake directly.
-    # This prevents infinite loops when the LLM keeps returning has_enough_info=False.
+    # Fast-path: once we've hit the question cap, complete intake and trigger booking flow.
+    # After 6 questions, user gets clinical analysis and can book with appropriate specialist.
     if len(questions_asked) >= MAX_INTAKE_QUESTIONS and symptoms:
+        print(f"[CONVERSATION_AGENT] FAST-PATH: questions >= {MAX_INTAKE_QUESTIONS}, symptoms={len(symptoms)}")
         local_collected = extract_local_intake_info(user_text)
         merged_collected = {**existing_collected, **local_collected}
-        return {
+        result = {
             "conversation_history": updated_history,
             "messages": updated_history[-6:],
             "collected_data": merged_collected,
             "collected_info": merged_collected,
             "questions_asked": questions_asked,
             "awaiting": None,
-            "remedy_requested": True,
+            "intake_complete": True,
             "active_intent": state.get("active_intent") or state.get("intent") or "triage_symptoms",
             "intent": state.get("active_intent") or state.get("intent") or "triage_symptoms",
         }
+        print(f"[CONVERSATION_AGENT] RETURNING with awaiting=None, intake_complete=True")
+        return result
 
     local_collected = extract_local_intake_info(user_text)
     user_wants_to_wrap_up = looks_like_intake_wrapup(user_text)
@@ -224,8 +235,8 @@ Do not ask again about any topic already covered above."""
 
     question, greeted_now = _with_initial_greeting(state, question)
     updated_history.append({"role": "assistant", "text": question})
-    
-    return {
+
+    result = {
         "conversation_history": updated_history,
         "messages": updated_history[-6:],
         "collected_data": merged_collected,
@@ -237,23 +248,44 @@ Do not ask again about any topic already covered above."""
         "active_intent": state.get("active_intent") or state.get("intent") or "triage_symptoms",
         "intent": state.get("active_intent") or state.get("intent") or "triage_symptoms",
     }
+    print(f"[CONV_AGENT] Returning awaiting='conversation' with {len(questions_asked)+1} questions asked")
+    return result
 
 
 # ── Streaming variant (bypasses LangGraph, 1 direct HF call) ─────────────────
 
 STATIC_CONV_STREAM_SYSTEM = """\
-You are a caring hospital intake assistant asking follow-up questions to understand a patient's symptoms.
+You are a clinically-trained intake specialist. Ask ONE dynamic, probing follow-up question based on what the patient actually said.
 
-Your task: ask the SINGLE most useful next intake question based on what you already know.
+DO NOT ask generic questions. READ their message and follow up on specifics.
 
-Focus areas (pick the most important unknown): duration, onset/trigger, location, severity pattern, \
-associated symptoms, existing conditions, medications, allergies.
+Guidelines:
+- Ask ONE targeted question only that digs deeper into what they actually mentioned
+- Connect to what they specifically mentioned: "You mentioned gabapentin didn't help — how long were you taking it?"
+- Probe deeper on their actual symptoms: if they mention leg pain with back pain, ask if it radiates
+- Test functional impact: "Can you sit/stand/walk without worsening the pain?"
+- Ask about triggers: "What activities or positions make it worse or better?"
+- Ask about patterns: "Is it constant or does it come and go? And when did it start?"
+- Never ask something already answered
+- If red flags detected (numbness, weakness, loss of bladder control, severe chest pain), escalate
 
-Rules:
-- Ask ONE question only
-- Never repeat a topic already answered or asked
-- Be warm, empathetic, and concise (1–2 sentences)
-- Output ONLY the question — no JSON, no preamble, no labels\
+PROBE FOR THESE DETAILS:
+- Onset: When exactly did this start? Sudden or gradual?
+- Severity: On a scale of 0-10, how bad is it?
+- Pattern: Constant, intermittent, or getting worse?
+- Triggers: What makes it better or worse? Time of day? Activities?
+- Spread: Is it localized or spreading?
+- Functional impact: How does it affect your daily life, work, sleep?
+
+Examples of excellent questions:
+- "Is the leg pain connected to your back, or are they separate problems?"
+- "When you say it's worse in the evening, what are you usually doing earlier in the day?"
+- "How much gabapentin were you taking and for how long?"
+- "Does changing positions (sitting, standing, lying) make the pain better or worse?"
+- "On a scale of 1-10, how severe is the itching right now?"
+- "Did this rash appear suddenly all over, or did it start in one place and spread?"
+
+Output ONLY the question itself — no preamble, no labels. 1-2 sentences, conversational.\
 """
 
 

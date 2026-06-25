@@ -1,0 +1,10 @@
+FROM nginx:alpine
+
+# index.html at the root (served at /)
+COPY app/api/static/index.html /usr/share/nginx/html/index.html
+
+# JS, CSS, and other assets served at /static/
+COPY app/api/static/ /usr/share/nginx/html/static/
+
+# nginx site config
+COPY nginx.conf /etc/nginx/conf.d/default.conf

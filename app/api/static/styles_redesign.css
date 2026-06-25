@@ -1,0 +1,656 @@
+/* === HOSPITAL ASSISTANT REDESIGN === */
+/* Apple-inspired, professional 3-column layout */
+
+:root {
+  /* Update color tokens */
+  --nav-bg: #1e1b4b;
+  --panel-bg: #f8f9fb;
+  --surface: #ffffff;
+  --border: #e2e8f0;
+  --text-primary: #0f172a;
+  --text-secondary: #64748b;
+  --text-muted: #94a3b8;
+  --accent: #5c5cf0;
+  --accent-dark: #4747d6;
+  --success: #10b981;
+
+  --shadow-sm: 0 1px 2px rgba(0,0,0,0.05);
+  --shadow-md: 0 4px 8px rgba(0,0,0,0.08);
+  --shadow-lg: 0 8px 16px rgba(0,0,0,0.1);
+}
+
+/* === MAIN LAYOUT RESTRUCTURE === */
+body.redesign {
+  background: var(--panel-bg);
+}
+
+body.redesign .shell {
+  padding: 0;
+  overflow: hidden;
+}
+
+body.redesign .workspace {
+  width: 100vw;
+  max-width: 100vw;
+  min-height: 100vh;
+  margin: 0;
+  padding: 0;
+  display: grid;
+  grid-template-columns: 64px 1fr 280px;
+  grid-template-rows: 1fr auto;
+  gap: 0;
+  border-radius: 0;
+  background: var(--panel-bg);
+}
+
+/* === LEFT NAVIGATION BAR === */
+body.redesign .app-sidebar {
+  grid-column: 1;
+  grid-row: 1 / -1;
+  width: 64px;
+  background: var(--nav-bg);
+  border-right: 1px solid rgba(255,255,255,0.1);
+  border-radius: 0;
+  padding: 20px 0;
+  gap: 24px;
+  overflow-y: auto;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  transition: width 0.3s cubic-bezier(0.4, 0, 0.2, 1);
+  position: relative;
+  z-index: 40;
+}
+
+body.redesign .app-sidebar:hover {
+  width: 200px;
+  gap: 8px;
+}
+
+/* Hide all sidebar cards in redesign */
+body.redesign .sidebar-card,
+body.redesign .sidebar-history-nav,
+body.redesign .sidebar-primary-btn {
+  display: none;
+}
+
+/* Create navigation items from sidebar-cards */
+body.redesign .app-sidebar::before {
+  content: '';
+  display: block;
+  width: 40px;
+  height: 40px;
+  border-radius: 50%;
+  background: linear-gradient(135deg, var(--accent), var(--accent-dark));
+  margin-bottom: 8px;
+  flex-shrink: 0;
+}
+
+/* Navigation tabs */
+.redesign-nav {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  flex: 1;
+  width: 100%;
+}
+
+.nav-item-redesign {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  color: #cbd5e1;
+  cursor: pointer;
+  padding: 10px 12px;
+  border-radius: 8px;
+  border-left: 3px solid transparent;
+  transition: all 0.2s ease;
+  width: 100%;
+  justify-content: center;
+  font-size: 13px;
+  font-weight: 600;
+  background: transparent;
+  border: none;
+  font-family: inherit;
+}
+
+body.redesign .app-sidebar:hover .nav-item-redesign {
+  justify-content: flex-start;
+  padding-left: 16px;
+}
+
+.nav-item-redesign:hover {
+  color: #fff;
+  background: rgba(255,255,255,0.1);
+}
+
+.nav-item-redesign.active {
+  color: var(--accent);
+  border-left-color: var(--accent);
+  background: rgba(92,92,240,0.1);
+}
+
+.nav-item-redesign span:first-child {
+  font-size: 20px;
+  min-width: 24px;
+  text-align: center;
+}
+
+.nav-item-redesign span:last-child {
+  opacity: 0;
+  width: 0;
+  overflow: hidden;
+  transition: opacity 0.3s ease;
+}
+
+body.redesign .app-sidebar:hover .nav-item-redesign span:last-child {
+  opacity: 1;
+  width: auto;
+}
+
+/* Logout button at bottom */
+.nav-logout-redesign {
+  margin-top: auto;
+  padding-top: 12px;
+  border-top: 1px solid rgba(255,255,255,0.1);
+  width: 100%;
+  display: flex;
+  justify-content: center;
+}
+
+.nav-logout-redesign .nav-item-redesign {
+  color: #94a3b8;
+  padding: 10px 12px;
+}
+
+.nav-logout-redesign .nav-item-redesign:hover {
+  color: #ef4444;
+}
+
+/* === MAIN CHAT AREA === */
+body.redesign .app-main {
+  grid-column: 2;
+  grid-row: 1;
+  display: flex;
+  flex-direction: column;
+  background: white;
+  border-right: 1px solid var(--border);
+  border-radius: 0;
+  gap: 0;
+}
+
+/* Chat header with workflow breadcrumb */
+body.redesign .topbar {
+  padding: 16px 20px;
+  border-bottom: 1px solid var(--border);
+  background: white;
+  border-radius: 0;
+  box-shadow: none;
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  gap: 20px;
+}
+
+body.redesign .topbar-brand {
+  display: none;
+}
+
+body.redesign .topbar-actions {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  width: 100%;
+}
+
+/* Breadcrumb for workflow */
+.workflow-breadcrumb {
+  display: flex;
+  gap: 8px;
+  align-items: center;
+  font-size: 12px;
+}
+
+.breadcrumb-step {
+  padding: 4px 8px;
+  border-radius: 6px;
+  background: #f1f5f9;
+  color: var(--text-secondary);
+  font-weight: 500;
+  transition: all 0.2s ease;
+}
+
+.breadcrumb-step.active {
+  background: var(--accent);
+  color: white;
+}
+
+.breadcrumb-sep {
+  color: var(--border);
+  font-size: 12px;
+}
+
+.workflow-badges {
+  display: flex;
+  gap: 8px;
+}
+
+.workflow-badge {
+  padding: 4px 8px;
+  border-radius: 6px;
+  background: #f1f5f9;
+  font-size: 11px;
+  font-weight: 600;
+  color: var(--text-secondary);
+}
+
+.workflow-badge.severity-mild {
+  background: #dcfce7;
+  color: #166534;
+}
+
+body.redesign .sidebar-toggle,
+body.redesign .sidebar-handle,
+body.redesign .presence-chip,
+body.redesign .status {
+  display: none;
+}
+
+/* Messages area */
+body.redesign .content {
+  flex: 1;
+  overflow: hidden;
+}
+
+body.redesign .messages {
+  padding: 20px;
+}
+
+/* Composer styling */
+body.redesign .composer {
+  background: white;
+  border-top: 1px solid var(--border);
+  padding: 16px 20px;
+  margin-top: auto;
+}
+
+body.redesign .compose-input-row {
+  display: flex;
+  gap: 8px;
+}
+
+/* === RIGHT PANEL === */
+body.redesign .panel-right {
+  grid-column: 3;
+  grid-row: 1;
+  width: 280px;
+  background: var(--panel-bg);
+  border-left: 1px solid var(--border);
+  border-radius: 0;
+  padding: 16px;
+  overflow-y: auto;
+  display: flex;
+  flex-direction: column;
+  gap: 16px;
+  box-shadow: none;
+}
+
+/* Hide old sidebar, show new right panel */
+body.redesign .app-sidebar {
+  grid-column: 1;
+}
+
+body.redesign [data-panel-tab] {
+  display: none !important;
+}
+
+body.redesign [data-panel-tab].active {
+  display: flex !important;
+  flex-direction: column;
+  gap: 16px;
+}
+
+/* Right panel section styling */
+.panel-section {
+  background: var(--surface);
+  border-radius: 12px;
+  padding: 16px;
+  border: 1px solid var(--border);
+  box-shadow: var(--shadow-sm);
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+  transition: all 0.2s ease;
+}
+
+.panel-section-title {
+  font-size: 12px;
+  font-weight: 700;
+  text-transform: uppercase;
+  letter-spacing: 0.05em;
+  color: var(--text-muted);
+  margin-bottom: 4px;
+}
+
+/* Patient card styling */
+.patient-section {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+}
+
+.patient-name {
+  font-size: 16px;
+  font-weight: 700;
+  color: var(--text-primary);
+}
+
+.patient-meta-grid {
+  display: grid;
+  gap: 8px;
+  font-size: 12px;
+}
+
+.patient-meta-row {
+  display: flex;
+  justify-content: space-between;
+}
+
+.patient-meta-label {
+  color: var(--text-muted);
+  font-weight: 600;
+}
+
+.patient-meta-value {
+  color: var(--text-primary);
+  font-weight: 600;
+}
+
+.patient-section .btn-edit {
+  margin-top: 4px;
+}
+
+/* Workflow section */
+.workflow-section {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+.workflow-states {
+  display: flex;
+  gap: 4px;
+  flex-wrap: wrap;
+}
+
+.state-pill {
+  padding: 4px 8px;
+  border-radius: 6px;
+  background: #f1f5f9;
+  color: var(--text-secondary);
+  font-size: 11px;
+  font-weight: 600;
+}
+
+.state-pill.active {
+  background: var(--accent);
+  color: white;
+}
+
+.workflow-info {
+  font-size: 12px;
+  color: var(--text-secondary);
+  line-height: 1.6;
+}
+
+/* Chat history */
+.chat-history {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  max-height: 250px;
+  overflow-y: auto;
+}
+
+.history-item {
+  padding: 8px 10px;
+  border-radius: 8px;
+  background: var(--panel-bg);
+  font-size: 12px;
+  color: var(--text-secondary);
+  cursor: pointer;
+  transition: all 0.2s ease;
+  border-left: 2px solid transparent;
+}
+
+.history-item:hover {
+  background: #f1f5f9;
+  border-left-color: var(--accent);
+  color: var(--text-primary);
+}
+
+/* Appointments section */
+.appointments-list {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+.appointment-card {
+  padding: 10px 12px;
+  border-radius: 8px;
+  background: var(--panel-bg);
+  border-left: 3px solid var(--accent);
+  font-size: 12px;
+}
+
+.appointment-doctor {
+  font-weight: 700;
+  color: var(--text-primary);
+  margin-bottom: 2px;
+}
+
+.appointment-meta {
+  color: var(--text-secondary);
+  font-size: 11px;
+  margin-bottom: 4px;
+}
+
+.appointment-status {
+  display: inline-block;
+  padding: 2px 6px;
+  border-radius: 4px;
+  background: #dcfce7;
+  color: #166534;
+  font-size: 10px;
+  font-weight: 600;
+}
+
+.appointments-tabs {
+  display: flex;
+  gap: 8px;
+  border-bottom: 1px solid var(--border);
+  margin-bottom: 8px;
+}
+
+.tab-btn {
+  padding: 6px 0;
+  border: none;
+  background: none;
+  color: var(--text-secondary);
+  font-size: 12px;
+  font-weight: 600;
+  cursor: pointer;
+  border-bottom: 2px solid transparent;
+  transition: all 0.2s ease;
+}
+
+.tab-btn.active {
+  color: var(--accent);
+  border-bottom-color: var(--accent);
+}
+
+.tab-btn:hover {
+  color: var(--text-primary);
+}
+
+/* Documents section */
+.docs-list {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+.doc-item {
+  padding: 8px 10px;
+  border-radius: 8px;
+  background: var(--panel-bg);
+  font-size: 11px;
+}
+
+.doc-name {
+  font-weight: 600;
+  color: var(--text-primary);
+  margin-bottom: 2px;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.doc-date {
+  color: var(--text-muted);
+  font-size: 10px;
+}
+
+/* Empty state */
+.empty-state {
+  text-align: center;
+  padding: 24px 0;
+  color: var(--text-secondary);
+}
+
+.empty-state-icon {
+  font-size: 32px;
+  margin-bottom: 8px;
+  opacity: 0.6;
+}
+
+.empty-state-text {
+  font-size: 12px;
+  line-height: 1.5;
+}
+
+/* Primary button */
+body.redesign .btn-primary {
+  background: var(--accent) !important;
+  color: white !important;
+  box-shadow: none !important;
+  border-radius: 8px !important;
+  height: 40px !important;
+  font-weight: 600 !important;
+  transition: all 0.2s ease !important;
+  width: 100% !important;
+}
+
+body.redesign .btn-primary:hover {
+  background: var(--accent-dark) !important;
+  transform: translateY(-1px);
+}
+
+/* Secondary button */
+body.redesign .btn-secondary {
+  background: var(--surface) !important;
+  color: var(--text-primary) !important;
+  border: 1px solid var(--border) !important;
+  box-shadow: none !important;
+  border-radius: 8px !important;
+  height: 40px !important;
+  font-weight: 600 !important;
+}
+
+body.redesign .btn-secondary:hover {
+  background: var(--panel-bg) !important;
+  border-color: var(--accent) !important;
+}
+
+/* Dev info drawer */
+body.redesign .dev-drawer {
+  grid-column: 2;
+  grid-row: 2;
+  display: none;
+  padding: 12px 20px;
+  background: white;
+  border-top: 1px solid var(--border);
+  font-size: 11px;
+  color: var(--text-secondary);
+  gap: 24px;
+  font-variant-numeric: tabular-nums;
+}
+
+body.redesign .dev-drawer.open {
+  display: flex;
+}
+
+.dev-stat {
+  display: flex;
+  gap: 4px;
+}
+
+.dev-label {
+  color: var(--text-muted);
+}
+
+.dev-value {
+  color: var(--text-primary);
+  font-weight: 600;
+}
+
+/* Profile panel hiding */
+body.redesign .profile-panel {
+  display: none !important;
+}
+
+/* Scroll bar styling */
+body.redesign .messages::-webkit-scrollbar,
+body.redesign .panel-right::-webkit-scrollbar,
+body.redesign .chat-history::-webkit-scrollbar {
+  width: 6px;
+}
+
+body.redesign .messages::-webkit-scrollbar-track,
+body.redesign .panel-right::-webkit-scrollbar-track,
+body.redesign .chat-history::-webkit-scrollbar-track {
+  background: transparent;
+}
+
+body.redesign .messages::-webkit-scrollbar-thumb,
+body.redesign .panel-right::-webkit-scrollbar-thumb,
+body.redesign .chat-history::-webkit-scrollbar-thumb {
+  background: #cbd5e1;
+  border-radius: 3px;
+}
+
+body.redesign .messages::-webkit-scrollbar-thumb:hover,
+body.redesign .panel-right::-webkit-scrollbar-thumb:hover,
+body.redesign .chat-history::-webkit-scrollbar-thumb:hover {
+  background: #94a3b8;
+}
+
+/* Responsive */
+@media (max-width: 1400px) {
+  body.redesign .workspace {
+    grid-template-columns: 64px 1fr 240px;
+  }
+  body.redesign .panel-right {
+    width: 240px;
+  }
+}
+
+@media (max-width: 1024px) {
+  body.redesign .workspace {
+    grid-template-columns: 64px 1fr;
+  }
+  body.redesign .panel-right {
+    display: none;
+  }
+}

@@ -3,347 +3,633 @@
   <head>
     <meta charset="utf-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1" />
-    <title>Hospital AI Triage</title>
+    <title>Hospital Assistant</title>
     <link rel="stylesheet" href="/static/styles.css" />
   </head>
   <body>
-    <main class="shell">
-      <div class="ambient ambient-one" aria-hidden="true"></div>
-      <div class="ambient ambient-two" aria-hidden="true"></div>
-      <div class="ambient ambient-three" aria-hidden="true"></div>
 
-      <section class="auth-view" id="authView" aria-label="Patient account access">
-        <div class="auth-card">
-          <div class="auth-header">
-            <div class="auth-mark" aria-hidden="true">+</div>
-            <div>
-              <p class="eyebrow">Medical AI Workflow</p>
-              <h1>Hospital AI Triage</h1>
-              <p class="auth-subtitle">Sign in to continue your care conversation.</p>
-            </div>
+    <!-- ═══════════════════════════════════════ AUTH VIEW ═══════════════════════════════════════ -->
+    <section class="auth-view" id="authView" aria-label="Patient account access">
+      <div class="auth-card">
+        <div class="auth-header">
+          <div class="auth-mark" aria-hidden="true">
+            <svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M9.937 15.5A2 2 0 0 0 8.5 14.063l-6.135-1.582a.5.5 0 0 1 0-.962L8.5 9.936A2 2 0 0 0 9.937 8.5l1.582-6.135a.5.5 0 0 1 .963 0L14.063 8.5A2 2 0 0 0 15.5 9.937l6.135 1.581a.5.5 0 0 1 0 .964L15.5 14.063a2 2 0 0 0-1.437 1.437l-1.582 6.135a.5.5 0 0 1-.963 0z"/></svg>
           </div>
-
-          <div class="auth-tabs" role="tablist" aria-label="Authentication mode">
-            <button class="tab active" id="showLoginBtn" type="button">Login</button>
-            <button class="tab" id="showSignupBtn" type="button">Sign up</button>
+          <div>
+            <p class="eyebrow-label">Medical AI Workflow</p>
+            <h1>Hospital Assistant</h1>
+            <p class="auth-subtitle">Sign in to continue your care conversation.</p>
           </div>
-
-          <form class="auth-form" id="loginForm">
-            <label>
-              Email
-              <input id="loginEmail" type="email" autocomplete="email" required />
-            </label>
-            <label>
-              Password
-              <input id="loginPassword" type="password" autocomplete="current-password" required />
-            </label>
-            <button type="submit">Login</button>
-          </form>
-
-          <form class="auth-form hidden" id="signupForm">
-            <section class="signup-step" id="signupStepOne">
-              <label>
-                Email
-                <input id="signupEmail" type="email" autocomplete="email" required />
-              </label>
-              <label>
-                Password
-                <input
-                  id="signupPassword"
-                  type="password"
-                  autocomplete="new-password"
-                  minlength="8"
-                  required
-                />
-              </label>
-              <label>
-                Confirm password
-                <input id="signupConfirmPassword" type="password" autocomplete="new-password" required />
-              </label>
-              <p class="form-hint">Use uppercase, lowercase, number, and special character.</p>
-              <button id="signupNextBtn" type="button">Next</button>
-            </section>
-
-            <section class="signup-step hidden" id="signupStepTwo">
-              <div class="form-grid">
-                <label>
-                  Name
-                  <input id="profileName" type="text" autocomplete="name" required />
-                </label>
-                <label>
-                  Age
-                  <input id="profileAge" type="number" min="1" max="129" required />
-                </label>
-                <label>
-                  Mobile number
-                  <input id="profileMobile" type="tel" autocomplete="tel" required />
-                </label>
-                <label>
-                  Email ID
-                  <input id="profileEmail" type="email" autocomplete="email" required />
-                </label>
-                <label>
-                  Blood group
-                  <select id="profileBloodGroup" required>
-                    <option value="">Select blood group</option>
-                    <option>A+</option>
-                    <option>A-</option>
-                    <option>B+</option>
-                    <option>B-</option>
-                    <option>AB+</option>
-                    <option>AB-</option>
-                    <option>O+</option>
-                    <option>O-</option>
-                  </select>
-                </label>
-                <label class="full-width">
-                  Address
-                  <textarea id="profileAddress" rows="3" required></textarea>
-                </label>
-                <label class="full-width">
-                  Health issues
-                  <textarea id="profileHealthIssues" rows="3" placeholder="Optional"></textarea>
-                </label>
-              </div>
-              <div class="form-actions">
-                <button class="secondary" id="signupBackBtn" type="button">Back</button>
-                <button type="submit">Create account</button>
-              </div>
-            </section>
-          </form>
-
-          <p class="auth-error" id="authMessage" role="alert"></p>
         </div>
-      </section>
 
-      <section class="workspace" aria-label="Patient triage chat">
-        <aside class="app-sidebar" id="appSidebar" aria-label="Patient context">
-          <section class="sidebar-card hero-card" id="patientCard" aria-label="Patient snapshot">
-            <div class="card-head">
-              <div>
-                <p class="card-kicker">Patient snapshot</p>
-                <h2 id="patientName">Guest</h2>
-              </div>
-              <div class="avatar-shell" aria-hidden="true">
-                <span class="avatar-mark">+</span>
-              </div>
-            </div>
-            <p class="sidebar-lead" id="patientSummary">AI triage, doctor selection, and appointment booking.</p>
-            <div class="stacked-meta" id="patientMeta">
-              <div><span>Age</span><strong id="patientAge">-</strong></div>
-              <div><span>Blood group</span><strong id="patientBlood">-</strong></div>
-              <div><span>Health issues</span><strong id="patientIssues">-</strong></div>
-            </div>
-            <button class="edit-profile-btn" id="editProfileBtn" title="Edit health profile">Edit profile</button>
+        <div class="auth-tabs" role="tablist" aria-label="Authentication mode">
+          <button class="tab active" id="showLoginBtn" type="button">Login</button>
+          <button class="tab" id="showSignupBtn" type="button">Sign up</button>
+        </div>
+
+        <form class="auth-form" id="loginForm">
+          <label>Email<input id="loginEmail" type="email" autocomplete="email" required /></label>
+          <label>Password<input id="loginPassword" type="password" autocomplete="current-password" required /></label>
+          <button type="submit">Login</button>
+        </form>
+
+        <form class="auth-form hidden" id="signupForm">
+          <section class="signup-step" id="signupStepOne">
+            <label>Email<input id="signupEmail" type="email" autocomplete="email" required /></label>
+            <label>Password<input id="signupPassword" type="password" autocomplete="new-password" minlength="8" required /></label>
+            <label>Confirm password<input id="signupConfirmPassword" type="password" autocomplete="new-password" required /></label>
+            <p class="form-hint">Use uppercase, lowercase, number, and special character.</p>
+            <button id="signupNextBtn" type="button">Next</button>
           </section>
-
-          <section class="sidebar-card" id="workflowCard" aria-label="Workflow status">
-            <div class="card-head">
-              <div>
-                <p class="card-kicker">Workflow</p>
-                <h2>Current state</h2>
-              </div>
-              <span class="status-chip" id="workflowState">Triage</span>
+          <section class="signup-step hidden" id="signupStepTwo">
+            <div class="form-grid">
+              <label>Name<input id="profileName" type="text" autocomplete="name" required /></label>
+              <label>Age<input id="profileAge" type="number" min="1" max="129" required /></label>
+              <label>Mobile number<input id="profileMobile" type="tel" autocomplete="tel" required /></label>
+              <label>Email ID<input id="profileEmail" type="email" autocomplete="email" required /></label>
+              <label>Blood group
+                <select id="profileBloodGroup" required>
+                  <option value="">Select blood group</option>
+                  <option>A+</option><option>A-</option>
+                  <option>B+</option><option>B-</option>
+                  <option>AB+</option><option>AB-</option>
+                  <option>O+</option><option>O-</option>
+                </select>
+              </label>
+              <label class="full-width">Address<textarea id="profileAddress" rows="3" required></textarea></label>
+              <label class="full-width">Health issues<textarea id="profileHealthIssues" rows="3" placeholder="Optional"></textarea></label>
             </div>
-            <div class="workflow-rail" id="workflowRail">
-              <span class="workflow-step active">Triage</span>
-              <span class="workflow-step">Conversation</span>
-              <span class="workflow-step">RAG</span>
-              <span class="workflow-step">Booking</span>
-            </div>
-            <div class="info-grid">
-              <div>
-                <span>Severity</span>
-                <strong id="severity">-</strong>
-              </div>
-              <div>
-                <span>Department</span>
-                <strong id="department">-</strong>
-              </div>
-              <div>
-                <span>Next step</span>
-                <strong id="awaiting">Describe symptoms</strong>
-              </div>
-            </div>
-            <p class="routing-meta" id="routingMeta">Department routing has not run yet.</p>
-          </section>
-
-          <section class="sidebar-card" id="summaryCard" aria-label="Conversation summary">
-            <div class="card-head">
-              <div>
-                <p class="card-kicker">Memory</p>
-                <h2>Conversation summary</h2>
-              </div>
-            </div>
-            <p class="summary-copy" id="chatSummary">Waiting for a little context.</p>
-          </section>
-
-          <section class="sidebar-card" id="recentHistoryCard" aria-label="Recent turns">
-            <div class="card-head">
-              <div>
-                <p class="card-kicker">Recent turns</p>
-                <h2>Sliding window</h2>
-              </div>
-            </div>
-            <div class="recent-history" id="recentHistory"></div>
-          </section>
-
-          <section class="sidebar-card" id="appointmentsCard" aria-label="Active appointments">
-            <div class="card-head">
-              <div>
-                <p class="card-kicker">Care plan</p>
-                <h2>Active appointments</h2>
-              </div>
-            </div>
-            <div class="appointment-rail" id="activeAppointmentsPreview">
-              <p class="panel-note">No active appointments loaded.</p>
+            <div class="form-actions">
+              <button class="secondary" id="signupBackBtn" type="button">Back</button>
+              <button type="submit">Create account</button>
             </div>
           </section>
+        </form>
 
-          <section class="sidebar-card upload-card" id="uploadCard" aria-label="Analyzed documents">
-            <div class="card-head">
-              <div>
-                <p class="card-kicker">Documents</p>
-                <h2>Analyzed files</h2>
+        <p class="auth-error" id="authMessage" role="alert"></p>
+      </div>
+    </section>
+
+    <!-- ═══════════════════════════════════════ WORKSPACE ═══════════════════════════════════════ -->
+    <section class="workspace" aria-label="Patient workspace">
+
+      <!-- ──────────── LEFT NAV SIDEBAR ──────────── -->
+      <aside class="app-sidebar" id="appSidebar" aria-label="Navigation">
+
+        <!-- Brand header -->
+        <div class="sidebar-header">
+          <div class="sidebar-logo">
+            <div class="sidebar-logo-icon" aria-hidden="true">
+              <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M9.937 15.5A2 2 0 0 0 8.5 14.063l-6.135-1.582a.5.5 0 0 1 0-.962L8.5 9.936A2 2 0 0 0 9.937 8.5l1.582-6.135a.5.5 0 0 1 .963 0L14.063 8.5A2 2 0 0 0 15.5 9.937l6.135 1.581a.5.5 0 0 1 0 .964L15.5 14.063a2 2 0 0 0-1.437 1.437l-1.582 6.135a.5.5 0 0 1-.963 0z"/></svg>
+            </div>
+            <div class="sidebar-logo-text">
+              <span class="sidebar-eyebrow">Ahex Care</span>
+              <span class="sidebar-brand">Hospital Assistant</span>
+            </div>
+          </div>
+        </div>
+
+        <!-- Navigation -->
+        <nav class="sidebar-nav" aria-label="Main navigation">
+          <div class="nav-group-label">Workspace</div>
+
+          <button class="nav-item is-active" data-nav="assistant" id="navAssistant" type="button">
+            <span class="nav-icon" aria-hidden="true">
+              <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M7.9 20A9 9 0 1 0 4 16.1L2 22Z"/></svg>
+            </span>
+            <span class="nav-label">Assistant</span>
+          </button>
+
+          <button class="nav-item" data-nav="dashboard" id="navDashboard" type="button">
+            <span class="nav-icon" aria-hidden="true">
+              <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="3" y="3" width="7" height="7" rx="1"/><rect x="14" y="3" width="7" height="7" rx="1"/><rect x="14" y="14" width="7" height="7" rx="1"/><rect x="3" y="14" width="7" height="7" rx="1"/></svg>
+            </span>
+            <span class="nav-label">Dashboard</span>
+          </button>
+
+          <button class="nav-item" data-nav="appointments" id="navAppointments" type="button">
+            <span class="nav-icon" aria-hidden="true">
+              <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M8 2v4M16 2v4M3 10h18M5 4h14a2 2 0 0 1 2 2v14a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V6a2 2 0 0 1 2-2z"/><path d="m9 16 2 2 4-4"/></svg>
+            </span>
+            <span class="nav-label">Appointments</span>
+          </button>
+
+          <button class="nav-item" data-nav="records" id="navRecords" type="button">
+            <span class="nav-icon" aria-hidden="true">
+              <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M11 20H5a2 2 0 0 1-2-2V6a2 2 0 0 1 2-2h3l2 3h9a2 2 0 0 1 2 2v1"/><path d="M13.9 17.45c-1.2-1.2-1.2-3.1 0-4.3s3.1-1.2 4.3 0l.8.8.8-.8c1.2-1.2 3.1-1.2 4.3 0s1.2 3.1 0 4.3L19 22z"/></svg>
+            </span>
+            <span class="nav-label">Records &amp; History</span>
+          </button>
+        </nav>
+
+        <!-- Patient footer -->
+        <div class="sidebar-footer">
+          <div class="sidebar-patient-card">
+            <div class="sidebar-avatar" id="sidebarPatientInitials" aria-hidden="true">?</div>
+            <div class="sidebar-patient-info">
+              <div class="sidebar-patient-name" id="sidebarPatientName">Guest</div>
+              <div class="sidebar-patient-meta" id="sidebarPatientMeta">Patient</div>
+            </div>
+          </div>
+          <button class="sidebar-logout" id="logoutBtn" type="button">
+            <span class="nav-icon" aria-hidden="true">
+              <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M9 21H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h4"/><polyline points="16 17 21 12 16 7"/><line x1="21" y1="12" x2="9" y2="12"/></svg>
+            </span>
+            <span class="nav-label">Logout</span>
+          </button>
+        </div>
+      </aside>
+
+      <!-- Mobile sidebar handle (required by app.js) -->
+      <button class="sidebar-handle" id="sidebarHandleBtn" type="button" aria-controls="appSidebar" aria-expanded="true">
+        <span id="sidebarHandleLabel">Menu</span>
+      </button>
+
+      <!-- ──────────── MAIN CONTENT ──────────── -->
+      <div class="app-main">
+
+        <!-- Topbar -->
+        <header class="topbar">
+          <!-- hidden toggle kept for app.js compatibility -->
+          <button id="sidebarToggleBtn" type="button" style="display:none" aria-hidden="true"></button>
+          <span class="topbar-label">Medical AI Triage</span>
+          <div class="topbar-status">
+            <span class="online-dot" aria-hidden="true"></span>
+            <span class="topbar-status-text">Online · <span id="status">Ready</span></span>
+          </div>
+        </header>
+
+        <!-- Profile panel (opened by booking studio, edit profile, history) -->
+        <section class="profile-panel hidden" id="profilePanel" aria-live="polite">
+          <div class="profile-panel-header">
+            <h2 id="profilePanelTitle">Profile</h2>
+            <button class="secondary compact" id="closeProfilePanelBtn" type="button">Close</button>
+          </div>
+          <div class="profile-panel-body" id="profilePanelBody"></div>
+        </section>
+
+        <!-- ═══════ PAGE: ASSISTANT ═══════ -->
+        <div class="page-view" id="pageAssistant">
+          <div class="assistant-layout">
+
+            <!-- Chat column -->
+            <section class="chat-section">
+              <div class="chat-header">
+                <div class="chat-header-icon" aria-hidden="true">
+                  <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M4.8 2.3A.3.3 0 1 0 5 2H4a2 2 0 0 0-2 2v5a6 6 0 0 0 6 6v0a6 6 0 0 0 6-6V4a2 2 0 0 0-2-2h-1a.2.2 0 1 0 .3.3"/><path d="M8 15v1a6 6 0 0 0 6 6v0a6 6 0 0 0 6-6v-4"/><circle cx="20" cy="10" r="2"/></svg>
+                </div>
+                <div class="chat-header-info">
+                  <div class="eyebrow-label text-primary">Medical AI Triage</div>
+                  <h1 class="chat-title">Hospital Assistant</h1>
+                  <p class="chat-subtitle" id="topbarCopy">Describe symptoms, book care, or continue the booking flow.</p>
+                </div>
+                <button class="btn-ghost" id="resetBtn" type="button" title="Start a new conversation">
+                  <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M9.937 15.5A2 2 0 0 0 8.5 14.063l-6.135-1.582a.5.5 0 0 1 0-.962L8.5 9.936A2 2 0 0 0 9.937 8.5l1.582-6.135a.5.5 0 0 1 .963 0L14.063 8.5A2 2 0 0 0 15.5 9.937l6.135 1.581a.5.5 0 0 1 0 .964L15.5 14.063a2 2 0 0 0-1.437 1.437l-1.582 6.135a.5.5 0 0 1-.963 0z"/></svg>
+                  New chat
+                </button>
               </div>
-            </div>
-            <div class="analyzed-docs-list" id="analyzedDocsList">
-              <p class="panel-note">No documents analyzed yet. Use 📎 in the chat to attach a file.</p>
-            </div>
-            <p class="upload-status" id="uploadStatus"></p>
-          </section>
 
-          <section class="sidebar-card tokens-card" aria-label="Token usage">
-            <div class="card-head">
-              <div>
-                <p class="card-kicker">Observability</p>
-                <h2>Token usage</h2>
-              </div>
-            </div>
-            <div class="token-grid" id="tokenUsage">
-              <div><span>Input</span><strong id="tokenInput">-</strong></div>
-              <div><span>Output</span><strong id="tokenOutput">-</strong></div>
-              <div><span>Total</span><strong id="tokenTotal">-</strong></div>
-              <div><span>Calls</span><strong id="tokenCalls">-</strong></div>
-            </div>
-          </section>
-
-          <nav class="sidebar-nav" aria-label="Patient tools">
-            <button id="bookAppointmentBtn" type="button">Book appointment</button>
-            <button class="secondary" id="modifyAppointmentBtn" type="button">Modify appointment</button>
-            <button id="resetBtn" type="button">New chat</button>
-            <button class="secondary" id="chatHistoryBtn" type="button">Chat history</button>
-            <button class="secondary" id="upcomingBookingsBtn" type="button">Upcoming bookings</button>
-            <button class="secondary" id="previousBookingsBtn" type="button">Previous bookings</button>
-            <button class="secondary" id="logoutBtn" type="button">Logout</button>
-          </nav>
-        </aside>
-
-        <button
-          class="sidebar-handle"
-          id="sidebarHandleBtn"
-          type="button"
-          aria-controls="appSidebar"
-          aria-expanded="true"
-        >
-          <span class="sidebar-handle-label" id="sidebarHandleLabel">Menu</span>
-        </button>
-
-        <section class="app-main">
-          <header class="topbar">
-            <div class="topbar-brand">
-              <div class="bot-avatar" aria-hidden="true">
-                <span>+</span>
-              </div>
-              <div>
-                <p class="card-kicker">Medical AI Triage</p>
-                <h1>Hospital Assistant</h1>
-                <p id="topbarCopy">Describe symptoms, book care, or review follow-up steps.</p>
-              </div>
-            </div>
-            <div class="topbar-actions">
-              <button class="secondary compact sidebar-toggle" id="sidebarToggleBtn" type="button" aria-controls="appSidebar" aria-expanded="true">
-                Menu
-              </button>
-              <div class="presence-chip"><span class="presence-dot"></span>Online</div>
-              <div class="status" id="status">Ready</div>
-            </div>
-          </header>
-
-          <section class="profile-panel hidden" id="profilePanel" aria-live="polite">
-            <div class="profile-panel-header">
-              <h2 id="profilePanelTitle">Profile</h2>
-              <button class="secondary compact" id="closeProfilePanelBtn" type="button">Close</button>
-            </div>
-            <div class="profile-panel-body" id="profilePanelBody"></div>
-          </section>
-
-          <section class="content">
-            <section class="chat">
-              <button class="scroll-top-btn hidden" id="scrollTopBtn" type="button" aria-label="Jump to top of chat">
-                Top
-              </button>
+              <!-- Messages -->
               <div class="messages" id="messages" aria-live="polite">
                 <div class="message assistant enter">
                   <div class="message-meta">
-                    <span class="bubble-avatar">+</span>
+                    <span class="bubble-avatar" aria-hidden="true">
+                      <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M9.937 15.5A2 2 0 0 0 8.5 14.063l-6.135-1.582a.5.5 0 0 1 0-.962L8.5 9.936A2 2 0 0 0 9.937 8.5l1.582-6.135a.5.5 0 0 1 .963 0L14.063 8.5A2 2 0 0 0 15.5 9.937l6.135 1.581a.5.5 0 0 1 0 .964L15.5 14.063a2 2 0 0 0-1.437 1.437l-1.582 6.135a.5.5 0 0 1-.963 0z"/></svg>
+                    </span>
                     <span>Medical assistant</span>
                   </div>
                   <div class="bubble">
-                    <div class="message-text">
-                      Describe your symptoms. I will estimate severity, recommend a department, show available doctors, then help you choose a slot.
-                    </div>
+                    <div class="message-text">Describe your symptoms. I will estimate severity, recommend a department, show available doctors, then help you choose a slot.</div>
                   </div>
                 </div>
               </div>
 
               <div class="quick-actions" id="quickActions"></div>
+              <button class="scroll-top-btn hidden" id="scrollTopBtn" type="button" aria-label="Jump to top of chat">Top</button>
 
+              <!-- Composer -->
               <form class="composer" id="chatForm">
                 <div class="composer-shell">
                   <div class="attach-pills" id="attachPills"></div>
-                  <div class="composer-input-row">
+                  <div class="composer-row">
                     <label class="attach-label" for="documentUpload" title="Attach a medical document (PDF, JPG, PNG)">
-                      <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
-                        <path d="m21.44 11.05-9.19 9.19a6 6 0 0 1-8.49-8.49l8.57-8.57A4 4 0 1 1 18 8.84l-8.59 8.57a2 2 0 0 1-2.83-2.83l8.49-8.48"/>
-                      </svg>
+                      <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="m21.44 11.05-9.19 9.19a6 6 0 0 1-8.49-8.49l8.57-8.57A4 4 0 1 1 18 8.84l-8.59 8.57a2 2 0 0 1-2.83-2.83l8.49-8.48"/></svg>
                       <input id="documentUpload" type="file" accept=".pdf,.jpg,.jpeg,.png,application/pdf,image/jpeg,image/png" />
                     </label>
-                    <div class="composer-text-shell">
-                      <textarea
-                        id="messageInput"
-                        name="message"
-                        rows="1"
-                        autocomplete="off"
-                        placeholder="Describe symptoms, ask about your documents, or type a message…"
-                        required
-                      ></textarea>
-                      <p class="composer-hint">Enter to send · Shift+Enter for new line · 📎 to attach a medical file</p>
-                    </div>
+                    <textarea id="messageInput" name="message" rows="1" autocomplete="off" placeholder="Describe symptoms, ask about your documents, or type a message…" required></textarea>
+                    <button type="submit" class="send-btn">
+                      <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M3.714 3.048a.498.498 0 0 0-.683.627l2.843 7.627a2 2 0 0 1 0 1.396l-2.842 7.627a.498.498 0 0 0 .682.627l18-8.5a.5.5 0 0 0 0-.904z"/><path d="M6 12h16"/></svg>
+                      Send
+                    </button>
                   </div>
                 </div>
-                <button type="submit">Send</button>
+                <p class="composer-hint">Enter to send · Shift+Enter for new line · 📎 to attach a medical file</p>
               </form>
             </section>
-          </section>
-        </section>
-      </section>
 
-      <div
-        class="closed-modal hidden"
-        id="chatClosedModal"
-        role="dialog"
-        aria-modal="true"
-        aria-labelledby="chatClosedTitle"
-      >
-        <section class="closed-dialog">
-          <h2 id="chatClosedTitle">Chat closed</h2>
-          <p>This care conversation has ended. Start a new chat to discuss new symptoms or appointments.</p>
-          <button id="startNewChatBtn" type="button">Start new chat</button>
-        </section>
-      </div>
-    </main>
+            <!-- Context sidebar (right column) -->
+            <aside class="context-sidebar">
+
+              <!-- Workflow card (hidden — not needed in assistant view) -->
+              <div class="ctx-card" style="display:none">
+                <div class="eyebrow-label">Workflow</div>
+                <div class="ctx-card-head">
+                  <h3 class="ctx-title">Current state</h3>
+                  <span class="state-badge" id="workflowState">Triage</span>
+                </div>
+                <div class="workflow-rail" id="workflowRail">
+                  <span class="workflow-step active">Triage</span>
+                  <span class="workflow-step">Conversation</span>
+                  <span class="workflow-step">RAG</span>
+                  <span class="workflow-step">Booking</span>
+                </div>
+                <div class="ctx-rows">
+                  <div class="ctx-row"><span>Severity</span><strong id="severity">—</strong></div>
+                  <div class="ctx-row"><span>Department</span><strong id="department">—</strong></div>
+                  <div class="ctx-row"><span>Next step</span><strong id="awaiting">Describe symptoms</strong></div>
+                </div>
+                <p class="routing-note" id="routingMeta">Department routing has not run yet.</p>
+              </div>
+
+              <!-- Care plan card -->
+              <div class="ctx-card">
+                <div class="eyebrow-label">Care plan</div>
+                <h3 class="ctx-title">Active appointments</h3>
+                <div class="appointments-preview" id="activeAppointmentsPreview">
+                  <p class="panel-note">No active appointments loaded.</p>
+                </div>
+                <div class="ctx-actions">
+                  <button class="btn-primary-sm" id="bookAppointmentBtn" type="button">Book appointment</button>
+                  <button class="btn-secondary-sm" id="modifyAppointmentBtn" type="button">Modify</button>
+                </div>
+              </div>
+
+              <!-- Observability card (hidden — not needed in assistant view) -->
+              <div class="ctx-card" style="display:none">
+                <div class="eyebrow-label">Observability</div>
+                <h3 class="ctx-title">Token usage</h3>
+                <div class="token-grid" id="tokenUsage">
+                  <div><span>Input</span><strong id="tokenInput">0</strong></div>
+                  <div><span>Output</span><strong id="tokenOutput">0</strong></div>
+                  <div><span>Total</span><strong id="tokenTotal">0</strong></div>
+                  <div><span>Calls</span><strong id="tokenCalls">0</strong></div>
+                </div>
+              </div>
+
+              <!-- Memory card -->
+              <div class="ctx-card ctx-card-memory">
+                <div class="eyebrow-label">Memory</div>
+                <h3 class="ctx-title">Conversation summary</h3>
+                <p class="summary-copy" id="chatSummary">Waiting for a little context.</p>
+              </div>
+
+              <!-- Recent turns -->
+              <div class="ctx-card ctx-card-history">
+                <div class="eyebrow-label">Recent turns</div>
+                <h3 class="ctx-title">Sliding window</h3>
+                <div id="recentHistory"></div>
+              </div>
+
+            </aside>
+          </div>
+        </div>
+
+        <!-- ═══════ PAGE: DASHBOARD ═══════ -->
+        <div class="page-view hidden" id="pageDashboard">
+          <div class="page-content">
+
+            <!-- Patient hero -->
+            <section class="patient-hero">
+              <div class="patient-hero-inner">
+                <div class="patient-hero-left">
+                  <div class="patient-hero-avatar" id="dashboardPatientInitials" aria-hidden="true">?</div>
+                  <div>
+                    <div class="eyebrow-label text-primary">Patient snapshot</div>
+                    <h1 class="patient-name" id="patientName">Guest</h1>
+                    <p class="patient-desc" id="patientSummary">AI triage, doctor selection, and appointment booking.</p>
+                  </div>
+                </div>
+                <div class="patient-hero-actions">
+                  <button class="secondary" id="editProfileBtn" type="button">Edit profile</button>
+                  <button class="btn-primary" id="startTriageBtn" type="button">Start triage</button>
+                </div>
+              </div>
+
+              <div class="patient-stats">
+                <div class="stat-card">
+                  <div class="stat-label">
+                    <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M22 12h-2.48a2 2 0 0 0-1.93 1.46l-2.35 8.36a.25.25 0 0 1-.48 0L9.24 2.18a.25.25 0 0 0-.48 0l-2.35 8.36A2 2 0 0 1 4.49 12H2"/></svg>
+                    Age
+                  </div>
+                  <strong class="stat-value" id="patientAge">—</strong>
+                </div>
+                <div class="stat-card">
+                  <div class="stat-label">
+                    <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M12 22a7 7 0 0 0 7-7c0-2-1-3.9-3-5.5s-3.5-4-4-6.5c-.5 2.5-2 4.9-4 6.5C6 11.1 5 13 5 15a7 7 0 0 0 7 7z"/></svg>
+                    Blood group
+                  </div>
+                  <strong class="stat-value" id="patientBlood">—</strong>
+                </div>
+                <div class="stat-card">
+                  <div class="stat-label">
+                    <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M19 14c1.49-1.46 3-3.21 3-5.5A5.5 5.5 0 0 0 16.5 3c-1.76 0-3 .5-4.5 2-1.5-1.5-2.74-2-4.5-2A5.5 5.5 0 0 0 2 8.5c0 2.3 1.5 4.05 3 5.5l7 7Z"/><path d="M3.22 12H9.5l.5-1 2 4.5 2-7 1.5 3.5h5.27"/></svg>
+                    Health issues
+                  </div>
+                  <strong class="stat-value" id="patientIssues">None reported</strong>
+                </div>
+                <div class="stat-card">
+                  <div class="stat-label">
+                    <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M8 2v4M16 2v4M3 10h18M5 4h14a2 2 0 0 1 2 2v14a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V6a2 2 0 0 1 2-2z"/></svg>
+                    Next visit
+                  </div>
+                  <strong class="stat-value" id="patientNextVisit">—</strong>
+                </div>
+              </div>
+            </section>
+
+            <!-- Dashboard panels -->
+            <div class="dashboard-panels">
+              <section class="panel">
+                <div class="eyebrow-label">Care plan</div>
+                <h2 class="panel-title">Active appointments</h2>
+                <div class="panel-empty-state" id="dashboardApptPreview">
+                  <p class="panel-note">No active appointments yet.</p>
+                </div>
+                <button class="panel-link" id="dashboardBookApptBtn" type="button">
+                  Book your first appointment
+                  <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M7 7h10v10"/><path d="M7 17 17 7"/></svg>
+                </button>
+              </section>
+
+              <section class="panel">
+                <div class="eyebrow-label">Health</div>
+                <h2 class="panel-title">Recent vitals</h2>
+                <ul class="vitals-list">
+                  <li class="vital-row"><span>Heart rate</span><div class="vital-value"><strong>72 bpm</strong><span class="badge-normal">Normal</span></div></li>
+                  <li class="vital-row"><span>Blood pressure</span><div class="vital-value"><strong>118 / 76</strong><span class="badge-normal">Normal</span></div></li>
+                  <li class="vital-row"><span>Temperature</span><div class="vital-value"><strong>36.6 °C</strong><span class="badge-normal">Normal</span></div></li>
+                  <li class="vital-row"><span>SpO₂</span><div class="vital-value"><strong>98%</strong><span class="badge-normal">Normal</span></div></li>
+                </ul>
+              </section>
+
+              <section class="panel">
+                <div class="eyebrow-label">Records</div>
+                <h2 class="panel-title">Documents</h2>
+                <div id="dashboardDocsList">
+                  <p class="panel-note">No documents yet. Upload from Records &amp; History.</p>
+                </div>
+              </section>
+            </div>
+
+          </div>
+        </div>
+
+        <!-- ═══════ PAGE: APPOINTMENTS ═══════ -->
+        <div class="page-view hidden" id="pageAppointments">
+          <div class="page-content">
+
+            <header class="page-header">
+              <div>
+                <div class="eyebrow-label text-primary">Appointments</div>
+                <h1 class="page-title">Your care schedule</h1>
+                <p class="page-subtitle">Book, modify, or review your visits in one place.</p>
+              </div>
+              <button class="btn-primary" id="apptPageBookBtn" type="button">
+                <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><line x1="12" y1="5" x2="12" y2="19"/><line x1="5" y1="12" x2="19" y2="12"/></svg>
+                Book appointment
+              </button>
+            </header>
+
+            <div class="tab-bar" role="tablist">
+              <button class="tab-btn is-active" data-appt-tab="upcoming" type="button" role="tab">Upcoming</button>
+              <button class="tab-btn" data-appt-tab="past" type="button" role="tab">Past</button>
+            </div>
+
+            <div class="appt-list" id="upcomingApptList">
+              <p class="panel-note">No upcoming appointments found.</p>
+            </div>
+            <div class="appt-list hidden" id="pastApptList">
+              <p class="panel-note">No past appointments found.</p>
+            </div>
+
+          </div>
+        </div>
+
+        <!-- ═══════ PAGE: RECORDS ═══════ -->
+        <div class="page-view hidden" id="pageRecords">
+          <div class="page-content">
+
+            <header class="page-header">
+              <div>
+                <div class="eyebrow-label text-primary">Records &amp; history</div>
+                <h1 class="page-title">Everything in one place</h1>
+                <p class="page-subtitle">Browse uploaded medical files and revisit past conversations with the assistant.</p>
+              </div>
+              <button class="btn-primary" id="uploadDocBtn" type="button">
+                <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><polyline points="17 8 12 3 7 8"/><line x1="12" y1="3" x2="12" y2="15"/></svg>
+                Upload document
+              </button>
+            </header>
+
+            <div class="tab-bar" role="tablist">
+              <button class="tab-btn is-active" data-rec-tab="docs" type="button" role="tab">Documents</button>
+              <button class="tab-btn" data-rec-tab="chats" type="button" role="tab">Chat history</button>
+            </div>
+
+            <!-- Documents tab -->
+            <div id="recDocsPanel">
+              <div class="analyzed-docs-list" id="analyzedDocsList">
+                <p class="panel-note">No documents analyzed yet. Use 📎 in the chat to attach a file.</p>
+              </div>
+              <p class="upload-status" id="uploadStatus"></p>
+            </div>
+
+            <!-- Chat history tab -->
+            <div id="recChatsPanel" class="hidden">
+              <div class="records-actions">
+                <button class="secondary" id="chatHistoryBtn" type="button">View chat history by case</button>
+                <button class="secondary" id="upcomingBookingsBtn" type="button">View upcoming bookings</button>
+                <button class="secondary" id="previousBookingsBtn" type="button">View previous bookings</button>
+              </div>
+              <p class="panel-note" style="margin-top: 0.5rem;">Click a button above to load records in the side panel.</p>
+            </div>
+
+          </div>
+        </div>
+
+      </div><!-- .app-main -->
+    </section><!-- .workspace -->
+
+    <!-- Chat closed modal -->
+    <div class="closed-modal hidden" id="chatClosedModal" role="dialog" aria-modal="true" aria-labelledby="chatClosedTitle">
+      <section class="closed-dialog">
+        <h2 id="chatClosedTitle">Chat closed</h2>
+        <p>This care conversation has ended. Start a new chat to discuss new symptoms or appointments.</p>
+        <button id="startNewChatBtn" type="button">Start new chat</button>
+      </section>
+    </div>
 
     <script src="/static/app.js"></script>
+    <script>
+      // ── Page navigation ─────────────────────────────────────────────────────
+      (function () {
+        "use strict";
+
+        var pages = {
+          assistant: document.getElementById("pageAssistant"),
+          dashboard: document.getElementById("pageDashboard"),
+          appointments: document.getElementById("pageAppointments"),
+          records: document.getElementById("pageRecords"),
+        };
+
+        function navigate(page) {
+          Object.keys(pages).forEach(function (key) {
+            if (pages[key]) pages[key].classList.toggle("hidden", key !== page);
+          });
+          document.querySelectorAll("[data-nav]").forEach(function (el) {
+            el.classList.toggle("is-active", el.dataset.nav === page);
+          });
+          localStorage.setItem("activePage", page);
+          if (page === "dashboard") syncDashboard();
+          if (page === "appointments") syncAppointments();
+        }
+
+        document.querySelectorAll("[data-nav]").forEach(function (el) {
+          el.addEventListener("click", function () { navigate(el.dataset.nav); });
+        });
+
+        // Dashboard "Start triage" → go to assistant
+        var startTriageBtn = document.getElementById("startTriageBtn");
+        if (startTriageBtn) startTriageBtn.addEventListener("click", function () { navigate("assistant"); });
+
+        // Appointments page "Book appointment" → delegate to context sidebar button
+        var apptPageBookBtn = document.getElementById("apptPageBookBtn");
+        if (apptPageBookBtn) {
+          apptPageBookBtn.addEventListener("click", function () {
+            navigate("assistant");
+            setTimeout(function () {
+              var btn = document.getElementById("bookAppointmentBtn");
+              if (btn) btn.click();
+            }, 80);
+          });
+        }
+
+        // Dashboard "Book your first appointment" → go to appointments page
+        var dashboardBookApptBtn = document.getElementById("dashboardBookApptBtn");
+        if (dashboardBookApptBtn) {
+          dashboardBookApptBtn.addEventListener("click", function () { navigate("appointments"); });
+        }
+
+        // Records "Upload document" → go to assistant and trigger file picker
+        var uploadDocBtn = document.getElementById("uploadDocBtn");
+        if (uploadDocBtn) {
+          uploadDocBtn.addEventListener("click", function () {
+            navigate("assistant");
+            setTimeout(function () {
+              var fu = document.getElementById("documentUpload");
+              if (fu) fu.click();
+            }, 80);
+          });
+        }
+
+        // Appointments tabs
+        document.querySelectorAll("[data-appt-tab]").forEach(function (btn) {
+          btn.addEventListener("click", function () {
+            var tab = btn.dataset.apptTab;
+            document.querySelectorAll("[data-appt-tab]").forEach(function (b) {
+              b.classList.toggle("is-active", b.dataset.apptTab === tab);
+            });
+            var upcoming = document.getElementById("upcomingApptList");
+            var past = document.getElementById("pastApptList");
+            if (upcoming) upcoming.classList.toggle("hidden", tab !== "upcoming");
+            if (past) past.classList.toggle("hidden", tab !== "past");
+          });
+        });
+
+        // Records tabs
+        document.querySelectorAll("[data-rec-tab]").forEach(function (btn) {
+          btn.addEventListener("click", function () {
+            var tab = btn.dataset.recTab;
+            document.querySelectorAll("[data-rec-tab]").forEach(function (b) {
+              b.classList.toggle("is-active", b.dataset.recTab === tab);
+            });
+            var docs = document.getElementById("recDocsPanel");
+            var chats = document.getElementById("recChatsPanel");
+            if (docs) docs.classList.toggle("hidden", tab !== "docs");
+            if (chats) chats.classList.toggle("hidden", tab !== "chats");
+          });
+        });
+
+        // ── Sync sidebar patient card from currentUser ───────────────────────
+        function syncSidebarPatient() {
+          var user = null;
+          try { user = JSON.parse(localStorage.getItem("currentUser") || "null"); } catch (e) {}
+
+          var initialsEl = document.getElementById("sidebarPatientInitials");
+          var nameEl = document.getElementById("sidebarPatientName");
+          var metaEl = document.getElementById("sidebarPatientMeta");
+          var dashInitials = document.getElementById("dashboardPatientInitials");
+
+          if (user && user.name) {
+            var parts = user.name.trim().split(/\s+/);
+            var initials = parts.map(function (p) { return p[0] || ""; }).join("").slice(0, 2).toUpperCase();
+            if (initialsEl) initialsEl.textContent = initials;
+            if (nameEl) nameEl.textContent = user.name;
+            if (metaEl) metaEl.textContent = "Patient" + (user.blood_group ? " · " + user.blood_group : "");
+            if (dashInitials) dashInitials.textContent = initials;
+          } else {
+            if (initialsEl) initialsEl.textContent = "?";
+            if (nameEl) nameEl.textContent = "Guest";
+            if (metaEl) metaEl.textContent = "Patient";
+            if (dashInitials) dashInitials.textContent = "?";
+          }
+        }
+
+        // ── Sync appointments page from activeAppointmentsPreview ────────────
+        function syncAppointments() {
+          var preview = document.getElementById("activeAppointmentsPreview");
+          var upcomingList = document.getElementById("upcomingApptList");
+          if (!preview || !upcomingList) return;
+          var note = preview.querySelector(".panel-note");
+          if (!note) {
+            upcomingList.innerHTML = preview.innerHTML;
+          }
+        }
+
+        // ── Sync dashboard appointments panel ────────────────────────────────
+        function syncDashboard() {
+          syncSidebarPatient();
+          var preview = document.getElementById("activeAppointmentsPreview");
+          var dashAppt = document.getElementById("dashboardApptPreview");
+          if (!preview || !dashAppt) return;
+          var note = preview.querySelector(".panel-note");
+          if (!note) {
+            dashAppt.innerHTML = preview.innerHTML;
+          }
+        }
+
+        // Watch body class for authentication changes
+        var bodyObserver = new MutationObserver(syncSidebarPatient);
+        bodyObserver.observe(document.body, { attributes: true, attributeFilter: ["class"] });
+
+        // Watch patientName for changes
+        var patientNameEl = document.getElementById("patientName");
+        if (patientNameEl) {
+          var nameObserver = new MutationObserver(syncSidebarPatient);
+          nameObserver.observe(patientNameEl, { childList: true, characterData: true, subtree: true });
+        }
+
+        // Initial sync
+        syncSidebarPatient();
+
+        // Restore last page after authentication check
+        window.addEventListener("load", function () {
+          var saved = localStorage.getItem("activePage") || "assistant";
+          if (document.body.classList.contains("authenticated")) {
+            navigate(saved);
+          }
+        });
+      })();
+    </script>
   </body>
 </html>

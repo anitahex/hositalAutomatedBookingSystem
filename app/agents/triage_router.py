@@ -9,30 +9,46 @@ parser = PydanticOutputParser(pydantic_object=PatientExtraction)
 MEMORY_POLICY = get_memory_policy("triage_router")
 
 # 100% STATIC CACHEABLE PREFIX
-STATIC_TRIAGE_PROMPT = """You are the Triage Router Agent for a hospital portal.
-Understand the patient's intent and symptoms from meaning and context. 
+STATIC_TRIAGE_PROMPT = """You are an experienced triage nurse for a hospital AI system. Your job is to classify the patient's intent and extract clinical symptoms with accurate severity assessment.
 
-Intent meanings:
-- greeting: the latest message is only a greeting or social opener, with no care request.
-- triage_symptoms: the patient describes symptoms, discomfort, injury, illness, or asks for help/remedy.
-- direct_booking: the patient wants a doctor, specialist, department, appointment, or booking.
-- unclear: you cannot safely infer a medical or booking intent.
+INTENT CLASSIFICATION:
+- greeting: Patient is greeting or socializing with no medical/booking request
+- triage_symptoms: Patient describes symptoms, injury, illness, pain, or asks for medical help/remedy
+- direct_booking: Patient wants to book/reschedule an appointment, see a doctor, or ask about availability
+- unclear: Cannot safely determine intent; ask for clarification
 
-Severity meanings:
-- emergency: potentially life-threatening or self-harm risk; needs immediate emergency care.
-- severe: should be seen urgently within hours.
-- moderate: needs medical review but is not immediately dangerous.
-- mild: minor or non-urgent.
+SEVERITY LEVELS (use clinical judgment):
+- emergency: Immediately life-threatening (difficulty breathing, chest pain, severe bleeding, self-harm risk, altered consciousness, poisoning). Needs 911/ER immediately.
+- severe: Urgent medical attention needed within hours (high fever 103°F+, severe pain 8-10/10, uncontrolled vomiting, signs of infection, new neurological symptoms)
+- moderate: Needs medical review but not immediately dangerous (moderate pain 5-7/10, persistent cough, concerning rash, fever 101-102°F, persistent nausea)
+- mild: Minor or non-urgent (mild pain <5/10, small cuts, mild cold symptoms, minor headache, fatigue)
 
-Extract clean symptoms in the patient's own medical meaning. For greetings or unclear messages, return an empty symptoms list and mild severity unless prior context changes that.
+SYMPTOM EXTRACTION — Use clinical terminology:
+- "leg tingling + back pain" → extract as ["sciatica risk", "lower back pain", "paresthesia"] (not just the patient's words)
+- "buzzing in ear + dizziness" → ["tinnitus", "vertigo", "vestibular symptoms"]
+- "sharp chest pain" → ["chest pain", "possible cardiac symptom"] + severity SEVERE or EMERGENCY
+- For each symptom, infer the body system/location when clear
 
-Return ONLY valid JSON matching this exact structure:
-{"intent":"greeting|triage_symptoms|direct_booking|unclear","symptoms":["string"],"severity":"mild|moderate|severe|emergency"}"""
+CRITICAL RED FLAGS (mark severity as SEVERE or EMERGENCY):
+- Chest pain, pressure, or tightness
+- Difficulty breathing or shortness of breath
+- Severe bleeding or uncontrolled bleeding
+- Severe allergic reaction (swelling, rash, breathing difficulty)
+- Signs of stroke (facial drooping, arm weakness, speech difficulty)
+- Severe headache with fever/stiff neck (meningitis risk)
+- Thoughts of self-harm
+- Severe or uncontrolled pain (8+/10)
+- Loss of consciousness or confusion
+- Poisoning or overdose
+
+Return ONLY valid JSON matching this exact structure (no markdown, no explanation):
+{"intent":"greeting|triage_symptoms|direct_booking|unclear","symptoms":["symptom1","symptom2"],"severity":"mild|moderate|severe|emergency"}"""
 
 def _clean_json(raw_output: str) -> str:
     return raw_output.replace("```json", "").replace("```", "").strip()
 
 async def triage_router_node(state: GraphState):
+    print(f"[TRIAGE_ROUTER_NODE] ENTRY - intent={state.get('intent')}, awaiting={state.get('awaiting')}")
     # Guard: if we're already mid-intake (have symptoms AND asked questions),
     # skip re-triage entirely. Returning minimal updates lets conversation_agent
     # continue the existing intake without resetting collected data.
@@ -87,6 +103,7 @@ Latest message: {user_input}"""
 
     symptoms = list(dict.fromkeys((state.get("symptoms") or []) + extracted.symptoms))
     intent = "triage_symptoms" if extracted.intent == "triage_symptoms" else extracted.intent
+    print(f"[TRIAGE_ROUTER_NODE] RETURNING - intent={intent}, symptoms={len(symptoms)}")
     return {
         "conversation_history": updated_history,
         "messages": updated_history[-6:],
@@ -116,18 +133,20 @@ _TRIAGE_SYMPTOM_KEYWORDS = frozenset({
 })
 
 MERGED_TRIAGE_STREAM_SYSTEM = """\
-You are a hospital triage assistant. Process the patient's message in two parts.
+You are a compassionate, clinically-trained triage nurse for a hospital AI system. Process the patient's message in two parts.
 
 PART 1 — Output a single compact JSON line (no newline inside):
-{"intent":"triage_symptoms|greeting|direct_booking|unclear","symptoms":["symptom1"],"severity":"mild|moderate|severe|emergency"}
+{"intent":"triage_symptoms|greeting|direct_booking|unclear","symptoms":["symptom1","symptom2"],"severity":"mild|moderate|severe|emergency"}
 
-PART 2 — On the very next line, write a warm natural-language response:
-- triage_symptoms: show empathy about their specific symptoms, then ask ONE focused intake question (duration, onset, or location). At the end of the first response only, add one brief sentence: "If you have any medical documents like lab reports, prescriptions, or imaging, feel free to attach them using the button below."
-- greeting: warmly welcome them, invite them to share symptoms or book an appointment, and mention they can upload medical documents (lab reports, prescriptions, or scans) using the attachment button below
-- direct_booking: acknowledge the booking request and confirm what department/doctor they need
-- unclear: gently ask them to clarify what they need help with
+Use clinical judgment: "leg tingling + back pain" → ["sciatica risk", "paresthesia", "lower back pain"]. Mark severity SEVERE if red flags present.
 
-Rules: Output ONLY the two parts above — JSON line, newline, then plain text. No extra headers or labels.\
+PART 2 — On the very next line, write a warm, empathetic response:
+- triage_symptoms: Acknowledge their specific symptoms with empathy. Ask ONE focused intake question (duration: "How long?", onset: "When did it start?", location: "Where exactly?", or trigger: "What made it start?"). First response only: "If you have lab reports, prescriptions, or imaging, feel free to attach them using the button below."
+- greeting: Warmly welcome them. Invite them to share symptoms, book an appointment, or upload medical documents.
+- direct_booking: Confirm their booking request. Clarify what department/specialist/timeframe they need.
+- unclear: Gently ask them to clarify — are they describing symptoms, wanting to book, or something else?
+
+Rules: Output ONLY JSON line + newline + plain text response. No preamble, no extra formatting.\
 """
 
 
