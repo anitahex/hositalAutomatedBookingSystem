@@ -119,9 +119,9 @@ _IST = timedelta(hours=5, minutes=30)
 
 
 def _fmt_time(iso_str: str) -> str:
-    """Convert UTC naive timestamp to IST for display: 'Today 2:30 PM' / 'Jun 27 9 AM'."""
+    """Format an already-IST naive timestamp for display: 'Today 2:30 PM' / 'Jun 27 9 AM'."""
     try:
-        dt_ist = datetime.fromisoformat(str(iso_str)) + _IST
+        dt_ist = datetime.fromisoformat(str(iso_str))
         now_ist = datetime.now(timezone.utc).replace(tzinfo=None) + _IST
         today_ist = now_ist.date()
         tomorrow_ist = today_ist + timedelta(days=1)
@@ -171,26 +171,9 @@ def format_numbered_options(items: list[dict], label_key: str, extra_keys: list[
     return "\n".join(lines)
 
 
-def _slots_to_ist(slots: list[dict]) -> list[dict]:
-    """Return a copy of slots with start_time/end_time shifted to IST (naive ISO strings).
-    The JS frontend treats naive ISO strings as local time, so sending IST values
-    ensures buttons display the correct local time without needing a 'Z' suffix."""
-    result = []
-    for slot in slots:
-        s = dict(slot)
-        for key in ("start_time", "end_time"):
-            if s.get(key):
-                try:
-                    s[key] = (datetime.fromisoformat(s[key]) + _IST).isoformat()
-                except Exception:
-                    pass
-        result.append(s)
-    return result
-
-
 def format_slot_options(slots: list[dict]) -> str:
-    """Format already-IST slot list as '1. Today 2:30 PM – 3 PM'.
-    Input slots must already have start_time/end_time in IST (call _slots_to_ist first)."""
+    """Format a slot list as '1. Today 2:30 PM – 3 PM'.
+    start_time/end_time are stored already in IST (naive), so no conversion is applied here."""
     now_ist = datetime.now(timezone.utc).replace(tzinfo=None) + _IST
     today_ist = now_ist.date()
     tomorrow_ist = today_ist + timedelta(days=1)
@@ -1083,9 +1066,7 @@ def ask_preferred_slot(state: GraphState):
             ),
         }
 
-    # Convert UTC slot times to IST so both message text and frontend buttons are consistent
-    ist_slots = _slots_to_ist(slots)
-    slot_lines = format_slot_options(ist_slots)
+    slot_lines = format_slot_options(slots)
 
     return {
         "awaiting": "slot_selection",
@@ -1093,7 +1074,7 @@ def ask_preferred_slot(state: GraphState):
         **department_context,
         "selected_doctor_id": selected["doctor_id"],
         "selected_doctor_name": selected["doctor_name"],
-        "slot_options": ist_slots,
+        "slot_options": slots,
         "final_response": (
             f"Available slots for **{selected['doctor_name']}**"
             f"{f' on {requested_date}' if requested_date else ''}:\n\n{slot_lines}\n\n"
@@ -1144,7 +1125,7 @@ def book_preferred_slot(state: GraphState):
         "booking_id": booking_reference,
         "doctor": str(booked["doctor_name"]),
         "department": str(booked["department"]),
-        "time": str(booked["start_time"]),
+        "time": _fmt_time(str(booked["start_time"])),
         "slot_id": str(booked["slot_id"]),
     }
     confirmed_bookings = _booking_list(state)
@@ -1179,7 +1160,7 @@ def book_preferred_slot(state: GraphState):
                 "Your appointment is booked and confirmed!\n\n"
                 f"Doctor: {booked['doctor_name']}\n"
                 f"Department: {booked['department']}\n"
-                f"Date & Time: {booked['start_time']}\n"
+                f"Date & Time: {_fmt_time(str(booked['start_time']))}\n"
                 f"Reference ID: {booking_reference}\n"
                 f"{clinical_note_suffix}\n\n"
                 "I can also help with the other department(s) we identified.\n"
@@ -1203,7 +1184,7 @@ def book_preferred_slot(state: GraphState):
             "✓ Your appointment is booked and confirmed!\n\n"
             f"**Doctor:** {booked['doctor_name']}\n"
             f"**Department:** {booked['department']}\n"
-            f"**Date & Time:** {booked['start_time']}\n"
+            f"**Date & Time:** {_fmt_time(str(booked['start_time']))}\n"
             f"**Reference ID:** {booking_reference}\n\n"
             "---\n\n"
             f"**Should I forward your detailed clinical report to {booked['doctor_name']} before your appointment?**\n\n"
