@@ -13,6 +13,7 @@ from __future__ import annotations
 import json
 import logging
 from datetime import datetime, timezone
+from functools import lru_cache
 from typing import Any
 
 from pydantic import BaseModel
@@ -29,6 +30,7 @@ class CatalogEntry(BaseModel):
     document_id: str
     user_id: str
     session_id: str
+    original_filename: str
     document_type: str
     clinical_date: str | None
     created_at: datetime
@@ -71,6 +73,19 @@ def _execute_write(sql: str, params: tuple = ()) -> None:
         conn.close()
 
 
+@lru_cache(maxsize=1)
+def _document_catalog_has_original_filename() -> bool:
+    sql = """
+        SELECT 1
+        FROM information_schema.columns
+        WHERE table_name = 'document_catalog'
+          AND column_name = 'original_filename'
+        LIMIT 1
+    """
+    rows = _execute_rows(sql)
+    return bool(rows)
+
+
 # ---- Document catalog operations ----
 
 def create_catalog_row(
@@ -78,6 +93,7 @@ def create_catalog_row(
     document_id: str,
     user_id: str,
     session_id: str,
+    original_filename: str,
     blob_summary_path: str,
     ingestion_status: str = "processing",
 ) -> None:
@@ -86,20 +102,37 @@ def create_catalog_row(
     Must be called BEFORE the blob summary write so a failed write leaves
     a 'processing' row rather than no trace at all.
     """
-    sql = """
-        INSERT INTO document_catalog (
-            document_id, user_id, session_id, blob_summary_path,
-            ingestion_status, findings_keys, created_at, updated_at
-        ) VALUES (%s, %s, %s, %s, %s, %s::jsonb, %s, %s)
-        ON CONFLICT (document_id) DO UPDATE
-            SET ingestion_status = EXCLUDED.ingestion_status,
-                updated_at        = NOW()
-    """
     now = datetime.now(timezone.utc)
-    _execute_write(sql, (
-        document_id, user_id, session_id, blob_summary_path,
-        ingestion_status, "[]", now, now,
-    ))
+    has_filename = _document_catalog_has_original_filename()
+    if has_filename:
+        sql = """
+            INSERT INTO document_catalog (
+                document_id, user_id, session_id, original_filename, blob_summary_path,
+                ingestion_status, findings_keys, created_at, updated_at
+            ) VALUES (%s, %s, %s, %s, %s, %s, %s::jsonb, %s, %s)
+            ON CONFLICT (document_id) DO UPDATE
+                SET ingestion_status = EXCLUDED.ingestion_status,
+                    updated_at        = NOW()
+        """
+        params = (
+            document_id, user_id, session_id, original_filename, blob_summary_path,
+            ingestion_status, "[]", now, now,
+        )
+    else:
+        sql = """
+            INSERT INTO document_catalog (
+                document_id, user_id, session_id, blob_summary_path,
+                ingestion_status, findings_keys, created_at, updated_at
+            ) VALUES (%s, %s, %s, %s, %s, %s::jsonb, %s, %s)
+            ON CONFLICT (document_id) DO UPDATE
+                SET ingestion_status = EXCLUDED.ingestion_status,
+                    updated_at        = NOW()
+        """
+        params = (
+            document_id, user_id, session_id, blob_summary_path,
+            ingestion_status, "[]", now, now,
+        )
+    _execute_write(sql, params)
     logger.info("catalog: created row document_id=%s status=%s", document_id, ingestion_status)
 
 
@@ -148,13 +181,23 @@ def list_user_documents(user_id: str) -> list[CatalogEntry]:
     Return all complete catalog entries for a user (all sessions).
     Returns an empty list if none found.
     """
-    sql = """
-        SELECT document_id, user_id, session_id, document_type, clinical_date,
-               created_at, blob_summary_path, findings_keys, ingestion_status
-        FROM document_catalog
-        WHERE user_id = %s AND ingestion_status = 'complete'
-        ORDER BY created_at DESC
-    """
+    has_filename = _document_catalog_has_original_filename()
+    if has_filename:
+        sql = """
+            SELECT document_id, user_id, session_id, original_filename, document_type, clinical_date,
+                   created_at, blob_summary_path, findings_keys, ingestion_status
+            FROM document_catalog
+            WHERE user_id = %s AND ingestion_status = 'complete'
+            ORDER BY created_at DESC
+        """
+    else:
+        sql = """
+            SELECT document_id, user_id, session_id, document_type, clinical_date,
+                   created_at, blob_summary_path, findings_keys, ingestion_status
+            FROM document_catalog
+            WHERE user_id = %s AND ingestion_status = 'complete'
+            ORDER BY created_at DESC
+        """
     rows = _execute_rows(sql, (user_id,))
     entries: list[CatalogEntry] = []
     for row in rows:
@@ -166,6 +209,7 @@ def list_user_documents(user_id: str) -> list[CatalogEntry]:
                 document_id=str(row["document_id"]),
                 user_id=str(row["user_id"]),
                 session_id=str(row["session_id"]),
+                original_filename=str(row.get("original_filename") or row["document_id"]),
                 document_type=str(row.get("document_type") or "other"),
                 clinical_date=str(row["clinical_date"]) if row.get("clinical_date") else None,
                 created_at=row["created_at"],
@@ -179,11 +223,19 @@ def list_user_documents(user_id: str) -> list[CatalogEntry]:
 
 
 def get_catalog_entry(document_id: str) -> CatalogEntry | None:
-    sql = """
-        SELECT document_id, user_id, session_id, document_type, clinical_date,
-               created_at, blob_summary_path, findings_keys, ingestion_status
-        FROM document_catalog WHERE document_id = %s
-    """
+    has_filename = _document_catalog_has_original_filename()
+    if has_filename:
+        sql = """
+            SELECT document_id, user_id, session_id, original_filename, document_type, clinical_date,
+                   created_at, blob_summary_path, findings_keys, ingestion_status
+            FROM document_catalog WHERE document_id = %s
+        """
+    else:
+        sql = """
+            SELECT document_id, user_id, session_id, document_type, clinical_date,
+                   created_at, blob_summary_path, findings_keys, ingestion_status
+            FROM document_catalog WHERE document_id = %s
+        """
     rows = _execute_rows(sql, (document_id,))
     if not rows:
         return None
@@ -198,6 +250,7 @@ def get_catalog_entry(document_id: str) -> CatalogEntry | None:
         document_id=str(row["document_id"]),
         user_id=str(row["user_id"]),
         session_id=str(row["session_id"]),
+        original_filename=str(row.get("original_filename") or row["document_id"]),
         document_type=str(row.get("document_type") or "other"),
         clinical_date=str(row["clinical_date"]) if row.get("clinical_date") else None,
         created_at=row["created_at"],

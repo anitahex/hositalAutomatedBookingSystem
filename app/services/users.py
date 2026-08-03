@@ -1,10 +1,8 @@
-import hashlib
-import hmac
-import os
 import re
 from uuid import UUID
 
 from app.db.connection import connect_db
+from app.services.passwords import hash_password, verify_password
 
 
 PASSWORD_PATTERN = re.compile(
@@ -52,25 +50,6 @@ def _normalise_email(email: str) -> str:
     return email.strip().lower()
 
 
-def _hash_password(password: str, salt: bytes | None = None) -> str:
-    salt = salt or os.urandom(16)
-    digest = hashlib.pbkdf2_hmac("sha256", password.encode("utf-8"), salt, 120_000)
-    return f"pbkdf2_sha256${salt.hex()}${digest.hex()}"
-
-
-def _verify_password(password: str, stored_hash: str) -> bool:
-    try:
-        algorithm, salt_hex, digest_hex = stored_hash.split("$", 2)
-    except ValueError:
-        return False
-
-    if algorithm != "pbkdf2_sha256":
-        return False
-
-    expected = _hash_password(password, bytes.fromhex(salt_hex)).split("$", 2)[2]
-    return hmac.compare_digest(expected, digest_hex)
-
-
 def create_user_with_profile(
     *,
     email: str,
@@ -102,7 +81,7 @@ def create_user_with_profile(
                     VALUES (%s, %s)
                     RETURNING user_id;
                     """,
-                    (email, _hash_password(password)),
+                    (email, hash_password(password)),
                 )
                 user_id = cur.fetchone()[0]
                 cur.execute(
@@ -195,7 +174,7 @@ def authenticate_user(email: str, password: str):
         return None
 
     user_id, password_hash = row
-    if not _verify_password(password, password_hash):
+    if not verify_password(password, password_hash):
         return None
 
     return get_user_profile(str(user_id))

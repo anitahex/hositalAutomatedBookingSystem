@@ -3,6 +3,8 @@ CREATE EXTENSION IF NOT EXISTS pgcrypto;
 DROP TABLE IF EXISTS appointment_bookings;
 DROP TABLE IF EXISTS appointment_slots;
 DROP TABLE IF EXISTS doctors;
+DROP TABLE IF EXISTS admin_accounts;
+DROP TABLE IF EXISTS schedule_holidays;
 DROP TABLE IF EXISTS llm_token_usage;
 DROP TABLE IF EXISTS token_logs;
 DROP TABLE IF EXISTS chat_sessions;
@@ -29,21 +31,49 @@ CREATE TABLE patient_profiles (
     updated_at TIMESTAMP NOT NULL DEFAULT NOW()
 );
 
+CREATE TABLE admin_accounts (
+    admin_id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+    email TEXT NOT NULL UNIQUE,
+    password_hash TEXT NOT NULL,
+    name TEXT NOT NULL,
+    is_active BOOLEAN NOT NULL DEFAULT TRUE,
+    created_at TIMESTAMP NOT NULL DEFAULT NOW(),
+    updated_at TIMESTAMP NOT NULL DEFAULT NOW()
+);
+
 CREATE TABLE doctors (
-    doctor_id UUID PRIMARY KEY,
+    doctor_id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
     name TEXT NOT NULL,
     department TEXT NOT NULL,
-    experience_years INTEGER NOT NULL
+    experience_years INTEGER NOT NULL,
+    is_active BOOLEAN NOT NULL DEFAULT TRUE,
+    created_at TIMESTAMP NOT NULL DEFAULT NOW(),
+    updated_at TIMESTAMP NOT NULL DEFAULT NOW()
 );
 
 CREATE TABLE appointment_slots (
-    slot_id UUID PRIMARY KEY,
+    slot_id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
     doctor_id UUID NOT NULL REFERENCES doctors(doctor_id) ON DELETE CASCADE,
     start_time TIMESTAMP NOT NULL,
     end_time TIMESTAMP NOT NULL,
     is_booked BOOLEAN NOT NULL DEFAULT FALSE,
     booked_by_patient_id TEXT,
+    is_active BOOLEAN NOT NULL DEFAULT TRUE,
+    created_at TIMESTAMP NOT NULL DEFAULT NOW(),
+    updated_at TIMESTAMP NOT NULL DEFAULT NOW(),
     UNIQUE (doctor_id, start_time)
+);
+
+CREATE TABLE schedule_holidays (
+    holiday_id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+    doctor_id UUID REFERENCES doctors(doctor_id) ON DELETE CASCADE,
+    start_date DATE NOT NULL,
+    end_date DATE NOT NULL,
+    reason TEXT,
+    is_active BOOLEAN NOT NULL DEFAULT TRUE,
+    created_at TIMESTAMP NOT NULL DEFAULT NOW(),
+    updated_at TIMESTAMP NOT NULL DEFAULT NOW(),
+    CHECK (end_date >= start_date)
 );
 
 CREATE TABLE appointment_bookings (
@@ -110,6 +140,9 @@ CREATE INDEX idx_appointment_bookings_active
 CREATE UNIQUE INDEX ux_appointment_bookings_booked_slot
     ON appointment_bookings(slot_id)
     WHERE status = 'booked';
+CREATE INDEX idx_schedule_holidays_active
+    ON schedule_holidays(doctor_id, start_date, end_date)
+    WHERE is_active = TRUE;
 CREATE INDEX idx_llm_token_usage_session_created
     ON llm_token_usage(chat_session_id, created_at);
 CREATE INDEX idx_chat_sessions_patient_updated

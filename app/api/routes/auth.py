@@ -2,6 +2,7 @@ from fastapi import APIRouter, Depends, HTTPException
 from psycopg2.errors import UniqueViolation
 from pydantic import BaseModel, Field
 
+from app.services.admin_auth import authenticate_admin
 from app.services.tokens import create_access_token
 from app.services.users import authenticate_user, create_user_with_profile, update_patient_profile
 from app.api.dependencies import current_user
@@ -51,6 +52,7 @@ def signup(request: SignupRequest):
     token = create_access_token(
         patient_id=profile["patient_id"],
         email=profile["login_email"],
+        role="patient",
     )
     return {"status": "created", "access_token": token, "token_type": "bearer", "user": profile}
 
@@ -64,8 +66,22 @@ def login(request: LoginRequest):
     token = create_access_token(
         patient_id=profile["patient_id"],
         email=profile["login_email"],
+        role="patient",
     )
     return {"status": "authenticated", "access_token": token, "token_type": "bearer", "user": profile}
+
+
+class AdminLoginRequest(BaseModel):
+    email: str
+    password: str
+
+
+@router.post("/admin/login")
+def admin_login(request: AdminLoginRequest):
+    admin = authenticate_admin(request.email, request.password)
+    if not admin:
+        raise HTTPException(status_code=401, detail="Invalid admin email or password.")
+    return {"status": "authenticated", **admin}
 
 
 @router.get("/me")

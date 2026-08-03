@@ -110,7 +110,7 @@ def available_departments(limit: int = 20):
         ensure_booking_schema(conn)
         with conn.cursor() as cur:
             cur.execute(
-                """
+                f"""
                 SELECT
                     d.department,
                     COUNT(DISTINCT d.doctor_id) AS doctor_count,
@@ -118,7 +118,9 @@ def available_departments(limit: int = 20):
                     MIN(s.start_time) AS next_available_time
                 FROM doctors d
                 JOIN appointment_slots s ON s.doctor_id = d.doctor_id
-                WHERE s.start_time > NOW() + INTERVAL '30 minutes'
+                WHERE {_active_doctor_clause()}
+                    AND {_active_slot_clause()}
+                    AND s.start_time > NOW() + INTERVAL '30 minutes'
                     AND s.start_time <= NOW() + INTERVAL '7 days'
                     AND NOT EXISTS (
                         SELECT 1
@@ -127,6 +129,7 @@ def available_departments(limit: int = 20):
                             AND b.status = 'booked'
                             AND b.end_time > NOW()
                     )
+                    {_holiday_block_clause()}
                 GROUP BY d.department
                 ORDER BY next_available_time ASC, d.department ASC
                 LIMIT %s;
@@ -170,11 +173,98 @@ def _parse_requested_date(requested_date: str | None) -> date | None:
     return parsed
 
 
+def _active_doctor_clause() -> str:
+    return "COALESCE(d.is_active, TRUE) = TRUE"
+
+
+def _active_slot_clause() -> str:
+    return "COALESCE(s.is_active, TRUE) = TRUE"
+
+
+def _holiday_block_clause() -> str:
+    return """
+                    AND NOT EXISTS (
+                        SELECT 1
+                        FROM schedule_holidays h
+                        WHERE h.is_active = TRUE
+                            AND (
+                                h.doctor_id IS NULL
+                                OR h.doctor_id = d.doctor_id
+                            )
+                            AND DATE(s.start_time) BETWEEN h.start_date AND h.end_date
+                    )
+    """
+
+
 def ensure_booking_schema(conn):
     with conn.cursor() as cur:
         cur.execute(
             """
             CREATE EXTENSION IF NOT EXISTS pgcrypto;
+
+            CREATE TABLE IF NOT EXISTS doctors (
+                doctor_id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+                name TEXT NOT NULL,
+                department TEXT NOT NULL,
+                experience_years INTEGER NOT NULL,
+                is_active BOOLEAN NOT NULL DEFAULT TRUE,
+                created_at TIMESTAMP NOT NULL DEFAULT NOW(),
+                updated_at TIMESTAMP NOT NULL DEFAULT NOW()
+            );
+
+            ALTER TABLE doctors
+                ALTER COLUMN doctor_id SET DEFAULT gen_random_uuid();
+            ALTER TABLE doctors
+                ADD COLUMN IF NOT EXISTS is_active BOOLEAN NOT NULL DEFAULT TRUE;
+            ALTER TABLE doctors
+                ADD COLUMN IF NOT EXISTS created_at TIMESTAMP NOT NULL DEFAULT NOW();
+            ALTER TABLE doctors
+                ADD COLUMN IF NOT EXISTS updated_at TIMESTAMP NOT NULL DEFAULT NOW();
+
+            CREATE TABLE IF NOT EXISTS appointment_slots (
+                slot_id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+                doctor_id UUID NOT NULL REFERENCES doctors(doctor_id) ON DELETE CASCADE,
+                start_time TIMESTAMP NOT NULL,
+                end_time TIMESTAMP NOT NULL,
+                is_booked BOOLEAN NOT NULL DEFAULT FALSE,
+                booked_by_patient_id TEXT,
+                is_active BOOLEAN NOT NULL DEFAULT TRUE,
+                created_at TIMESTAMP NOT NULL DEFAULT NOW(),
+                updated_at TIMESTAMP NOT NULL DEFAULT NOW(),
+                UNIQUE (doctor_id, start_time)
+            );
+
+            ALTER TABLE appointment_slots
+                ALTER COLUMN slot_id SET DEFAULT gen_random_uuid();
+            ALTER TABLE appointment_slots
+                ADD COLUMN IF NOT EXISTS is_active BOOLEAN NOT NULL DEFAULT TRUE;
+            ALTER TABLE appointment_slots
+                ADD COLUMN IF NOT EXISTS booked_by_patient_id TEXT;
+            ALTER TABLE appointment_slots
+                ADD COLUMN IF NOT EXISTS created_at TIMESTAMP NOT NULL DEFAULT NOW();
+            ALTER TABLE appointment_slots
+                ADD COLUMN IF NOT EXISTS updated_at TIMESTAMP NOT NULL DEFAULT NOW();
+
+            CREATE TABLE IF NOT EXISTS schedule_holidays (
+                holiday_id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+                doctor_id UUID REFERENCES doctors(doctor_id) ON DELETE CASCADE,
+                start_date DATE NOT NULL,
+                end_date DATE NOT NULL,
+                reason TEXT,
+                is_active BOOLEAN NOT NULL DEFAULT TRUE,
+                created_at TIMESTAMP NOT NULL DEFAULT NOW(),
+                updated_at TIMESTAMP NOT NULL DEFAULT NOW(),
+                CHECK (end_date >= start_date)
+            );
+
+            ALTER TABLE schedule_holidays
+                ALTER COLUMN holiday_id SET DEFAULT gen_random_uuid();
+            ALTER TABLE schedule_holidays
+                ADD COLUMN IF NOT EXISTS is_active BOOLEAN NOT NULL DEFAULT TRUE;
+            ALTER TABLE schedule_holidays
+                ADD COLUMN IF NOT EXISTS created_at TIMESTAMP NOT NULL DEFAULT NOW();
+            ALTER TABLE schedule_holidays
+                ADD COLUMN IF NOT EXISTS updated_at TIMESTAMP NOT NULL DEFAULT NOW();
 
             CREATE TABLE IF NOT EXISTS appointment_bookings (
                 booking_id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
@@ -198,6 +288,10 @@ def ensure_booking_schema(conn):
             CREATE UNIQUE INDEX IF NOT EXISTS ux_appointment_bookings_booked_slot
                 ON appointment_bookings(slot_id)
                 WHERE status = 'booked';
+
+            CREATE INDEX IF NOT EXISTS idx_schedule_holidays_active
+                ON schedule_holidays(doctor_id, start_date, end_date)
+                WHERE is_active = TRUE;
 
             ALTER TABLE appointment_bookings
                 ADD COLUMN IF NOT EXISTS booking_note TEXT;
@@ -246,7 +340,7 @@ def available_doctors_for_department(department: str, limit: int = 5):
         ensure_booking_schema(conn)
         with conn.cursor() as cur:
             cur.execute(
-                """
+                f"""
                 SELECT
                     d.doctor_id,
                     d.name,
@@ -256,6 +350,8 @@ def available_doctors_for_department(department: str, limit: int = 5):
                 FROM doctors d
                 JOIN appointment_slots s ON s.doctor_id = d.doctor_id
                 WHERE d.department = %s
+                    AND {_active_doctor_clause()}
+                    AND {_active_slot_clause()}
                     AND s.start_time > NOW() + INTERVAL '30 minutes'
                     AND s.start_time <= NOW() + INTERVAL '7 days'
                     AND NOT EXISTS (
@@ -265,6 +361,7 @@ def available_doctors_for_department(department: str, limit: int = 5):
                             AND b.status = 'booked'
                             AND b.end_time > NOW()
                     )
+                    {_holiday_block_clause()}
                 GROUP BY d.doctor_id, d.name, d.experience_years
                 ORDER BY next_available_time ASC, d.experience_years DESC
                 LIMIT %s;
@@ -294,7 +391,7 @@ def available_doctors_for_department_on_date(department: str, requested_date: st
         ensure_booking_schema(conn)
         with conn.cursor() as cur:
             cur.execute(
-                """
+                f"""
                 SELECT
                     d.doctor_id,
                     d.name,
@@ -304,6 +401,8 @@ def available_doctors_for_department_on_date(department: str, requested_date: st
                 FROM doctors d
                 JOIN appointment_slots s ON s.doctor_id = d.doctor_id
                 WHERE d.department = %s
+                    AND {_active_doctor_clause()}
+                    AND {_active_slot_clause()}
                     AND s.start_time > NOW() + INTERVAL '30 minutes'
                     AND s.start_time <= NOW() + INTERVAL '7 days'
                     AND DATE(s.start_time) = %s
@@ -314,6 +413,7 @@ def available_doctors_for_department_on_date(department: str, requested_date: st
                             AND b.status = 'booked'
                             AND b.end_time > NOW()
                     )
+                    {_holiday_block_clause()}
                 GROUP BY d.doctor_id, d.name, d.experience_years
                 ORDER BY next_available_time ASC, d.experience_years DESC
                 LIMIT %s;
@@ -342,7 +442,7 @@ def available_doctors_by_name(name: str, limit: int = 5):
         ensure_booking_schema(conn)
         with conn.cursor() as cur:
             cur.execute(
-                """
+                f"""
                 SELECT
                     d.doctor_id,
                     d.name,
@@ -353,6 +453,8 @@ def available_doctors_by_name(name: str, limit: int = 5):
                 FROM doctors d
                 JOIN appointment_slots s ON s.doctor_id = d.doctor_id
                 WHERE d.name ILIKE %s
+                    AND {_active_doctor_clause()}
+                    AND {_active_slot_clause()}
                     AND s.start_time > NOW() + INTERVAL '30 minutes'
                     AND s.start_time <= NOW() + INTERVAL '7 days'
                     AND NOT EXISTS (
@@ -362,6 +464,7 @@ def available_doctors_by_name(name: str, limit: int = 5):
                             AND b.status = 'booked'
                             AND b.end_time > NOW()
                     )
+                    {_holiday_block_clause()}
                 GROUP BY d.doctor_id, d.name, d.department, d.experience_years
                 ORDER BY next_available_time ASC, d.experience_years DESC
                 LIMIT %s;
@@ -394,7 +497,7 @@ def available_doctors_by_name_on_date(name: str, requested_date: str, limit: int
         ensure_booking_schema(conn)
         with conn.cursor() as cur:
             cur.execute(
-                """
+                f"""
                 SELECT
                     d.doctor_id,
                     d.name,
@@ -405,6 +508,8 @@ def available_doctors_by_name_on_date(name: str, requested_date: str, limit: int
                 FROM doctors d
                 JOIN appointment_slots s ON s.doctor_id = d.doctor_id
                 WHERE d.name ILIKE %s
+                    AND {_active_doctor_clause()}
+                    AND {_active_slot_clause()}
                     AND s.start_time > NOW() + INTERVAL '30 minutes'
                     AND s.start_time <= NOW() + INTERVAL '7 days'
                     AND DATE(s.start_time) = %s
@@ -415,6 +520,7 @@ def available_doctors_by_name_on_date(name: str, requested_date: str, limit: int
                             AND b.status = 'booked'
                             AND b.end_time > NOW()
                     )
+                    {_holiday_block_clause()}
                 GROUP BY d.doctor_id, d.name, d.department, d.experience_years
                 ORDER BY next_available_time ASC, d.experience_years DESC
                 LIMIT %s;
@@ -441,11 +547,13 @@ def available_slots_for_doctor(doctor_id: str, limit: int = 5):
         ensure_booking_schema(conn)
         with conn.cursor() as cur:
             cur.execute(
-                """
+                f"""
                 SELECT s.slot_id, s.start_time, s.end_time, d.name
                 FROM appointment_slots s
                 JOIN doctors d ON s.doctor_id = d.doctor_id
                 WHERE s.doctor_id = %s
+                    AND {_active_doctor_clause()}
+                    AND {_active_slot_clause()}
                     AND s.start_time > NOW() + INTERVAL '30 minutes'
                     AND s.start_time <= NOW() + INTERVAL '7 days'
                     AND NOT EXISTS (
@@ -455,6 +563,7 @@ def available_slots_for_doctor(doctor_id: str, limit: int = 5):
                             AND b.status = 'booked'
                             AND b.end_time > NOW()
                     )
+                    {_holiday_block_clause()}
                 ORDER BY s.start_time ASC
                 LIMIT %s;
                 """,
@@ -481,11 +590,13 @@ def available_slots_for_doctor_on_date(doctor_id: str, requested_date: str, limi
         ensure_booking_schema(conn)
         with conn.cursor() as cur:
             cur.execute(
-                """
+                f"""
                 SELECT s.slot_id, s.start_time, s.end_time, d.name
                 FROM appointment_slots s
                 JOIN doctors d ON s.doctor_id = d.doctor_id
                 WHERE s.doctor_id = %s
+                    AND {_active_doctor_clause()}
+                    AND {_active_slot_clause()}
                     AND s.start_time > NOW() + INTERVAL '30 minutes'
                     AND s.start_time <= NOW() + INTERVAL '7 days'
                     AND DATE(s.start_time) = %s
@@ -496,6 +607,7 @@ def available_slots_for_doctor_on_date(doctor_id: str, requested_date: str, limi
                             AND b.status = 'booked'
                             AND b.end_time > NOW()
                     )
+                    {_holiday_block_clause()}
                 ORDER BY s.start_time ASC
                 LIMIT %s;
                 """,
@@ -535,11 +647,13 @@ def book_selected_slot(slot_id: str, patient_id: str | None = None, booking_note
             ensure_booking_schema(conn)
             with conn.cursor() as cur:
                 cur.execute(
-                    """
+                    f"""
                     SELECT d.name, d.department, s.start_time, s.end_time, s.slot_id, s.doctor_id
                     FROM appointment_slots s
                     JOIN doctors d ON s.doctor_id = d.doctor_id
                     WHERE s.slot_id = %s
+                        AND {_active_doctor_clause()}
+                        AND {_active_slot_clause()}
                         AND s.start_time > NOW() + INTERVAL '30 minutes'
                         AND s.start_time <= NOW() + INTERVAL '7 days'
                         AND NOT EXISTS (
@@ -549,6 +663,7 @@ def book_selected_slot(slot_id: str, patient_id: str | None = None, booking_note
                                 AND b.status = 'booked'
                                 AND b.end_time > NOW()
                         )
+                        {_holiday_block_clause()}
                     FOR UPDATE OF s SKIP LOCKED;
                     """,
                     (slot_id,),
@@ -962,11 +1077,13 @@ def reschedule_options_for_booking(
 
             doctor_id = booking[0]
             cur.execute(
-                """
+                f"""
                 SELECT s.slot_id, s.start_time, s.end_time, d.name
                 FROM appointment_slots s
                 JOIN doctors d ON d.doctor_id = s.doctor_id
                 WHERE s.doctor_id = %s
+                    AND {_active_doctor_clause()}
+                    AND {_active_slot_clause()}
                     AND DATE(s.start_time) = %s
                     AND s.start_time > NOW() + INTERVAL '24 hours'
                     AND s.start_time <= NOW() + INTERVAL '7 days'
@@ -977,6 +1094,7 @@ def reschedule_options_for_booking(
                             AND b.status = 'booked'
                             AND b.end_time > NOW()
                     )
+                    {_holiday_block_clause()}
                 ORDER BY s.start_time ASC
                 LIMIT %s;
                 """,
@@ -1017,11 +1135,13 @@ def reschedule_patient_booking(booking_id: str, patient_id: str, new_slot_id: st
                 ) = booking
 
                 cur.execute(
-                    """
+                    f"""
                 SELECT s.slot_id, s.doctor_id, d.name, d.department, s.start_time, s.end_time
                     FROM appointment_slots s
                     JOIN doctors d ON d.doctor_id = s.doctor_id
                     WHERE s.slot_id::text = %s
+                        AND {_active_doctor_clause()}
+                        AND {_active_slot_clause()}
                         AND s.start_time > NOW() + INTERVAL '24 hours'
                         AND s.start_time <= NOW() + INTERVAL '7 days'
                         AND NOT EXISTS (
@@ -1031,6 +1151,7 @@ def reschedule_patient_booking(booking_id: str, patient_id: str, new_slot_id: st
                                 AND b.status = 'booked'
                                 AND b.end_time > NOW()
                         )
+                        {_holiday_block_clause()}
                     FOR UPDATE OF s SKIP LOCKED;
                     """,
                     (new_slot_id,),

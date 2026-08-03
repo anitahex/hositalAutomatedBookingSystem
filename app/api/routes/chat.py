@@ -5,15 +5,19 @@ import base64
 import json
 import logging
 import re
+import os
 import uuid
 
-from fastapi import APIRouter, BackgroundTasks, Depends, HTTPException, Request, UploadFile
+from fastapi import APIRouter, BackgroundTasks, Depends, HTTPException, Request, UploadFile, WebSocket
 from fastapi.responses import StreamingResponse
 from pydantic import BaseModel
+import websockets
+from websockets.exceptions import ConnectionClosed
 
 from app.api.dependencies import current_user
 from app.agents.graph import arun_patient_chat, initialise_hybrid_memory, run_patient_chat
 from app.services.appointments import upcoming_bookings_for_patient
+from app.services.tokens import verify_access_token
 from app.services.document_pipeline import (
     ALLOWED_UPLOAD_MIME_TYPES,
     _extract_pdf_text,
@@ -33,6 +37,7 @@ from app.services.document_catalog import (
     create_catalog_row,
     get_catalog_entry,
     mark_catalog_failed,
+    list_user_documents,
     save_pending_upload,
     update_catalog_after_extraction,
 )
@@ -64,6 +69,9 @@ from app.services.llm_usage import (
 )
 
 router = APIRouter()
+
+DEEPGRAM_API_KEY = os.getenv("DEEPGRAM_API_KEY", "")
+DEEPGRAM_MODEL = os.getenv("DEEPGRAM_MODEL", "nova-3-medical")
 
 SAFETY_DISCLAIMER = (
     "This information is provided for reference only. "
@@ -114,6 +122,15 @@ def _normalize_session_id(value: str | None) -> str | None:
         return str(uuid.UUID(str(value)))
     except Exception:
         return str(uuid.uuid4())
+
+
+def _current_user_payload_from_token(token: str | None) -> dict:
+    if not token:
+        raise HTTPException(status_code=401, detail="Authentication token is required.")
+    payload = verify_access_token(token)
+    if not payload or payload.get("role") not in (None, "patient"):
+        raise HTTPException(status_code=401, detail="Invalid or expired authentication token.")
+    return payload
 
 
 def _prepare_uploaded_file(upload: UploadFile) -> dict[str, object]:
@@ -282,6 +299,92 @@ async def _run_chat_with_usage(payload: dict, user: dict):
 
     result["token_usage"] = usage_summary
     return response_text, result, usage_summary
+
+
+@router.websocket("/deepgram")
+async def deepgram_bridge(websocket: WebSocket):
+    token = websocket.query_params.get("token")
+    sample_rate = websocket.query_params.get("sample_rate") or "16000"
+    await websocket.accept()
+    payload = verify_access_token(token) if token else None
+    if not payload or payload.get("role") not in (None, "patient"):
+        await websocket.send_json({"type": "error", "message": "Invalid or expired authentication token."})
+        await websocket.close(code=1008)
+        return
+
+    if not DEEPGRAM_API_KEY:
+        await websocket.send_json({"type": "error", "message": "Deepgram is not configured."})
+        await websocket.close(code=1011)
+        return
+
+    deepgram_url = (
+        "wss://api.deepgram.com/v1/listen"
+        f"?model={DEEPGRAM_MODEL}"
+        "&encoding=linear16"
+        f"&sample_rate={sample_rate}"
+        "&channels=1"
+        "&interim_results=true"
+        "&smart_format=true"
+        "&punctuate=true"
+    )
+
+    try:
+        async with websockets.connect(
+            deepgram_url,
+            additional_headers={"Authorization": f"Token {DEEPGRAM_API_KEY}"},
+            ping_interval=20,
+            ping_timeout=20,
+            close_timeout=5,
+        ) as deepgram_ws:
+
+            async def relay_audio() -> None:
+                while True:
+                    message = await websocket.receive()
+                    if message.get("type") == "websocket.disconnect":
+                        try:
+                            await deepgram_ws.send(b"")
+                        except Exception:
+                            pass
+                        break
+                    if message.get("bytes") is not None:
+                        data = message["bytes"]
+                        if data == b"":
+                            await deepgram_ws.send(b"")
+                            break
+                        await deepgram_ws.send(data)
+                    elif message.get("text") == "__stop__":
+                        await deepgram_ws.send(b"")
+                        break
+
+            async def relay_results() -> None:
+                async for payload in deepgram_ws:
+                    if isinstance(payload, bytes):
+                        await websocket.send_bytes(payload)
+                    else:
+                        await websocket.send_text(payload)
+
+            audio_task = asyncio.create_task(relay_audio())
+            results_task = asyncio.create_task(relay_results())
+            done, pending = await asyncio.wait(
+                {audio_task, results_task},
+                return_when=asyncio.FIRST_COMPLETED,
+            )
+            for task in pending:
+                task.cancel()
+            for task in done:
+                task.result()
+    except ConnectionClosed:
+        pass
+    except Exception as exc:
+        try:
+            await websocket.send_json({"type": "error", "message": str(exc)})
+        except Exception:
+            pass
+    finally:
+        try:
+            await websocket.close()
+        except Exception:
+            pass
 
 
 def _text_tokens(text: str):
@@ -564,6 +667,7 @@ async def chat_stream(request: Request, user: dict = Depends(current_user)):
 
 @router.get("/history")
 def chat_history(user: dict = Depends(current_user)):
+    documents = list_user_documents(user["patient_id"])
     return {
         "sessions": load_chat_sessions_with_messages(
             patient_id=user["patient_id"],
@@ -573,6 +677,19 @@ def chat_history(user: dict = Depends(current_user)):
             patient_id=user["patient_id"],
             limit=100,
         ),
+        "documents": [
+            {
+                "document_id": entry.document_id,
+                "user_id": entry.user_id,
+                "session_id": entry.session_id,
+                "original_filename": entry.original_filename,
+                "document_type": entry.document_type,
+                "clinical_date": entry.clinical_date,
+                "created_at": entry.created_at.isoformat() if hasattr(entry.created_at, "isoformat") else str(entry.created_at),
+                "ingestion_status": entry.ingestion_status,
+            }
+            for entry in documents
+        ],
     }
 
 
@@ -830,6 +947,7 @@ async def _run_ingestion_pipeline(
         document_id=document_id,
         user_id=user_id,
         session_id=session_id,
+        original_filename=original_filename,
         blob_summary_path=summary_path,
         ingestion_status="processing",
     )

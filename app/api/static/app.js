@@ -1,5 +1,6 @@
 const form = document.querySelector("#chatForm");
 const input = document.querySelector("#messageInput");
+const voiceBtn = document.querySelector("#voiceBtn");
 const messages = document.querySelector("#messages");
 const statusEl = document.querySelector("#status");
 const patientSummary = document.querySelector("#patientSummary");
@@ -20,10 +21,14 @@ const scrollTopBtn = document.querySelector("#scrollTopBtn");
 const routingMeta = document.querySelector("#routingMeta");
 const topbarCopy = document.querySelector("#topbarCopy");
 const activeAppointmentsPreview = document.querySelector("#activeAppointmentsPreview");
+const dashboardDocsList = document.querySelector("#dashboardDocsList");
 const documentUpload = document.querySelector("#documentUpload");
 const uploadStatus = document.querySelector("#uploadStatus");
 const attachPills = document.querySelector("#attachPills");
 const analyzedDocsList = document.querySelector("#analyzedDocsList");
+const voiceTranscriptPreview = document.querySelector("#voiceTranscriptPreview");
+const voiceStatusPreview = document.querySelector("#voiceStatusPreview");
+const voiceStatusText = voiceStatusPreview?.querySelector(".voice-status-text") || null;
 const tokenInput = document.querySelector("#tokenInput");
 const tokenOutput = document.querySelector("#tokenOutput");
 const tokenTotal = document.querySelector("#tokenTotal");
@@ -37,6 +42,61 @@ const modifyAppointmentBtn = document.querySelector("#modifyAppointmentBtn");
 const previousBookingsBtn = document.querySelector("#previousBookingsBtn");
 const upcomingBookingsBtn = document.querySelector("#upcomingBookingsBtn");
 const chatHistoryBtn = document.querySelector("#chatHistoryBtn");
+const adminDoctorFilter = document.querySelector("#adminDoctorFilter");
+const adminRefreshBtn = document.querySelector("#adminRefreshBtn");
+const adminLogoutBtn = document.querySelector("#adminLogoutBtn");
+const adminAppointmentsList = document.querySelector("#adminAppointmentsList");
+const adminResultCount = document.querySelector("#adminResultCount");
+const adminFilterHint = document.querySelector("#adminFilterHint");
+const adminPrevPageBtn = document.querySelector("#adminPrevPageBtn");
+const adminNextPageBtn = document.querySelector("#adminNextPageBtn");
+const adminPageIndicator = document.querySelector("#adminPageIndicator");
+const adminStatTotal = document.querySelector("#adminStatTotal");
+const adminStatUpcoming = document.querySelector("#adminStatUpcoming");
+const adminStatPast = document.querySelector("#adminStatPast");
+const adminStatDoctors = document.querySelector("#adminStatDoctors");
+const adminStatPatients = document.querySelector("#adminStatPatients");
+const adminDoctorsList = document.querySelector("#adminDoctorsList");
+const adminSlotsList = document.querySelector("#adminSlotsList");
+const adminHolidaysList = document.querySelector("#adminHolidaysList");
+const adminDepartmentsList = document.querySelector("#adminDepartmentsList");
+const adminDoctorForm = document.querySelector("#adminDoctorForm");
+const adminDoctorSelect = document.querySelector("#adminDoctorSelect");
+const adminDoctorName = document.querySelector("#adminDoctorName");
+const adminDoctorDepartment = document.querySelector("#adminDoctorDepartment");
+const adminDoctorExperience = document.querySelector("#adminDoctorExperience");
+const adminDoctorActive = document.querySelector("#adminDoctorActive");
+const adminDoctorResetBtn = document.querySelector("#adminDoctorResetBtn");
+const adminDoctorMessage = document.querySelector("#adminDoctorMessage");
+const adminSlotForm = document.querySelector("#adminSlotForm");
+const adminSlotDoctorSelect = document.querySelector("#adminSlotDoctorSelect");
+const adminSlotWorkStart = document.querySelector("#adminSlotWorkStart");
+const adminSlotLunchStart = document.querySelector("#adminSlotLunchStart");
+const adminSlotLunchEnd = document.querySelector("#adminSlotLunchEnd");
+const adminSlotWorkEnd = document.querySelector("#adminSlotWorkEnd");
+const adminSlotStartDate = document.querySelector("#adminSlotStartDate");
+const adminSlotEndDate = document.querySelector("#adminSlotEndDate");
+const adminSlotDuration = document.querySelector("#adminSlotDuration");
+const adminSlotActive = document.querySelector("#adminSlotActive");
+const adminSlotMessage = document.querySelector("#adminSlotMessage");
+const adminHolidayForm = document.querySelector("#adminHolidayForm");
+const adminHolidayScope = document.querySelector("#adminHolidayScope");
+const adminHolidayDoctorSelect = document.querySelector("#adminHolidayDoctorSelect");
+const adminHolidayStart = document.querySelector("#adminHolidayStart");
+const adminHolidayEnd = document.querySelector("#adminHolidayEnd");
+const adminHolidayReason = document.querySelector("#adminHolidayReason");
+const adminHolidayActive = document.querySelector("#adminHolidayActive");
+const adminHolidayMessage = document.querySelector("#adminHolidayMessage");
+const adminViewButtons = Array.from(document.querySelectorAll("[data-admin-view]"));
+const adminOverviewPane = document.querySelector("#adminOverviewPane");
+const adminAppointmentsPane = document.querySelector("#adminAppointmentsPane");
+const adminManagePane = document.querySelector("#adminManagePane");
+const adminInventoryPane = document.querySelector("#adminInventoryPane");
+const adminStatusButtons = Array.from(document.querySelectorAll("[data-admin-status]"));
+const adminRefreshLabel = adminRefreshBtn?.querySelector(".admin-action-label") || null;
+const adminToast = document.querySelector("#adminToast");
+let adminRefreshResetTimer = null;
+let adminToastTimer = null;
 const profilePanel = document.querySelector("#profilePanel");
 const profilePanelTitle = document.querySelector("#profilePanelTitle");
 const profilePanelBody = document.querySelector("#profilePanelBody");
@@ -46,17 +106,29 @@ const startNewChatBtn = document.querySelector("#startNewChatBtn");
 
 const showLoginBtn = document.querySelector("#showLoginBtn");
 const showSignupBtn = document.querySelector("#showSignupBtn");
+const showAdminBtn = document.querySelector("#showAdminBtn");
+const authTabs = document.querySelector(".auth-tabs");
 const loginForm = document.querySelector("#loginForm");
 const signupForm = document.querySelector("#signupForm");
+const adminLoginForm = document.querySelector("#adminLoginForm");
+const adminBackBtn = document.querySelector("#adminBackBtn");
+const pageAssistant = document.querySelector("#pageAssistant");
+const pageDashboard = document.querySelector("#pageDashboard");
+const pageAppointments = document.querySelector("#pageAppointments");
+const pageRecords = document.querySelector("#pageRecords");
+const pageAdmin = document.querySelector("#pageAdmin");
 const signupStepOne = document.querySelector("#signupStepOne");
 const signupStepTwo = document.querySelector("#signupStepTwo");
 const signupNextBtn = document.querySelector("#signupNextBtn");
 const signupBackBtn = document.querySelector("#signupBackBtn");
 const authMessage = document.querySelector("#authMessage");
+const adminAuthMessage = document.querySelector("#adminAuthMessage");
 
 let state = null;
 let currentUser = JSON.parse(localStorage.getItem("currentUser") || "null");
 let accessToken = localStorage.getItem("accessToken");
+let currentAdmin = JSON.parse(localStorage.getItem("currentAdmin") || "null");
+let adminAccessToken = localStorage.getItem("adminAccessToken");
 let patientId = currentUser?.patient_id || null;
 let sidebarOpen = localStorage.getItem("sidebarOpen");
 sidebarOpen = sidebarOpen === null ? true : sidebarOpen === "true";
@@ -71,6 +143,37 @@ let bookingStudioState = {
   mode: "book",
 };
 let pendingUploadFiles = [];
+let adminAppointments = [];
+let adminAppointmentsLoaded = false;
+let adminAppointmentsLoading = false;
+let adminAppointmentsLoadPromise = null;
+let adminSelectedStatus = "all";
+let adminAppointmentsPage = 1;
+const adminAppointmentsPageSize = 6;
+let adminDoctors = [];
+let adminSlots = [];
+let adminHolidays = [];
+let adminDepartments = [];
+let adminDoctorEditingId = "";
+let adminManagementLoaded = false;
+let adminSelectedAppointment = null;
+let voiceStream = null;
+let voiceRecorder = null;
+let voiceAudioContext = null;
+let voiceSocket = null;
+let voiceFinalTranscript = "";
+let voiceLiveTranscript = "";
+let voiceListening = false;
+let voicePendingFrames = [];
+let voiceStopping = false;
+let voiceCommitTimer = null;
+let voiceWorkletNode = null;
+let recordsArchive = {
+  documents: [],
+  sessionsById: new Map(),
+  loaded: false,
+  loading: false,
+};
 
 const passwordPattern = /^(?=.*[a-z])(?=.*[A-Z])(?=.*\d)(?=.*[^A-Za-z0-9]).{8,}$/;
 
@@ -127,38 +230,150 @@ function clearAttachPill() {
   pendingUploadFiles = [];
 }
 
-function renderAnalyzedDocs(docs) {
-  if (!analyzedDocsList) return;
-  analyzedDocsList.replaceChildren();
+function normalizeDocumentEntry(doc) {
+  if (!doc || typeof doc !== "object") return null;
+  return {
+    document_id: String(doc.document_id || ""),
+    user_id: String(doc.user_id || ""),
+    session_id: String(doc.session_id || ""),
+    original_filename: doc.original_filename || doc.file_name || "uploaded-file",
+    file_name: doc.original_filename || doc.file_name || "uploaded-file",
+    document_type: doc.document_type || "document",
+    clinical_date: doc.clinical_date || null,
+    created_at: doc.created_at || null,
+    ingestion_status: doc.ingestion_status || "complete",
+  };
+}
 
-  if (!Array.isArray(docs) || !docs.length) {
+function documentsForSession(sessionId) {
+  const docs = recordsArchive.documents || [];
+  if (!sessionId) return docs;
+  return docs.filter((doc) => String(doc.session_id || "") === String(sessionId));
+}
+
+function buildDocumentCard(doc, options = {}) {
+  const card = document.createElement("article");
+  card.className = "analyzed-doc-item";
+
+  const title = document.createElement("button");
+  title.type = "button";
+  title.className = "doc-session-link";
+  title.textContent = options.sessionLabel || `Chat ${doc.session_id || "n/a"}`;
+  title.title = "Open the matching chat history";
+  title.addEventListener("click", () => {
+    showWorkspacePage("records");
+    showChatHistory(String(doc.session_id || ""));
+  });
+
+  const name = document.createElement("div");
+  name.className = "analyzed-doc-name";
+  name.title = doc.file_name || "Unknown file";
+  name.textContent = doc.file_name || "Unknown file";
+
+  const meta = document.createElement("div");
+  meta.className = "analyzed-doc-meta";
+  const parts = [
+    (doc.document_type || "document").replaceAll("_", " "),
+    doc.clinical_date ? `Date: ${doc.clinical_date}` : null,
+  ].filter(Boolean);
+  meta.textContent = parts.join(" · ");
+
+  const status = document.createElement("div");
+  status.className = "analyzed-doc-dept";
+  status.textContent = `Chat ${doc.session_id || "n/a"}`;
+
+  card.append(title, name, meta, status);
+  return card;
+}
+
+function renderDocumentsPanel(docs, container = analyzedDocsList) {
+  if (!container) return;
+  container.replaceChildren();
+
+  const normalized = (Array.isArray(docs) ? docs : [])
+    .map(normalizeDocumentEntry)
+    .filter(Boolean);
+
+  if (!normalized.length) {
     const note = document.createElement("p");
     note.className = "panel-note";
     note.textContent = "No documents analyzed yet. Use 📎 in the chat to attach a file.";
-    analyzedDocsList.appendChild(note);
+    container.appendChild(note);
     return;
   }
 
-  [...docs].reverse().forEach((doc) => {
-    const item = document.createElement("article");
-    item.className = "analyzed-doc-item";
-
-    const name = document.createElement("div");
-    name.className = "analyzed-doc-name";
-    name.title = doc.file_name || "Unknown file";
-    name.textContent = doc.file_name || "Unknown file";
-
-    const type = document.createElement("div");
-    type.className = "analyzed-doc-type";
-    type.textContent = (doc.document_type || "document").replaceAll("_", " ");
-
-    const dept = document.createElement("div");
-    dept.className = "analyzed-doc-dept";
-    dept.textContent = `→ ${doc.department || "?"}`;
-
-    item.append(name, type, dept);
-    analyzedDocsList.appendChild(item);
+  normalized.forEach((doc) => {
+    container.appendChild(buildDocumentCard(doc));
   });
+}
+
+function renderChatSessionDocuments(session, container) {
+  const docs = documentsForSession(session?.chat_session_id);
+  const box = document.createElement("section");
+  box.className = "history-session-docs";
+
+  const heading = document.createElement("div");
+  heading.className = "history-session-docs-head";
+
+  const title = document.createElement("h4");
+  title.textContent = "Documents in this chat";
+
+  const count = document.createElement("span");
+  count.textContent = `${docs.length} file${docs.length === 1 ? "" : "s"}`;
+
+  heading.append(title, count);
+  box.appendChild(heading);
+
+  const row = document.createElement("div");
+  row.className = "history-doc-row";
+
+  const label = document.createElement("span");
+  label.className = "history-doc-label";
+  label.textContent = "Docs";
+  row.appendChild(label);
+
+  if (!docs.length) {
+    const note = document.createElement("p");
+    note.className = "panel-note";
+    note.textContent = "No documents were uploaded in this conversation.";
+    row.appendChild(note);
+  } else {
+    docs.forEach((doc) => {
+      row.appendChild(buildDocumentCard(doc, { sessionLabel: `Chat ${session.chat_session_id}` }));
+    });
+  }
+
+  box.appendChild(row);
+  container.appendChild(box);
+}
+
+function showUploadMessage(filename, status = "Uploading...") {
+  const { node, body } = addAssistantMessage(status, { noAnimation: false });
+  node.classList.add("uploading-message");
+  body.innerHTML = "";
+
+  const label = document.createElement("div");
+  label.className = "uploading-message-label";
+  label.textContent = status;
+
+  const file = document.createElement("div");
+  file.className = "uploading-message-file";
+  file.textContent = filename;
+
+  body.append(label, file);
+  return {
+    node,
+    body,
+    setStatus(nextStatus) {
+      label.textContent = nextStatus;
+    },
+    setFile(nextFile) {
+      file.textContent = nextFile;
+    },
+    remove() {
+      node.remove();
+    },
+  };
 }
 
 function addUserMessageWithFile(text, filenames) {
@@ -195,13 +410,116 @@ function setAuthMessage(text) {
   authMessage.textContent = text || "";
 }
 
+function setAdminAuthMessage(text) {
+  if (adminAuthMessage) {
+    adminAuthMessage.textContent = text || "";
+  }
+}
+
+function setAdminDoctorMessage(text) {
+  if (adminDoctorMessage) {
+    adminDoctorMessage.textContent = text || "";
+  }
+}
+
+function setAdminSlotMessage(text) {
+  if (adminSlotMessage) {
+    adminSlotMessage.textContent = text || "";
+  }
+}
+
+function setAdminHolidayMessage(text) {
+  if (adminHolidayMessage) {
+    adminHolidayMessage.textContent = text || "";
+  }
+}
+
+function showAdminToast(message, tone = "success", timeoutMs = 1800) {
+  if (!adminToast || !message) return;
+
+  if (adminToastTimer) {
+    window.clearTimeout(adminToastTimer);
+    adminToastTimer = null;
+  }
+
+  adminToast.textContent = message;
+  adminToast.className = `admin-toast is-${tone} enter`;
+  adminToast.classList.remove("hidden");
+
+  adminToastTimer = window.setTimeout(() => {
+    adminToast.classList.add("hidden");
+    adminToast.classList.remove("enter");
+    adminToastTimer = null;
+  }, timeoutMs);
+}
+
+function showWorkspacePage(page) {
+  const pages = {
+    assistant: pageAssistant,
+    dashboard: pageDashboard,
+    appointments: pageAppointments,
+    records: pageRecords,
+    admin: pageAdmin,
+  };
+
+  Object.entries(pages).forEach(([key, element]) => {
+    if (!element) return;
+    element.classList.toggle("hidden", key !== page);
+  });
+
+  document.querySelectorAll("[data-nav]").forEach((element) => {
+    element.classList.toggle("is-active", element.dataset.nav === page);
+  });
+}
+
+function preferredAdminView() {
+  const saved = localStorage.getItem("adminView");
+  return ["overview", "appointments", "manage", "inventory"].includes(saved) ? saved : "overview";
+}
+
+function showAdminView(view) {
+  const nextView = ["overview", "appointments", "manage", "inventory"].includes(view) ? view : "overview";
+  const panes = {
+    overview: adminOverviewPane,
+    appointments: adminAppointmentsPane,
+    manage: adminManagePane,
+    inventory: adminInventoryPane,
+  };
+
+  Object.entries(panes).forEach(([key, element]) => {
+    if (!element) return;
+    element.classList.toggle("hidden", key !== nextView);
+  });
+
+  adminViewButtons.forEach((button) => {
+    button.classList.toggle("is-active", button.dataset.adminView === nextView);
+  });
+
+  localStorage.setItem("adminView", nextView);
+  if (nextView === "manage" || nextView === "inventory") {
+    loadAdminManagement();
+  }
+  if (nextView === "appointments") {
+    loadAdminAppointments();
+  }
+}
+
 function showAuthMode(mode) {
   const isLogin = mode === "login";
+  const isSignup = mode === "signup";
+  const isAdmin = mode === "admin";
   loginForm.classList.toggle("hidden", !isLogin);
-  signupForm.classList.toggle("hidden", isLogin);
+  signupForm.classList.toggle("hidden", !isSignup);
+  if (adminLoginForm) {
+    adminLoginForm.classList.toggle("hidden", !isAdmin);
+  }
   showLoginBtn.classList.toggle("active", isLogin);
-  showSignupBtn.classList.toggle("active", !isLogin);
+  showSignupBtn.classList.toggle("active", isSignup);
+  if (showAdminBtn) {
+    showAdminBtn.classList.toggle("active", isAdmin);
+  }
   setAuthMessage("");
+  setAdminAuthMessage("");
 }
 
 function formatNumber(value) {
@@ -301,17 +619,47 @@ function setPatientSummary(user) {
   patientIssues.textContent = safeText(user.health_issues, "None reported");
 }
 
-function setAuthenticated(user, token) {
+function setPatientAuthenticated(user, token) {
   currentUser = user;
   accessToken = token;
+  currentAdmin = null;
+  adminAccessToken = null;
   patientId = user.patient_id;
   localStorage.setItem("currentUser", JSON.stringify(user));
   localStorage.setItem("accessToken", token);
+  localStorage.removeItem("currentAdmin");
+  localStorage.removeItem("adminAccessToken");
+  localStorage.setItem("activePage", "assistant");
   document.body.classList.add("authenticated");
+  document.body.classList.remove("admin-authenticated");
+  showWorkspacePage("assistant");
   setPatientSummary(user);
   resetChat();
   refreshActiveAppointments();
   setSidebarOpen(sidebarOpen);
+}
+
+function setAdminAuthenticated(admin, token) {
+  currentAdmin = admin;
+  adminAccessToken = token;
+  currentUser = null;
+  accessToken = null;
+  patientId = null;
+  localStorage.setItem("currentAdmin", JSON.stringify(admin));
+  localStorage.setItem("adminAccessToken", token);
+  localStorage.removeItem("currentUser");
+  localStorage.removeItem("accessToken");
+  localStorage.setItem("activePage", "admin");
+  document.body.classList.add("admin-authenticated");
+  document.body.classList.remove("authenticated");
+  showWorkspacePage("admin");
+  showAuthMode("admin");
+  showAdminView(preferredAdminView());
+  renderAdminAppointments();
+  loadAdminAppointments();
+  if (preferredAdminView() !== "overview") {
+    loadAdminManagement();
+  }
 }
 
 function clearAuthenticated() {
@@ -320,14 +668,28 @@ function clearAuthenticated() {
   if (documentUpload) documentUpload.value = "";
   clearAttachPill();
   setUploadStatus("", "default");
-  renderAnalyzedDocs([]);
+  renderDocumentsPanel([]);
   currentUser = null;
+  currentAdmin = null;
   accessToken = null;
+  adminAccessToken = null;
   patientId = null;
   state = null;
+  adminAppointments = [];
+  adminAppointmentsLoaded = false;
+  adminManagementLoaded = false;
+  adminDoctors = [];
+  adminSlots = [];
+  adminHolidays = [];
+  adminDepartments = [];
+  adminDoctorEditingId = "";
   localStorage.removeItem("currentUser");
   localStorage.removeItem("accessToken");
+  localStorage.removeItem("currentAdmin");
+  localStorage.removeItem("adminAccessToken");
   document.body.classList.remove("authenticated");
+  document.body.classList.remove("admin-authenticated");
+  showWorkspacePage("assistant");
   setPatientSummary(null);
   updateWorkflowPanel(null);
   renderChatSummary("");
@@ -605,23 +967,75 @@ function authHeaders() {
   };
 }
 
+function adminAuthHeaders() {
+  return {
+    Authorization: `Bearer ${adminAccessToken}`,
+  };
+}
+
 async function authedJson(url, options = {}) {
-  const response = await fetch(url, {
-    ...options,
-    headers: {
-      ...authHeaders(),
-      ...(options.headers || {}),
-    },
-  });
-  const data = await response.json().catch(() => ({}));
-  if (!response.ok) {
-    if (response.status === 401) {
-      clearAuthenticated();
-      showAuthMode("login");
+  const timeoutMs = options.timeoutMs ?? 15000;
+  const controller = new AbortController();
+  const timeoutId = window.setTimeout(() => controller.abort(), timeoutMs);
+
+  try {
+    const response = await fetch(url, {
+      ...options,
+      signal: controller.signal,
+      headers: {
+        ...authHeaders(),
+        ...(options.headers || {}),
+      },
+    });
+    const data = await response.json().catch(() => ({}));
+    if (!response.ok) {
+      if (response.status === 401) {
+        clearAuthenticated();
+        showAuthMode("login");
+      }
+      throw new Error(data.detail || `Request failed with ${response.status}`);
     }
-    throw new Error(data.detail || `Request failed with ${response.status}`);
+    return data;
+  } catch (error) {
+    if (error?.name === "AbortError") {
+      throw new Error("Request timed out. Please try again.");
+    }
+    throw error;
+  } finally {
+    window.clearTimeout(timeoutId);
   }
-  return data;
+}
+
+async function adminAuthedJson(url, options = {}) {
+  const timeoutMs = options.timeoutMs ?? 15000;
+  const controller = new AbortController();
+  const timeoutId = window.setTimeout(() => controller.abort(), timeoutMs);
+
+  try {
+    const response = await fetch(url, {
+      ...options,
+      signal: controller.signal,
+      headers: {
+        ...adminAuthHeaders(),
+        ...(options.headers || {}),
+      },
+    });
+    const data = await response.json().catch(() => ({}));
+    if (!response.ok) {
+      if (response.status === 401) {
+        clearAuthenticated();
+      }
+      throw new Error(data.detail || `Request failed with ${response.status}`);
+    }
+    return data;
+  } catch (error) {
+    if (error?.name === "AbortError") {
+      throw new Error("Admin request timed out. Please retry.");
+    }
+    throw error;
+  } finally {
+    window.clearTimeout(timeoutId);
+  }
 }
 
 function setStatus(text) {
@@ -680,7 +1094,18 @@ function formatDateTime(value) {
   if (!value) {
     return "-";
   }
-  return new Date(value).toLocaleString();
+  const parsed = new Date(value);
+  if (Number.isNaN(parsed.getTime())) {
+    return String(value);
+  }
+  return parsed.toLocaleString(undefined, {
+    year: "numeric",
+    month: "short",
+    day: "numeric",
+    hour: "numeric",
+    minute: "2-digit",
+    hour12: true,
+  });
 }
 
 function formatBookingDateTime(value) {
@@ -691,7 +1116,14 @@ function formatBookingDateTime(value) {
   if (Number.isNaN(parsed.getTime())) {
     return String(value);
   }
-  return parsed.toLocaleString();
+  return parsed.toLocaleString(undefined, {
+    year: "numeric",
+    month: "short",
+    day: "numeric",
+    hour: "numeric",
+    minute: "2-digit",
+    hour12: true,
+  });
 }
 
 function localDateString(date) {
@@ -1212,6 +1644,794 @@ function renderActiveAppointments(bookings) {
   });
 }
 
+function formatClinicalSummary(value) {
+  if (value === null || value === undefined || value === "") {
+    return "";
+  }
+  if (typeof value === "string") {
+    return value;
+  }
+  try {
+    return JSON.stringify(value, null, 2);
+  } catch (error) {
+    return String(value);
+  }
+}
+
+function adminAppointmentState(appointment) {
+  const status = String(appointment?.status || "").toLowerCase();
+  if (status === "cancelled" || status === "completed") {
+    return "past";
+  }
+
+  const timeValue = appointment?.appointment_time || appointment?.time || appointment?.start_time;
+  const parsed = timeValue ? new Date(timeValue) : null;
+  if (parsed && !Number.isNaN(parsed.getTime()) && parsed <= new Date()) {
+    return "past";
+  }
+
+  return "upcoming";
+}
+
+function adminStatusLabel(appointment) {
+  const state = appointment?.appointment_state || adminAppointmentState(appointment);
+  const rawStatus = String(appointment?.status || "").toLowerCase();
+  if (rawStatus === "cancelled" || rawStatus === "completed") {
+    return rawStatus;
+  }
+  return state;
+}
+
+function renderAdminDoctorOptions(doctorSource = adminDoctors) {
+  if (!adminDoctorFilter) return;
+
+  const currentValue = adminDoctorFilter.value || "";
+  const doctors = new Map();
+  (doctorSource || []).forEach((doctor) => {
+    if (!doctor || !doctor.doctor_id) return;
+    doctors.set(doctor.doctor_id, doctor.name || doctor.doctor_name || "Doctor");
+  });
+
+  const options = Array.from(doctors.entries()).sort((a, b) => a[1].localeCompare(b[1]));
+  adminDoctorFilter.replaceChildren();
+
+  const allOption = document.createElement("option");
+  allOption.value = "";
+  allOption.textContent = "All doctors";
+  adminDoctorFilter.appendChild(allOption);
+
+  options.forEach(([doctorId, doctorName]) => {
+    const option = document.createElement("option");
+    option.value = doctorId;
+    option.textContent = doctorName;
+    adminDoctorFilter.appendChild(option);
+  });
+
+  adminDoctorFilter.value = options.some(([doctorId]) => doctorId === currentValue) ? currentValue : "";
+}
+
+function updateAdminStats(scopeAppointments) {
+  const appointments = Array.isArray(scopeAppointments) ? scopeAppointments : [];
+  const upcoming = appointments.filter((appointment) => adminAppointmentState(appointment) === "upcoming");
+  const past = appointments.filter((appointment) => adminAppointmentState(appointment) === "past");
+  const doctors = new Set(appointments.map((appointment) => appointment.doctor_id).filter(Boolean));
+  const patients = new Set(appointments.map((appointment) => appointment.patient_id || appointment.patient_name).filter(Boolean));
+
+  if (adminStatTotal) adminStatTotal.textContent = String(appointments.length);
+  if (adminStatUpcoming) adminStatUpcoming.textContent = String(upcoming.length);
+  if (adminStatPast) adminStatPast.textContent = String(past.length);
+  if (adminStatDoctors) adminStatDoctors.textContent = String(doctors.size);
+  if (adminStatPatients) adminStatPatients.textContent = String(patients.size);
+}
+
+function resetAdminAppointmentPaging() {
+  adminAppointmentsPage = 1;
+}
+
+function renderAdminAppointmentCard(appointment) {
+  const item = document.createElement("article");
+  item.className = "booking-item admin-appointment-card";
+
+  const head = document.createElement("div");
+  head.className = "admin-appointment-head";
+
+  const titleWrap = document.createElement("div");
+  titleWrap.className = "admin-appointment-title";
+
+  const patientName = document.createElement("strong");
+  patientName.textContent = appointment.patient_name || "Patient";
+
+  const summary = document.createElement("span");
+  summary.className = "admin-appointment-summary";
+  summary.textContent = formatClinicalSummary(appointment.clinical_summary) || "No clinical summary submitted.";
+
+  titleWrap.append(patientName, summary);
+
+  const badge = document.createElement("span");
+  const statusValue = adminStatusLabel(appointment);
+  badge.className = `admin-status-pill ${statusValue ? `is-${statusValue}` : ""}`;
+  badge.textContent = statusValue || "booked";
+
+  head.append(titleWrap, badge);
+  item.appendChild(head);
+
+  const meta = document.createElement("div");
+  meta.className = "admin-appointment-meta";
+
+  const time = document.createElement("span");
+  time.textContent = formatDateTime(appointment.time || appointment.appointment_time);
+
+  const divider = document.createElement("span");
+  divider.className = "admin-appointment-separator";
+  divider.textContent = "\u2022";
+
+  const doctor = document.createElement("span");
+  doctor.textContent = appointment.doctor_name || "Doctor";
+
+  meta.append(time, divider, doctor);
+  item.appendChild(meta);
+  item.appendChild(
+    buildClinicalNotesBlock(
+      formatClinicalSummary(appointment.clinical_summary),
+      true,
+      "Pre-Appointment Clinical Summary"
+    )
+  );
+
+  return item;
+}
+
+function renderAdminAppointments() {
+  if (!adminAppointmentsList) return;
+
+  const selectedDoctorId = adminDoctorFilter?.value || "";
+  const visibleAppointments = (adminAppointments || [])
+    .filter((appointment) => !selectedDoctorId || appointment.doctor_id === selectedDoctorId)
+    .sort((left, right) => new Date(left.time || left.appointment_time || 0) - new Date(right.time || right.appointment_time || 0));
+
+  updateAdminStats(visibleAppointments);
+
+  const filtered = adminSelectedStatus === "all"
+    ? visibleAppointments
+    : visibleAppointments.filter((appointment) => adminAppointmentState(appointment) === adminSelectedStatus);
+  const totalPages = Math.max(1, Math.ceil(filtered.length / adminAppointmentsPageSize));
+  adminAppointmentsPage = Math.min(Math.max(1, adminAppointmentsPage), totalPages);
+  const startIndex = (adminAppointmentsPage - 1) * adminAppointmentsPageSize;
+  const pageItems = filtered.slice(startIndex, startIndex + adminAppointmentsPageSize);
+
+  if (adminResultCount) {
+    const statusLabel = adminSelectedStatus === "all" ? "all" : adminSelectedStatus;
+    adminResultCount.textContent = `${filtered.length} ${filtered.length === 1 ? "appointment" : "appointments"} \u00b7 ${statusLabel}`;
+  }
+
+  if (adminFilterHint) {
+    const doctorName = selectedDoctorId
+      ? (adminDoctorFilter?.selectedOptions?.[0]?.textContent || "selected doctor")
+      : "all doctors";
+    adminFilterHint.textContent = `Showing ${filtered.length} appointment${filtered.length === 1 ? "" : "s"} for ${doctorName}.`;
+  }
+
+  if (adminPageIndicator) {
+    const firstItem = filtered.length ? startIndex + 1 : 0;
+    const lastItem = Math.min(startIndex + adminAppointmentsPageSize, filtered.length);
+    adminPageIndicator.textContent = filtered.length
+      ? `Page ${adminAppointmentsPage} of ${totalPages} \u00b7 ${firstItem}-${lastItem} of ${filtered.length}`
+      : "Page 1 of 1";
+  }
+
+  if (adminPrevPageBtn) {
+    adminPrevPageBtn.disabled = adminAppointmentsPage <= 1;
+  }
+  if (adminNextPageBtn) {
+    adminNextPageBtn.disabled = adminAppointmentsPage >= totalPages;
+  }
+
+  adminAppointmentsList.replaceChildren();
+
+  if (!filtered.length) {
+    const note = document.createElement("p");
+    note.className = "panel-note";
+    note.textContent = "No appointments match the current filter.";
+    adminAppointmentsList.appendChild(note);
+    return;
+  }
+
+  pageItems.forEach((appointment) => {
+    adminAppointmentsList.appendChild(renderAdminAppointmentCard(appointment));
+  });
+}
+
+async function loadAdminAppointments(force = false) {
+  if (!currentAdmin || !adminAccessToken) {
+    return [];
+  }
+
+  if (adminAppointmentsLoading) {
+    return adminAppointmentsLoadPromise || adminAppointments;
+  }
+
+  if (adminAppointmentsLoaded && !force) {
+    renderAdminDoctorOptions(adminDoctors);
+    renderAdminAppointments();
+    return adminAppointments;
+  }
+
+  adminAppointmentsLoading = true;
+  if (adminAppointmentsList) {
+    adminAppointmentsList.replaceChildren();
+    const loading = document.createElement("p");
+    loading.className = "panel-note";
+    loading.textContent = "Loading appointment data...";
+    adminAppointmentsList.appendChild(loading);
+  }
+
+  adminAppointmentsLoadPromise = (async () => {
+    try {
+      const data = await adminAuthedJson("/admin/appointments");
+      adminAppointments = Array.isArray(data) ? data : (data?.appointments || []);
+      adminAppointmentsLoaded = true;
+      renderAdminDoctorOptions(adminDoctors);
+      renderAdminAppointments();
+      return adminAppointments;
+    } catch (error) {
+      adminAppointments = [];
+      adminAppointmentsLoaded = false;
+      if (adminAppointmentsList) {
+        adminAppointmentsList.replaceChildren();
+        const note = document.createElement("p");
+        note.className = "panel-note";
+        note.textContent = error.message;
+        adminAppointmentsList.appendChild(note);
+      }
+      return [];
+    } finally {
+      adminAppointmentsLoading = false;
+      adminAppointmentsLoadPromise = null;
+    }
+  })();
+
+  return adminAppointmentsLoadPromise;
+}
+
+function syncAdmin() {
+  loadAdminAppointments();
+  if (preferredAdminView() !== "overview") {
+    loadAdminManagement();
+  }
+  showAdminView(preferredAdminView());
+}
+
+function toDatetimeLocalValue(value) {
+  if (!value) return "";
+  const date = new Date(value);
+  if (Number.isNaN(date.getTime())) return "";
+  const offset = date.getTimezoneOffset() * 60000;
+  return new Date(date.getTime() - offset).toISOString().slice(0, 16);
+}
+
+function toDateInputValue(value) {
+  if (!value) return "";
+  const date = new Date(value);
+  if (Number.isNaN(date.getTime())) return "";
+  return date.toISOString().slice(0, 10);
+}
+
+const ADMIN_TIME_DEFAULTS = {
+  workStart: "09:00",
+  lunchStart: "13:00",
+  lunchEnd: "13:30",
+  workEnd: "17:00",
+};
+
+function formatAdminTimeLabel(value) {
+  const [hoursRaw, minutesRaw] = String(value).split(":");
+  const hours = Number(hoursRaw);
+  const minutes = Number(minutesRaw);
+  if (!Number.isInteger(hours) || !Number.isInteger(minutes)) return value;
+  const period = hours >= 12 ? "PM" : "AM";
+  const displayHours = hours % 12 || 12;
+  return `${String(displayHours).padStart(2, "0")}:${String(minutes).padStart(2, "0")} ${period}`;
+}
+
+function populateAdminTimeSelect(select, { defaultValue = "", allowEmpty = false } = {}) {
+  if (!select) return;
+  const currentValue = select.value || defaultValue;
+  select.replaceChildren();
+
+  if (allowEmpty) {
+    const emptyOption = document.createElement("option");
+    emptyOption.value = "";
+    emptyOption.textContent = "No lunch break";
+    select.appendChild(emptyOption);
+  }
+
+  for (let hour = 0; hour < 24; hour += 1) {
+    for (let minute = 0; minute < 60; minute += 15) {
+      const value = `${String(hour).padStart(2, "0")}:${String(minute).padStart(2, "0")}`;
+      const option = document.createElement("option");
+      option.value = value;
+      option.textContent = formatAdminTimeLabel(value);
+      select.appendChild(option);
+    }
+  }
+
+  select.value = currentValue || defaultValue;
+}
+
+function initAdminTimeSelects() {
+  populateAdminTimeSelect(adminSlotWorkStart, { defaultValue: ADMIN_TIME_DEFAULTS.workStart });
+  populateAdminTimeSelect(adminSlotLunchStart, { defaultValue: ADMIN_TIME_DEFAULTS.lunchStart, allowEmpty: true });
+  populateAdminTimeSelect(adminSlotLunchEnd, { defaultValue: ADMIN_TIME_DEFAULTS.lunchEnd, allowEmpty: true });
+  populateAdminTimeSelect(adminSlotWorkEnd, { defaultValue: ADMIN_TIME_DEFAULTS.workEnd });
+}
+
+function clearAdminDoctorForm() {
+  adminDoctorEditingId = "";
+  if (adminDoctorSelect) adminDoctorSelect.value = "";
+  if (adminDoctorName) adminDoctorName.value = "";
+  if (adminDoctorDepartment) adminDoctorDepartment.value = "";
+  if (adminDoctorExperience) adminDoctorExperience.value = "0";
+  if (adminDoctorActive) adminDoctorActive.checked = true;
+  setAdminDoctorMessage("");
+}
+
+function fillAdminDoctorForm(doctor) {
+  if (!doctor) {
+    clearAdminDoctorForm();
+    return;
+  }
+  adminDoctorEditingId = doctor.doctor_id || "";
+  if (adminDoctorSelect) adminDoctorSelect.value = doctor.doctor_id || "";
+  if (adminDoctorName) adminDoctorName.value = doctor.name || "";
+  if (adminDoctorDepartment) adminDoctorDepartment.value = doctor.department || "";
+  if (adminDoctorExperience) adminDoctorExperience.value = String(doctor.experience_years ?? 0);
+  if (adminDoctorActive) adminDoctorActive.checked = Boolean(doctor.is_active);
+  setAdminDoctorMessage("");
+}
+
+function renderAdminSelectOptions() {
+  const doctors = Array.isArray(adminDoctors) ? adminDoctors : [];
+  const optionSets = [adminDoctorSelect, adminSlotDoctorSelect, adminHolidayDoctorSelect].filter(Boolean);
+  optionSets.forEach((select) => {
+    const currentValue = select.value || "";
+    select.replaceChildren();
+
+    const blank = document.createElement("option");
+    blank.value = "";
+    blank.textContent = select === adminDoctorSelect ? "Create new doctor" : "Select doctor";
+    select.appendChild(blank);
+
+    doctors.forEach((doctor) => {
+      const option = document.createElement("option");
+      option.value = doctor.doctor_id;
+      option.textContent = `${doctor.name || "Doctor"} · ${doctor.department || "Department"}`;
+      select.appendChild(option);
+    });
+
+    if (currentValue && doctors.some((doctor) => doctor.doctor_id === currentValue)) {
+      select.value = currentValue;
+    } else {
+      select.value = "";
+    }
+  });
+}
+
+function renderAdminDoctorsPanel() {
+  if (!adminDoctorsList) return;
+  adminDoctorsList.replaceChildren();
+
+  if (!Array.isArray(adminDoctors) || !adminDoctors.length) {
+    const note = document.createElement("p");
+    note.className = "panel-note";
+    note.textContent = "No doctors found.";
+    adminDoctorsList.appendChild(note);
+    return;
+  }
+
+  adminDoctors.forEach((doctor) => {
+    const card = document.createElement("article");
+    card.className = "admin-inline-card";
+
+    const head = document.createElement("div");
+    head.className = "admin-inline-card-head";
+
+    const titleWrap = document.createElement("div");
+    const title = document.createElement("div");
+    title.className = "admin-inline-title";
+    title.textContent = doctor.name || "Doctor";
+    const meta = document.createElement("div");
+    meta.className = "admin-inline-meta";
+    meta.textContent = `${doctor.department || "Department"} · ${doctor.experience_years || 0} years`;
+    titleWrap.append(title, meta);
+
+    const badge = document.createElement("span");
+    badge.className = `admin-status-pill ${doctor.is_active ? "is-upcoming" : "is-cancelled"}`;
+    badge.textContent = doctor.is_active ? "active" : "inactive";
+
+    head.append(titleWrap, badge);
+    card.appendChild(head);
+
+    const counts = document.createElement("div");
+    counts.className = "admin-inline-meta";
+    counts.textContent = `${doctor.available_slots || 0} available of ${doctor.total_slots || 0} slots`;
+    card.appendChild(counts);
+
+    if (doctor.next_available_time) {
+      const next = document.createElement("div");
+      next.className = "admin-inline-meta";
+      next.textContent = `Next availability: ${formatDateTime(doctor.next_available_time)}`;
+      card.appendChild(next);
+    }
+
+    const actions = document.createElement("div");
+    actions.className = "admin-inline-actions";
+
+    const editBtn = document.createElement("button");
+    editBtn.type = "button";
+    editBtn.className = "secondary compact";
+    editBtn.textContent = "Edit";
+    editBtn.addEventListener("click", () => {
+      showAdminView("manage");
+      fillAdminDoctorForm(doctor);
+      adminDoctorName?.focus();
+    });
+
+    const toggleBtn = document.createElement("button");
+    toggleBtn.type = "button";
+    toggleBtn.className = "secondary compact";
+    toggleBtn.textContent = doctor.is_active ? "Deactivate" : "Activate";
+    toggleBtn.addEventListener("click", async () => {
+      setAdminDoctorMessage("");
+      try {
+        await adminAuthedJson(`/admin/doctors/${doctor.doctor_id}`, {
+          method: "PATCH",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({
+            name: doctor.name,
+            department: doctor.department,
+            experience_years: doctor.experience_years,
+            is_active: !doctor.is_active,
+          }),
+        });
+        await loadAdminManagement(true);
+      } catch (error) {
+        setAdminDoctorMessage(error.message);
+      }
+    });
+
+    actions.append(editBtn, toggleBtn);
+    card.appendChild(actions);
+    adminDoctorsList.appendChild(card);
+  });
+}
+
+function renderAdminSlotsPanel() {
+  if (!adminSlotsList) return;
+  adminSlotsList.replaceChildren();
+
+  if (!Array.isArray(adminSlots) || !adminSlots.length) {
+    const note = document.createElement("p");
+    note.className = "panel-note";
+    note.textContent = "No slots found.";
+    adminSlotsList.appendChild(note);
+    return;
+  }
+
+  adminSlots.forEach((slot) => {
+    const card = document.createElement("article");
+    card.className = "admin-inline-card";
+
+    const head = document.createElement("div");
+    head.className = "admin-inline-card-head";
+
+    const titleWrap = document.createElement("div");
+    const title = document.createElement("div");
+    title.className = "admin-inline-title";
+    title.textContent = slot.doctor_name || "Doctor";
+    const meta = document.createElement("div");
+    meta.className = "admin-inline-meta";
+    meta.textContent = `${formatDateTime(slot.start_time)} to ${formatDateTime(slot.end_time)}`;
+    titleWrap.append(title, meta);
+
+    const badge = document.createElement("span");
+    badge.className = `admin-status-pill ${slot.is_active ? "is-upcoming" : "is-cancelled"}`;
+    badge.textContent = slot.is_active ? (slot.is_booked ? "booked" : "active") : "inactive";
+
+    head.append(titleWrap, badge);
+    card.appendChild(head);
+
+    const details = document.createElement("div");
+    details.className = "admin-inline-meta";
+    details.textContent = `${slot.department || "Department"} · ${slot.booked_by_patient_id ? "Booked" : "Open"}`;
+    card.appendChild(details);
+
+    const actions = document.createElement("div");
+    actions.className = "admin-inline-actions";
+
+    const toggleBtn = document.createElement("button");
+    toggleBtn.type = "button";
+    toggleBtn.className = "secondary compact";
+    toggleBtn.textContent = slot.is_active ? "Deactivate" : "Activate";
+    toggleBtn.addEventListener("click", async () => {
+      setAdminSlotMessage("");
+      try {
+        await adminAuthedJson(`/admin/slots/${slot.slot_id}`, {
+          method: "PATCH",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ is_active: !slot.is_active }),
+        });
+        await loadAdminManagement(true);
+      } catch (error) {
+        setAdminSlotMessage(error.message);
+      }
+    });
+
+    actions.append(toggleBtn);
+    card.appendChild(actions);
+    adminSlotsList.appendChild(card);
+  });
+}
+
+function renderAdminHolidaysPanel() {
+  if (!adminHolidaysList) return;
+  adminHolidaysList.replaceChildren();
+
+  if (!Array.isArray(adminHolidays) || !adminHolidays.length) {
+    const note = document.createElement("p");
+    note.className = "panel-note";
+    note.textContent = "No holidays found.";
+    adminHolidaysList.appendChild(note);
+    return;
+  }
+
+  adminHolidays.forEach((holiday) => {
+    const card = document.createElement("article");
+    card.className = "admin-inline-card";
+
+    const head = document.createElement("div");
+    head.className = "admin-inline-card-head";
+
+    const titleWrap = document.createElement("div");
+    const title = document.createElement("div");
+    title.className = "admin-inline-title";
+    title.textContent = holiday.scope === "doctor"
+      ? `${holiday.doctor_name || "Doctor"} holiday`
+      : "Universal holiday";
+    const meta = document.createElement("div");
+    meta.className = "admin-inline-meta";
+    meta.textContent = `${holiday.start_date || "-"} to ${holiday.end_date || "-"}`;
+    titleWrap.append(title, meta);
+
+    const badge = document.createElement("span");
+    badge.className = `admin-status-pill ${holiday.is_active ? "is-upcoming" : "is-cancelled"}`;
+    badge.textContent = holiday.is_active ? holiday.scope : "inactive";
+
+    head.append(titleWrap, badge);
+    card.appendChild(head);
+
+    if (holiday.reason) {
+      const details = document.createElement("div");
+      details.className = "admin-inline-meta";
+      details.textContent = holiday.reason;
+      card.appendChild(details);
+    }
+
+    const actions = document.createElement("div");
+    actions.className = "admin-inline-actions";
+
+    const toggleBtn = document.createElement("button");
+    toggleBtn.type = "button";
+    toggleBtn.className = "secondary compact";
+    toggleBtn.textContent = holiday.is_active ? "Deactivate" : "Activate";
+    toggleBtn.addEventListener("click", async () => {
+      setAdminHolidayMessage("");
+      try {
+        await adminAuthedJson(`/admin/holidays/${holiday.holiday_id}`, {
+          method: "PATCH",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ is_active: !holiday.is_active }),
+        });
+        await loadAdminManagement(true);
+      } catch (error) {
+        setAdminHolidayMessage(error.message);
+      }
+    });
+
+    actions.append(toggleBtn);
+    card.appendChild(actions);
+    adminHolidaysList.appendChild(card);
+  });
+}
+
+function renderAdminDepartments() {
+  if (!adminDepartmentsList) return;
+  adminDepartmentsList.replaceChildren();
+
+  if (!Array.isArray(adminDepartments) || !adminDepartments.length) {
+    const note = document.createElement("p");
+    note.className = "panel-note";
+    note.textContent = "No departments have been added yet.";
+    adminDepartmentsList.appendChild(note);
+    return;
+  }
+
+  adminDepartments.forEach((department) => {
+    const chip = document.createElement("span");
+    chip.className = "admin-dept-chip";
+    chip.textContent = `${department.department} (${department.doctor_count || 0})`;
+    adminDepartmentsList.appendChild(chip);
+  });
+}
+
+async function loadAdminManagement(force = false) {
+  if (!currentAdmin || !adminAccessToken) {
+    return;
+  }
+
+  if (adminManagementLoaded && !force) {
+    renderAdminSelectOptions();
+    renderAdminDoctorsPanel();
+    renderAdminSlotsPanel();
+    renderAdminHolidaysPanel();
+    renderAdminDepartments();
+    return;
+  }
+
+  try {
+    const [doctorResp, slotResp, holidayResp, departmentResp] = await Promise.all([
+      adminAuthedJson("/admin/doctors"),
+      adminAuthedJson("/admin/slots"),
+      adminAuthedJson("/admin/holidays"),
+      adminAuthedJson("/admin/departments"),
+    ]);
+
+    adminDoctors = Array.isArray(doctorResp?.doctors) ? doctorResp.doctors : [];
+    adminSlots = Array.isArray(slotResp?.slots) ? slotResp.slots : [];
+    adminHolidays = Array.isArray(holidayResp?.holidays) ? holidayResp.holidays : [];
+    adminDepartments = Array.isArray(departmentResp?.departments) ? departmentResp.departments : [];
+    adminManagementLoaded = true;
+
+    renderAdminSelectOptions();
+    if (adminHolidayDoctorSelect && adminHolidayScope) {
+      adminHolidayDoctorSelect.disabled = adminHolidayScope.value !== "doctor";
+    }
+    renderAdminDoctorsPanel();
+    renderAdminSlotsPanel();
+    renderAdminHolidaysPanel();
+    renderAdminDepartments();
+    renderAdminDoctorOptions(adminDoctors);
+  } catch (error) {
+    adminManagementLoaded = false;
+    setAdminDoctorMessage(error.message);
+  }
+}
+
+async function saveAdminDoctor(event) {
+  event.preventDefault();
+  setAdminDoctorMessage("");
+  const editingDoctorId = adminDoctorEditingId;
+  const isEditing = Boolean(editingDoctorId);
+
+  const payload = {
+    name: adminDoctorName?.value.trim() || "",
+    department: adminDoctorDepartment?.value.trim() || "",
+    experience_years: Number(adminDoctorExperience?.value || 0),
+    is_active: Boolean(adminDoctorActive?.checked),
+  };
+
+  try {
+    if (editingDoctorId) {
+      await adminAuthedJson(`/admin/doctors/${editingDoctorId}`, {
+        method: "PATCH",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify(payload),
+      });
+    } else {
+      await adminAuthedJson("/admin/doctors", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify(payload),
+      });
+    }
+
+    showAdminToast(isEditing ? "Doctor updated successfully." : "Doctor created successfully.");
+    clearAdminDoctorForm();
+    await loadAdminManagement(true);
+    await loadAdminAppointments(true);
+  } catch (error) {
+    setAdminDoctorMessage(error.message);
+    showAdminToast(error.message, "error", 2500);
+  }
+}
+
+async function saveAdminSlot(event) {
+  event.preventDefault();
+  setAdminSlotMessage("");
+
+  const doctorId = adminSlotDoctorSelect?.value || "";
+  if (!doctorId) {
+    setAdminSlotMessage("Please choose a doctor.");
+    return;
+  }
+
+  const workStartTime = adminSlotWorkStart?.value || "";
+  const lunchStartTime = adminSlotLunchStart?.value || "";
+  const lunchEndTime = adminSlotLunchEnd?.value || "";
+  const workEndTime = adminSlotWorkEnd?.value || "";
+
+  if (!workStartTime || !workEndTime) {
+    setAdminSlotMessage("Please choose working hours.");
+    return;
+  }
+
+  try {
+    await adminAuthedJson("/admin/slots", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        doctor_id: doctorId,
+        start_date: adminSlotStartDate?.value || null,
+        end_date: adminSlotEndDate?.value || null,
+        work_start_time: workStartTime,
+        lunch_start_time: lunchStartTime,
+        lunch_end_time: lunchEndTime,
+        work_end_time: workEndTime,
+        slot_duration_minutes: adminSlotDuration?.value ? Number(adminSlotDuration.value) : null,
+        is_active: Boolean(adminSlotActive?.checked),
+      }),
+    });
+
+    showAdminToast("Slots generated successfully.");
+    if (adminSlotStartDate) adminSlotStartDate.value = "";
+    if (adminSlotEndDate) adminSlotEndDate.value = "";
+    if (adminSlotWorkStart) adminSlotWorkStart.value = ADMIN_TIME_DEFAULTS.workStart;
+    if (adminSlotLunchStart) adminSlotLunchStart.value = ADMIN_TIME_DEFAULTS.lunchStart;
+    if (adminSlotLunchEnd) adminSlotLunchEnd.value = ADMIN_TIME_DEFAULTS.lunchEnd;
+    if (adminSlotWorkEnd) adminSlotWorkEnd.value = ADMIN_TIME_DEFAULTS.workEnd;
+    if (adminSlotDuration) adminSlotDuration.value = "30";
+    await loadAdminManagement(true);
+  } catch (error) {
+    setAdminSlotMessage(error.message);
+    showAdminToast(error.message, "error", 2500);
+  }
+}
+
+async function saveAdminHoliday(event) {
+  event.preventDefault();
+  setAdminHolidayMessage("");
+
+  const scope = adminHolidayScope?.value || "universal";
+  const doctorId = adminHolidayDoctorSelect?.value || "";
+  if (scope === "doctor" && !doctorId) {
+    setAdminHolidayMessage("Choose a doctor for a doctor-specific holiday.");
+    return;
+  }
+
+  try {
+    await adminAuthedJson("/admin/holidays", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        scope,
+        doctor_id: scope === "doctor" ? doctorId : null,
+        start_date: adminHolidayStart?.value || null,
+        end_date: adminHolidayEnd?.value || null,
+        reason: adminHolidayReason?.value.trim() || null,
+        is_active: Boolean(adminHolidayActive?.checked),
+      }),
+    });
+
+    showAdminToast("Holiday saved successfully.");
+    if (adminHolidayStart) adminHolidayStart.value = "";
+    if (adminHolidayEnd) adminHolidayEnd.value = "";
+    if (adminHolidayReason) adminHolidayReason.value = "";
+    await loadAdminManagement(true);
+  } catch (error) {
+    setAdminHolidayMessage(error.message);
+    showAdminToast(error.message, "error", 2500);
+  }
+}
+
 function renderMarkdown(text) {
   // Escape HTML first to prevent XSS
   const escaped = text
@@ -1237,17 +2457,17 @@ function renderMarkdown(text) {
     .replace(/\n/g, "<br>");
 }
 
-function buildClinicalNotesBlock(note, compact = false) {
+function buildClinicalNotesBlock(note, compact = false, label = "Clinical Notes") {
   if (!note) {
     return document.createDocumentFragment();
   }
 
   const notePanel = document.createElement("details");
   notePanel.className = compact ? "clinical-notes-block compact" : "clinical-notes-block";
-  notePanel.open = true;
+  notePanel.open = !compact;
 
   const noteSummary = document.createElement("summary");
-  noteSummary.textContent = "Clinical Notes";
+  noteSummary.textContent = label;
 
   const noteBody = document.createElement("div");
   noteBody.className = "clinical-notes-body";
@@ -1343,7 +2563,7 @@ function renderState(nextState) {
   renderRecentHistory(state?.messages || state?.recent_history || []);
   renderActiveAppointments(state?.upcoming_bookings || state?.active_appointments || []);
   renderTokenUsage(state?.token_usage || null);
-  renderAnalyzedDocs(state?.analyzed_documents || []);
+  renderDocumentsPanel(state?.analyzed_documents || []);
   if (pendingUploadFiles.length === 0 && !state?.pending_file_name) {
     setUploadStatus("", "default");
   }
@@ -1404,7 +2624,7 @@ function renderQuickActions() {
 
   if (state.awaiting === "slot_selection" && Array.isArray(state.slot_options)) {
     state.slot_options.forEach((slot, index) => {
-      const time = new Date(slot.start_time).toLocaleString(undefined, { dateStyle: "short", timeStyle: "short" });
+      const time = formatDateTime(slot.start_time);
       addQuickAction(`${index + 1}. ${time}`, String(index + 1));
     });
     addQuickAction("No appointment", "no");
@@ -1443,15 +2663,378 @@ function renderQuickActions() {
 
   if (state.awaiting === "reschedule_slot_selection" && Array.isArray(state.reschedule_slot_options)) {
     state.reschedule_slot_options.forEach((slot, index) => {
-      const time = new Date(slot.start_time).toLocaleString(undefined, { dateStyle: "short", timeStyle: "short" });
+      const time = formatDateTime(slot.start_time);
       addQuickAction(`${index + 1}. ${time}`, String(index + 1));
     });
+  }
+}
+
+async function refreshAdminPanel() {
+  if (!currentAdmin || !adminAccessToken) {
+    return;
+  }
+
+  if (adminRefreshResetTimer) {
+    window.clearTimeout(adminRefreshResetTimer);
+    adminRefreshResetTimer = null;
+  }
+
+  if (adminRefreshBtn) {
+    adminRefreshBtn.disabled = true;
+    adminRefreshBtn.setAttribute("aria-busy", "true");
+  }
+  if (adminRefreshLabel) {
+    adminRefreshLabel.textContent = "Refreshing...";
+  }
+
+  try {
+    const activeView = preferredAdminView();
+    if (activeView === "overview" || activeView === "appointments") {
+      await Promise.all([
+        loadAdminAppointments(true),
+        activeView === "overview" ? loadAdminManagement(true) : Promise.resolve(),
+      ]);
+      return;
+    }
+
+    await loadAdminManagement(true);
+    if (activeView === "appointments") {
+      await loadAdminAppointments(true);
+    }
+  } finally {
+    if (adminRefreshLabel) {
+      adminRefreshLabel.textContent = "Updated";
+    }
+    if (adminRefreshBtn) {
+      adminRefreshBtn.disabled = false;
+      adminRefreshBtn.removeAttribute("aria-busy");
+    }
+
+    adminRefreshResetTimer = window.setTimeout(() => {
+      if (adminRefreshLabel) {
+        adminRefreshLabel.textContent = "Refresh";
+      }
+      adminRefreshResetTimer = null;
+    }, 1200);
   }
 }
 
 function autoResizeComposer() {
   input.style.height = "auto";
   input.style.height = `${Math.min(input.scrollHeight, 140)}px`;
+}
+
+function buildDeepgramWsUrl(sampleRate = 16000) {
+  const token = accessToken || "";
+  return `${location.origin.replace(/^http/, "ws")}/chat/deepgram?token=${encodeURIComponent(token)}&sample_rate=${encodeURIComponent(sampleRate)}`;
+}
+
+function setVoiceState(listening, label) {
+  voiceListening = listening;
+  if (voiceBtn) {
+    voiceBtn.classList.toggle("is-active", listening);
+    voiceBtn.title = label || (listening ? "Stop recording" : "Speak a message");
+  }
+  if (statusEl && listening) {
+    statusEl.textContent = label || "Listening";
+  }
+  if (voiceStatusPreview) {
+    voiceStatusPreview.classList.toggle("is-active", listening);
+  }
+  if (voiceStatusText) {
+    voiceStatusText.textContent = label || (listening ? "Listening..." : "");
+  } else if (voiceStatusPreview) {
+    voiceStatusPreview.textContent = label || (listening ? "Listening..." : "");
+    voiceStatusPreview.classList.toggle("hidden", !listening && !voiceStatusPreview.textContent);
+  }
+  console.debug("[voice]", label || (listening ? "listening" : "stopped"));
+}
+
+async function stopVoiceCapture() {
+  if (voiceStopping) return;
+  voiceStopping = true;
+  if (voiceCommitTimer) {
+    window.clearTimeout(voiceCommitTimer);
+    voiceCommitTimer = null;
+  }
+  if (voiceRecorder && voiceRecorder.state !== "inactive") {
+    try {
+      if (typeof voiceRecorder.stop === "function") {
+        voiceRecorder.stop();
+      } else if (typeof voiceRecorder.disconnect === "function") {
+        voiceRecorder.disconnect();
+      }
+    } catch (error) {}
+  }
+
+  if (voiceSocket && voiceSocket.readyState === WebSocket.OPEN) {
+    try {
+      voiceSocket.send(new Uint8Array());
+    } catch (error) {}
+    try {
+      voiceSocket.close();
+    } catch (error) {}
+  }
+
+  if (voiceStream) {
+    voiceStream.getTracks().forEach((track) => track.stop());
+    voiceStream = null;
+  }
+
+  if (voiceWorkletNode) {
+    try {
+      voiceWorkletNode.port.onmessage = null;
+      voiceWorkletNode.disconnect();
+    } catch (error) {}
+    voiceWorkletNode = null;
+  }
+
+  if (voiceAudioContext) {
+    try {
+      await voiceAudioContext.close();
+    } catch (error) {}
+    voiceAudioContext = null;
+  }
+
+  voiceRecorder = null;
+  voiceSocket = null;
+  voicePendingFrames = [];
+  setVoiceState(false, "Speak a message");
+  voiceStopping = false;
+
+  const transcriptToKeep = (voiceFinalTranscript || voiceLiveTranscript || input?.value || "").trim();
+  if (transcriptToKeep && input) {
+    input.value = transcriptToKeep;
+    autoResizeComposer();
+  }
+  if (voiceTranscriptPreview) {
+    voiceTranscriptPreview.textContent = transcriptToKeep;
+    voiceTranscriptPreview.classList.toggle("hidden", !transcriptToKeep);
+  }
+  if (voiceStatusPreview) {
+    voiceStatusPreview.textContent = transcriptToKeep
+      ? "Transcript ready. Use Send to submit."
+      : "Recording stopped.";
+    voiceStatusPreview.classList.remove("hidden");
+  }
+}
+
+function appendPcm16Frame(buffer) {
+  const inputData = buffer?.length ? buffer : buffer?.inputBuffer?.getChannelData?.(0);
+  if (!inputData || typeof inputData.length !== "number") {
+    console.warn("[voice] no audio input data on frame", buffer);
+    return;
+  }
+  const pcm = new Int16Array(inputData.length);
+  for (let index = 0; index < inputData.length; index += 1) {
+    const sample = Math.max(-1, Math.min(1, inputData[index]));
+    pcm[index] = sample < 0 ? sample * 0x8000 : sample * 0x7fff;
+  }
+  if (!voiceSocket || voiceSocket.readyState !== WebSocket.OPEN) {
+    voicePendingFrames.push(pcm.buffer.slice(0));
+    voicePendingFrames = voicePendingFrames.slice(-12);
+    if (voiceStatusPreview) {
+      voiceStatusPreview.textContent = `Buffering audio... ${voicePendingFrames.length} frame(s) queued`;
+      voiceStatusPreview.classList.remove("hidden");
+    }
+    return;
+  }
+  if (voiceStatusPreview) {
+    voiceStatusPreview.textContent = "Streaming audio frames to Deepgram...";
+    voiceStatusPreview.classList.remove("hidden");
+  }
+  console.debug("[voice] frame sent", pcm.length);
+  voiceSocket.send(pcm.buffer);
+}
+
+async function startVoiceCapture() {
+  if (!navigator.mediaDevices?.getUserMedia) {
+    setStatus("Microphone unavailable");
+    return;
+  }
+  if (!accessToken) {
+    setStatus("Login required");
+    return;
+  }
+  if (voiceListening) {
+    await stopVoiceCapture();
+    return;
+  }
+
+  try {
+    voiceFinalTranscript = "";
+    voiceLiveTranscript = "";
+    if (voiceTranscriptPreview) {
+      voiceTranscriptPreview.textContent = "";
+      voiceTranscriptPreview.classList.add("hidden");
+    }
+    if (voiceStatusPreview) {
+      voiceStatusPreview.classList.remove("hidden");
+      voiceStatusPreview.classList.add("is-active");
+    }
+    if (voiceStatusText) {
+      voiceStatusText.textContent = "Starting a fresh recording...";
+    } else if (voiceStatusPreview) {
+      voiceStatusPreview.textContent = "Starting a fresh recording...";
+    }
+
+    voiceStream = await navigator.mediaDevices.getUserMedia({ audio: true });
+    voiceAudioContext = new (window.AudioContext || window.webkitAudioContext)();
+    if (voiceAudioContext.state === "suspended") {
+      await voiceAudioContext.resume();
+    }
+    const source = voiceAudioContext.createMediaStreamSource(voiceStream);
+    const silentGain = voiceAudioContext.createGain();
+    silentGain.gain.value = 0;
+
+    const contextSampleRate = voiceAudioContext.sampleRate || 16000;
+    voiceSocket = new WebSocket(buildDeepgramWsUrl(contextSampleRate));
+    voiceSocket.binaryType = "arraybuffer";
+    voicePendingFrames = [];
+    setVoiceState(true, "Listening");
+    setStatus("Listening");
+    console.debug("[voice] audio context sample rate", contextSampleRate);
+
+    await voiceAudioContext.audioWorklet.addModule("/static/voice-worklet.js");
+    voiceWorkletNode = new AudioWorkletNode(voiceAudioContext, "voice-capture-processor");
+    voiceWorkletNode.port.onmessage = (event) => {
+      appendPcm16Frame(event.data);
+    };
+
+    voiceSocket.onmessage = (event) => {
+      let payload = null;
+      try {
+        payload = JSON.parse(event.data);
+      } catch (error) {
+        return;
+      }
+      console.debug("[voice] deepgram message", payload?.type, payload);
+      if (payload?.type !== "Results") return;
+      const alt = payload?.channel?.alternatives?.[0];
+      const transcript = (alt?.transcript || "").trim();
+      if (!transcript) return;
+      if (payload?.is_final) {
+        voiceFinalTranscript = transcript;
+        voiceLiveTranscript = transcript;
+        if (input) {
+          input.value = voiceFinalTranscript;
+          autoResizeComposer();
+        }
+      } else {
+        voiceLiveTranscript = transcript;
+        if (input) {
+          input.value = transcript;
+          autoResizeComposer();
+        }
+      }
+      if (voiceTranscriptPreview) {
+        voiceTranscriptPreview.textContent = transcript;
+        voiceTranscriptPreview.classList.remove("hidden");
+      }
+      if (voiceStatusPreview) {
+        voiceStatusPreview.classList.remove("hidden");
+        voiceStatusPreview.classList.add("is-active");
+      }
+      if (voiceStatusText) {
+        voiceStatusText.textContent = payload?.is_final ? "Final transcript received" : "Transcribing...";
+      } else if (voiceStatusPreview) {
+        voiceStatusPreview.textContent = payload?.is_final ? "Final transcript received" : "Transcribing...";
+      }
+      if (statusEl && voiceListening) {
+        statusEl.textContent = transcript;
+      }
+    };
+
+    voiceSocket.onopen = () => {
+      console.debug("[voice] deepgram socket open");
+      if (voiceStatusPreview) {
+        voiceStatusPreview.classList.remove("hidden");
+        voiceStatusPreview.classList.add("is-active");
+      }
+      if (voiceStatusText) {
+        voiceStatusText.textContent = "Deepgram connected. Speaking now...";
+      } else if (voiceStatusPreview) {
+        voiceStatusPreview.textContent = "Deepgram connected. Speaking now...";
+      }
+      while (voicePendingFrames.length && voiceSocket?.readyState === WebSocket.OPEN) {
+        voiceSocket.send(voicePendingFrames.shift());
+      }
+    };
+
+    voiceSocket.onerror = () => {
+      console.error("[voice] deepgram socket error");
+      setStatus("Voice error");
+      if (input) {
+        input.value = voiceLiveTranscript || voiceFinalTranscript || input.value || "";
+        autoResizeComposer();
+      }
+      if (voiceTranscriptPreview) {
+        voiceTranscriptPreview.textContent = voiceLiveTranscript || voiceFinalTranscript || "";
+        voiceTranscriptPreview.classList.remove("hidden");
+      }
+      if (voiceStatusPreview) {
+        voiceStatusPreview.classList.remove("hidden");
+        voiceStatusPreview.classList.remove("is-active");
+      }
+      if (voiceStatusText) {
+        voiceStatusText.textContent = "Voice error";
+      } else if (voiceStatusPreview) {
+        voiceStatusPreview.textContent = "Voice error";
+      }
+    };
+
+    voiceSocket.onclose = () => {
+      console.debug("[voice] deepgram socket closed");
+      if (voiceListening && !voiceStopping) {
+        if (input && (voiceLiveTranscript || voiceFinalTranscript)) {
+          input.value = voiceFinalTranscript || voiceLiveTranscript;
+          autoResizeComposer();
+          if (voiceTranscriptPreview) {
+            voiceTranscriptPreview.textContent = input.value;
+            voiceTranscriptPreview.classList.remove("hidden");
+          }
+          if (voiceStatusPreview) {
+            voiceStatusPreview.classList.remove("hidden");
+            voiceStatusPreview.classList.remove("is-active");
+          }
+          if (voiceStatusText) {
+            voiceStatusText.textContent = "Socket closed. Transcript kept in the box.";
+          } else if (voiceStatusPreview) {
+            voiceStatusPreview.textContent = "Socket closed. Transcript kept in the box.";
+          }
+        } else {
+          setStatus("No transcript received");
+          if (voiceStatusPreview) {
+            voiceStatusPreview.classList.remove("hidden");
+            voiceStatusPreview.classList.remove("is-active");
+          }
+          if (voiceStatusText) {
+            voiceStatusText.textContent = "No transcript received";
+          } else if (voiceStatusPreview) {
+            voiceStatusPreview.textContent = "No transcript received";
+          }
+        }
+        void stopVoiceCapture();
+      }
+    };
+
+    source.connect(voiceWorkletNode);
+    voiceWorkletNode.connect(silentGain);
+    silentGain.connect(voiceAudioContext.destination);
+    voiceRecorder = voiceWorkletNode;
+    if (voiceStatusPreview) {
+      voiceStatusPreview.classList.remove("hidden");
+      voiceStatusPreview.classList.add("is-active");
+    }
+    if (voiceStatusText) {
+      voiceStatusText.textContent = `Audio context: ${voiceAudioContext.state}. Frames streaming...`;
+    } else if (voiceStatusPreview) {
+      voiceStatusPreview.textContent = `Audio context: ${voiceAudioContext.state}. Frames streaming...`;
+    }
+  } catch (error) {
+    setStatus(error.message || "Could not access microphone");
+    await stopVoiceCapture();
+  }
 }
 
 function buildChatRequest(message, nextState = null) {
@@ -1538,17 +3121,30 @@ async function sendMessage(message) {
 }
 
 async function postJson(url, payload) {
-  const response = await fetch(url, {
-    method: "POST",
-    headers: { "Content-Type": "application/json" },
-    body: JSON.stringify(payload),
-  });
+  const controller = new AbortController();
+  const timeoutId = window.setTimeout(() => controller.abort(), 15000);
 
-  const data = await response.json().catch(() => ({}));
-  if (!response.ok) {
-    throw new Error(data.detail || `Request failed with ${response.status}`);
+  try {
+    const response = await fetch(url, {
+      method: "POST",
+      signal: controller.signal,
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(payload),
+    });
+
+    const data = await response.json().catch(() => ({}));
+    if (!response.ok) {
+      throw new Error(data.detail || `Request failed with ${response.status}`);
+    }
+    return data;
+  } catch (error) {
+    if (error?.name === "AbortError") {
+      throw new Error("Request timed out. Please try again.");
+    }
+    throw error;
+  } finally {
+    window.clearTimeout(timeoutId);
   }
-  return data;
 }
 
 function validateSignupStepOne() {
@@ -1584,7 +3180,7 @@ function resetChat() {
   if (documentUpload) documentUpload.value = "";
   clearAttachPill();
   setUploadStatus("", "default");
-  renderAnalyzedDocs([]);
+  renderDocumentsPanel([]);
   const greeting = currentUser
     ? `Hello ${currentUser.name}. Describe your symptoms, book an appointment, or ask to cancel an appointment.`
     : "Please sign in to begin.";
@@ -1786,11 +3382,53 @@ function renderRescheduleSlots(container, bookingId, slots) {
   });
 }
 
-async function showChatHistory() {
+async function loadRecordsArchive(force = false) {
+  if (!accessToken || !patientId) {
+    recordsArchive = { documents: [], sessionsById: new Map(), loaded: false, loading: false };
+    renderDocumentsPanel([]);
+    return recordsArchive;
+  }
+
+  if (recordsArchive.loading) return recordsArchive;
+  if (recordsArchive.loaded && !force) {
+    renderDocumentsPanel(recordsArchive.documents);
+    return recordsArchive;
+  }
+
+  recordsArchive.loading = true;
+  try {
+    const data = await authedJson("/chat/history");
+    const docs = Array.isArray(data.documents) ? data.documents.map(normalizeDocumentEntry).filter(Boolean) : [];
+    const sessions = Array.isArray(data.sessions) ? data.sessions : [];
+    recordsArchive = {
+      documents: docs,
+      sessionsById: new Map(sessions.map((session) => [String(session.chat_session_id || ""), session])),
+      loaded: true,
+      loading: false,
+    };
+    renderDocumentsPanel(recordsArchive.documents);
+    return recordsArchive;
+  } catch (error) {
+    renderDocumentsPanel([]);
+    recordsArchive.loading = false;
+    throw error;
+  } finally {
+    recordsArchive.loading = false;
+  }
+}
+
+async function showChatHistory(preferredSessionId = "") {
   setProfilePanelLoading("Chat history by case");
   try {
     const data = await authedJson("/chat/history");
     const sessions = data.sessions || [];
+    const documents = Array.isArray(data.documents) ? data.documents.map(normalizeDocumentEntry).filter(Boolean) : [];
+    recordsArchive = {
+      documents,
+      sessionsById: new Map(sessions.map((session) => [String(session.chat_session_id || ""), session])),
+      loaded: true,
+      loading: false,
+    };
     if (!sessions.length) {
       renderEmptyPanel("No previous chat history found for your account.");
       return;
@@ -1806,6 +3444,7 @@ async function showChatHistory() {
 
     const transcript = document.createElement("section");
     transcript.className = "history-transcript";
+    let renderedPreferredSession = false;
 
     const buildMeta = (session) => ({
       dateLabel: formatDateLabel(session.started_at || session.date),
@@ -1859,6 +3498,8 @@ async function showChatHistory() {
         thread.appendChild(renderMessage(message));
       });
       transcript.appendChild(thread);
+
+      renderChatSessionDocuments(session, transcript);
     }
 
     sessions.forEach((session, index) => {
@@ -1880,10 +3521,17 @@ async function showChatHistory() {
       card.addEventListener("click", () => renderSession(session, card));
       sidebar.appendChild(card);
 
-      if (index === 0) {
+      if ((preferredSessionId && String(session.chat_session_id || "") === String(preferredSessionId)) || (!preferredSessionId && index === 0)) {
         renderSession(session, card);
+        card.scrollIntoView({ block: "nearest" });
+        renderedPreferredSession = true;
       }
     });
+
+    if (!renderedPreferredSession && sessions[0]) {
+      const firstCard = sidebar.querySelector(".history-session-card");
+      renderSession(sessions[0], firstCard);
+    }
 
     shell.append(sidebar, transcript);
     profilePanelBody.appendChild(shell);
@@ -1899,6 +3547,9 @@ function adjustComposerHeight() {
 
 form.addEventListener("submit", async (event) => {
   event.preventDefault();
+  if (voiceListening) {
+    await stopVoiceCapture(false);
+  }
   const message = input.value.trim();
   const hasFiles = pendingUploadFiles.length > 0;
 
@@ -1920,13 +3571,29 @@ form.addEventListener("submit", async (event) => {
   clearQuickActions();
 
   if (hasFiles) {
+    const uploadPreview = showUploadMessage(
+      pendingUploadFiles.map((file) => file.name).join(", "),
+      "Uploading document..."
+    );
     addUserMessageWithFile(message, pendingUploadFiles.map(f => f.name));
+    uploadPreview.setStatus("Document attached and sent to the assistant.");
+    uploadPreview.setFile(pendingUploadFiles.map((file) => file.name).join(", "));
   } else {
     addUserMessage(message);
   }
 
   await sendMessage(effectiveMessage);
 });
+
+if (voiceBtn) {
+  voiceBtn.addEventListener("click", () => {
+    if (voiceListening) {
+      void stopVoiceCapture();
+      return;
+    }
+    void startVoiceCapture();
+  });
+}
 
 input.addEventListener("input", adjustComposerHeight);
 input.addEventListener("keydown", (event) => {
@@ -1991,6 +3658,90 @@ previousBookingsBtn.addEventListener("click", () => showPreviousBookings());
 upcomingBookingsBtn.addEventListener("click", () => showUpcomingBookings());
 chatHistoryBtn.addEventListener("click", showChatHistory);
 closeProfilePanelBtn.addEventListener("click", hideProfilePanel);
+
+if (adminDoctorFilter) {
+  adminDoctorFilter.addEventListener("change", () => {
+    resetAdminAppointmentPaging();
+    renderAdminAppointments();
+  });
+}
+
+if (adminPrevPageBtn) {
+  adminPrevPageBtn.addEventListener("click", () => {
+    adminAppointmentsPage = Math.max(1, adminAppointmentsPage - 1);
+    renderAdminAppointments();
+  });
+}
+
+if (adminNextPageBtn) {
+  adminNextPageBtn.addEventListener("click", () => {
+    adminAppointmentsPage += 1;
+    renderAdminAppointments();
+  });
+}
+
+if (adminRefreshBtn) {
+  adminRefreshBtn.addEventListener("click", () => {
+    adminAppointmentsLoaded = false;
+    void refreshAdminPanel();
+  });
+}
+
+adminViewButtons.forEach((button) => {
+  button.addEventListener("click", () => {
+    showAdminView(button.dataset.adminView || "overview");
+  });
+});
+
+if (adminDoctorSelect) {
+  adminDoctorSelect.addEventListener("change", () => {
+    const selected = adminDoctors.find((doctor) => doctor.doctor_id === adminDoctorSelect.value);
+    fillAdminDoctorForm(selected || null);
+  });
+}
+
+if (adminDoctorResetBtn) {
+  adminDoctorResetBtn.addEventListener("click", clearAdminDoctorForm);
+}
+
+if (adminDoctorForm) {
+  adminDoctorForm.addEventListener("submit", saveAdminDoctor);
+}
+
+if (adminSlotForm) {
+  adminSlotForm.addEventListener("submit", saveAdminSlot);
+}
+
+if (adminHolidayForm) {
+  adminHolidayForm.addEventListener("submit", saveAdminHoliday);
+}
+
+if (adminHolidayScope) {
+  adminHolidayScope.addEventListener("change", () => {
+    if (!adminHolidayDoctorSelect) return;
+    const isDoctor = adminHolidayScope.value === "doctor";
+    adminHolidayDoctorSelect.disabled = !isDoctor;
+    if (!isDoctor) {
+      adminHolidayDoctorSelect.value = "";
+    }
+  });
+}
+
+if (adminLogoutBtn) {
+  adminLogoutBtn.addEventListener("click", () => {
+    clearAuthenticated();
+    showAuthMode("login");
+  });
+}
+
+adminStatusButtons.forEach((button) => {
+  button.addEventListener("click", () => {
+    adminStatusButtons.forEach((item) => item.classList.toggle("is-active", item === button));
+    adminSelectedStatus = button.dataset.adminStatus || "all";
+    resetAdminAppointmentPaging();
+    renderAdminAppointments();
+  });
+});
 
 function showEditProfile() {
   if (!currentUser) return;
@@ -2062,6 +3813,34 @@ startNewChatBtn.addEventListener("click", () => {
 
 showLoginBtn.addEventListener("click", () => showAuthMode("login"));
 showSignupBtn.addEventListener("click", () => showAuthMode("signup"));
+if (showAdminBtn) {
+  showAdminBtn.addEventListener("click", () => showAuthMode("admin"));
+}
+
+if (authTabs) {
+  authTabs.addEventListener("click", (event) => {
+    const tab = event.target.closest(".tab");
+    if (!tab || !authTabs.contains(tab)) {
+      return;
+    }
+
+    if (tab === showLoginBtn) {
+      showAuthMode("login");
+      return;
+    }
+    if (tab === showSignupBtn) {
+      showAuthMode("signup");
+      return;
+    }
+    if (tab === showAdminBtn) {
+      showAuthMode("admin");
+    }
+  });
+}
+
+if (adminBackBtn) {
+  adminBackBtn.addEventListener("click", () => showAuthMode("login"));
+}
 
 signupNextBtn.addEventListener("click", () => {
   if (!validateSignupStepOne()) {
@@ -2088,7 +3867,7 @@ loginForm.addEventListener("submit", async (event) => {
       email: document.querySelector("#loginEmail").value.trim(),
       password: document.querySelector("#loginPassword").value,
     });
-    setAuthenticated(data.user, data.access_token);
+    setPatientAuthenticated(data.user, data.access_token);
   } catch (error) {
     setAuthMessage(error.message);
   }
@@ -2115,11 +3894,28 @@ signupForm.addEventListener("submit", async (event) => {
       blood_group: document.querySelector("#profileBloodGroup").value,
       health_issues: document.querySelector("#profileHealthIssues").value.trim() || null,
     });
-    setAuthenticated(data.user, data.access_token);
+    setPatientAuthenticated(data.user, data.access_token);
   } catch (error) {
     setAuthMessage(error.message);
   }
 });
+
+if (adminLoginForm) {
+  adminLoginForm.addEventListener("submit", async (event) => {
+    event.preventDefault();
+    setAdminAuthMessage("");
+
+    try {
+      const data = await postJson("/auth/admin/login", {
+        email: document.querySelector("#adminLoginEmail").value.trim(),
+        password: document.querySelector("#adminLoginPassword").value,
+      });
+      setAdminAuthenticated({ email: data.email, name: data.name, role: data.role }, data.access_token);
+    } catch (error) {
+      setAdminAuthMessage(error.message);
+    }
+  });
+}
 
 logoutBtn.addEventListener("click", () => {
   clearAuthenticated();
@@ -2133,6 +3929,7 @@ if (documentUpload) {
     const file = documentUpload.files?.[0] || null;
     if (!file) return;
 
+    const uploadNotice = showUploadMessage(file.name, "Uploading document...");
     setUploadStatus(`Validating "${file.name}"…`, "sending");
     setComposerDisabled(true);
     clearAttachPill();
@@ -2172,6 +3969,7 @@ if (documentUpload) {
 
       if (!consent) {
         setUploadStatus("Document discarded.", "default");
+        uploadNotice.setStatus("Document discarded.");
         clearAttachPill();
         documentUpload.value = "";
         setComposerDisabled(false);
@@ -2181,12 +3979,14 @@ if (documentUpload) {
       // Step 4: Stage pill — wait for user to type a question or just click Send
       pendingUploadFiles.push(file);
       showAttachPill(file);
+      uploadNotice.setStatus("Document ready to send in chat.");
       setUploadStatus("", "default");
       setComposerDisabled(false);
       input.focus();
 
     } catch (err) {
       setUploadStatus(`Upload error: ${err.message}`, "error");
+      uploadNotice.setStatus(`Upload failed: ${err.message}`);
       documentUpload.value = "";
       setComposerDisabled(false);
     }
@@ -2194,15 +3994,22 @@ if (documentUpload) {
 }
 
 async function bootstrapSession() {
-  if (!currentUser || !accessToken) {
+  try {
+    initAdminTimeSelects();
+    if (currentUser && accessToken) {
+      const data = await authedJson("/auth/me");
+      setPatientAuthenticated(data.user, accessToken);
+      return;
+    }
+
+    if (currentAdmin && adminAccessToken) {
+      const data = await adminAuthedJson("/admin/me");
+      setAdminAuthenticated(data.admin, adminAccessToken);
+      return;
+    }
+
     clearAuthenticated();
     showAuthMode("login");
-    return;
-  }
-
-  try {
-    const data = await authedJson("/auth/me");
-    setAuthenticated(data.user, accessToken);
   } catch (error) {
     clearAuthenticated();
     showAuthMode("login");
@@ -2212,5 +4019,17 @@ async function bootstrapSession() {
 
 bootstrapSession();
 setSidebarOpen(sidebarOpen);
+
+document.querySelectorAll("[data-nav]").forEach((button) => {
+  if (button.dataset.nav === "records") {
+    button.addEventListener("click", () => {
+      void loadRecordsArchive();
+    });
+  }
+});
+
+
+
+
 
 

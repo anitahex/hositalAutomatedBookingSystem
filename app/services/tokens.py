@@ -27,12 +27,23 @@ def _b64url_decode(value: str) -> bytes:
     return base64.urlsafe_b64decode(value + padding)
 
 
-def create_access_token(*, patient_id: str, email: str) -> str:
+def create_access_token(
+    *,
+    patient_id: str | None = None,
+    subject: str | None = None,
+    email: str,
+    role: str = "patient",
+) -> str:
+    token_subject = subject or patient_id
+    if not token_subject:
+        raise ValueError("A token subject is required.")
+
     now = int(time.time())
     header = {"alg": "HS256", "typ": "JWT"}
     payload = {
-        "sub": patient_id,
+        "sub": token_subject,
         "email": email,
+        "role": role,
         "iat": now,
         "exp": now + JWT_EXP_SECONDS,
     }

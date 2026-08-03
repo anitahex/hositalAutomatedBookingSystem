@@ -6,7 +6,7 @@ endobj
 << /Type /Font /Subtype /Type1 /BaseFont /Helvetica-Bold >>
 endobj
 3 0 obj
-<< /Type /Pages /Kids [5 0 R 7 0 R 9 0 R 11 0 R] /Count 4 >>
+<< /Type /Pages /Kids [5 0 R 7 0 R 9 0 R 11 0 R 13 0 R 15 0 R 17 0 R] /Count 7 >>
 endobj
 4 0 obj
 << /Length 1742 >>
@@ -107,109 +107,87 @@ endobj
 << /Type /Page /Parent 3 0 R /MediaBox [0 0 595 842] /Resources << /Font << /F1 1 0 R /F2 2 0 R >> >> /Contents 4 0 R >>
 endobj
 6 0 obj
-<< /Length 1710 >>
+<< /Length 1360 >>
 stream
 BT
 /F2 16 Tf
 1 0 0 1 72 780 Tm
 (Primary Runtime Flow) Tj
 ET
-0.8 w
-72 690 110 42 re S
 BT
-/F1 10 Tf
-1 0 0 1 82 705 Tm
-(Frontend) Tj
-ET
-0.8 w
-212 690 125 42 re S
-BT
-/F1 10 Tf
-1 0 0 1 222 705 Tm
-(POST /chat) Tj
-ET
-0.8 w
-367 690 122 42 re S
-BT
-/F1 10 Tf
-1 0 0 1 377 705 Tm
-(run_patient_chat) Tj
-ET
-0.8 w
-519 690 110 42 re S
-BT
-/F1 10 Tf
-1 0 0 1 529 705 Tm
-(Supervisor) Tj
-ET
-0.8 w
-182 711 m 212 711 l S
-337 711 m 367 711 l S
-489 711 m 519 711 l S
-BT
-/F1 10 Tf
-1 0 0 1 72 620 Tm
-(The supervisor first checks deterministic shortcuts such as profile questions, booking) Tj
+/F1 11 Tf
+1 0 0 1 72 742 Tm
+(Frontend -> POST /chat or /chat/stream -> run_patient_chat -> LangGraph supervisor) Tj
 ET
 BT
-/F1 10 Tf
-1 0 0 1 72 607 Tm
-(lookup, cancellation, end-chat, and direct booking. If none match, it falls back to the) Tj
-ET
-BT
-/F1 10 Tf
-1 0 0 1 72 594 Tm
-(LLM router.) Tj
-ET
-BT
-/F1 10 Tf
-1 0 0 1 72 590 Tm
-(After routing, the selected node updates GraphState and returns control to the) Tj
-ET
-BT
-/F1 10 Tf
-1 0 0 1 72 577 Tm
-(supervisor until a final_response is produced or the graph reaches finish.) Tj
+/F1 11 Tf
+1 0 0 1 72 727 Tm
+(-> specialist agent -> supervisor -> final response.) Tj
 ET
 BT
 /F2 14 Tf
-1 0 0 1 72 545 Tm
+1 0 0 1 72 690 Tm
+(What The Supervisor Checks First) Tj
+ET
+BT
+/F1 11 Tf
+1 0 0 1 84 665 Tm
+(- Profile and account questions) Tj
+ET
+BT
+/F1 11 Tf
+1 0 0 1 84 641 Tm
+(- Chat end / close requests) Tj
+ET
+BT
+/F1 11 Tf
+1 0 0 1 84 617 Tm
+(- Booking lookup, cancel, or reschedule requests) Tj
+ET
+BT
+/F1 11 Tf
+1 0 0 1 84 593 Tm
+(- Direct booking requests) Tj
+ET
+BT
+/F1 11 Tf
+1 0 0 1 84 569 Tm
+(- Symptom triage or medical routing) Tj
+ET
+BT
+/F2 14 Tf
+1 0 0 1 72 530 Tm
 (Special Routes) Tj
 ET
 BT
 /F1 11 Tf
-1 0 0 1 84 520 Tm
-(- Profile query -> finish with a direct response from patient_profile) Tj
+1 0 0 1 84 505 Tm
+(- Profile query -> answer from patient_profile and bypass medical agents.) Tj
 ET
 BT
 /F1 11 Tf
-1 0 0 1 84 502 Tm
-(- Symptoms -> triage_router -> conversation_agent -> remedy_agent) Tj
+1 0 0 1 84 486 Tm
+(- Symptoms -> triage_router -> conversation_agent -> remedy_agent.) Tj
 ET
 BT
 /F1 11 Tf
-1 0 0 1 84 484 Tm
-(- Persisting symptoms -> medical_rag -> appointment_booker) Tj
+1 0 0 1 84 467 Tm
+(- Persisting symptoms -> medical_rag -> appointment_booker.) Tj
 ET
 BT
 /F1 11 Tf
-1 0 0 1 84 466 Tm
-(- Doctor/department request -> appointment_booker, or medical_rag first when the) Tj
+1 0 0 1 84 448 Tm
+(- Unknown department -> medical_rag before booking.) Tj
 ET
 BT
 /F1 11 Tf
-1 0 0 1 84 452 Tm
-(department is unknown) Tj
+1 0 0 1 84 429 Tm
+(- Booking lookup, cancellation, reschedule -> appointment_booker.) Tj
 ET
 BT
 /F1 11 Tf
-1 0 0 1 84 434 Tm
-(- Booking lookup / cancellation / reschedule -> appointment_booker) Tj
-ET
-BT
-/F1 11 Tf
-1 0 0 1 84 416 Tm
-(- End chat -> end_confirmation -> finish) Tj
+1 0 0 1 84 410 Tm
+(- End chat -> end_confirmation -> finish.) Tj
 ET
 endstream
 endobj
@@ -217,7 +195,7 @@ endobj
 << /Type /Page /Parent 3 0 R /MediaBox [0 0 595 842] /Resources << /Font << /F1 1 0 R /F2 2 0 R >> >> /Contents 6 0 R >>
 endobj
 8 0 obj
-<< /Length 1465 >>
+<< /Length 1504 >>
 stream
 BT
 /F2 16 Tf
@@ -226,78 +204,83 @@ BT
 ET
 BT
 /F1 11 Tf
-1 0 0 1 72 750 Tm
-(- Supervisor: decides whether the message continues the current flow or diverts to a) Tj
+1 0 0 1 72 748 Tm
+(- Supervisor: decides whether the message continues the current flow or) Tj
 ET
 BT
 /F1 11 Tf
-1 0 0 1 72 736 Tm
-(specialist.) Tj
+1 0 0 1 72 731 Tm
+(diverts to a specialist.) Tj
 ET
 BT
 /F1 11 Tf
-1 0 0 1 72 720 Tm
-(- Triage router: extracts intent, symptoms, and severity from the latest message.) Tj
+1 0 0 1 72 706 Tm
+(- Triage router: extracts intent, symptoms, and severity from the latest) Tj
 ET
 BT
 /F1 11 Tf
-1 0 0 1 72 704 Tm
+1 0 0 1 72 689 Tm
+(message.) Tj
+ET
+BT
+/F1 11 Tf
+1 0 0 1 72 664 Tm
 (- Conversation agent: asks follow-up intake questions until enough context is) Tj
 ET
 BT
 /F1 11 Tf
-1 0 0 1 72 690 Tm
+1 0 0 1 72 647 Tm
 (collected.) Tj
 ET
 BT
 /F1 11 Tf
-1 0 0 1 72 674 Tm
+1 0 0 1 72 622 Tm
 (- Remedy agent: generates personalized care tips and handles follow-up about) Tj
 ET
 BT
 /F1 11 Tf
-1 0 0 1 72 660 Tm
+1 0 0 1 72 605 Tm
 (improvement or persistence.) Tj
 ET
 BT
 /F1 11 Tf
-1 0 0 1 72 644 Tm
+1 0 0 1 72 580 Tm
 (- Medical RAG: maps symptoms and context to the most relevant department using) Tj
 ET
 BT
 /F1 11 Tf
-1 0 0 1 72 630 Tm
+1 0 0 1 72 563 Tm
 (heuristics, vector search, and LLM reasoning.) Tj
 ET
 BT
 /F1 11 Tf
-1 0 0 1 72 614 Tm
-(- Appointment booker: handles doctor selection, slot selection, booking confirmation,) Tj
+1 0 0 1 72 538 Tm
+(- Appointment booker: handles doctor selection, slot selection, booking) Tj
 ET
 BT
 /F1 11 Tf
-1 0 0 1 72 600 Tm
-(rescheduling, and cancellation.) Tj
+1 0 0 1 72 521 Tm
+(confirmation, rescheduling, and cancellation.) Tj
 ET
 BT
 /F2 14 Tf
-1 0 0 1 72 610 Tm
+1 0 0 1 72 540 Tm
 (State That Drives Routing) Tj
 ET
 BT
 /F1 11 Tf
-1 0 0 1 72 585 Tm
-(awaiting, intent, symptoms, severity, target_department, remedy_given, persisting,) Tj
+1 0 0 1 72 515 Tm
+(awaiting, intent, symptoms, severity, target_department, remedy_given,) Tj
 ET
 BT
 /F1 11 Tf
-1 0 0 1 72 570 Tm
-(booking_active, confirmed_booking, confirmed_bookings, chat_closed, and) Tj
+1 0 0 1 72 499 Tm
+(persisting, booking_active, confirmed_booking, confirmed_bookings,) Tj
 ET
 BT
 /F1 11 Tf
-1 0 0 1 72 555 Tm
-(patient_profile.) Tj
+1 0 0 1 72 483 Tm
+(chat_closed, and patient_profile.) Tj
 ET
 endstream
 endobj
@@ -305,7 +288,7 @@ endobj
 << /Type /Page /Parent 3 0 R /MediaBox [0 0 595 842] /Resources << /Font << /F1 1 0 R /F2 2 0 R >> >> /Contents 8 0 R >>
 endobj
 10 0 obj
-<< /Length 1732 >>
+<< /Length 1810 >>
 stream
 BT
 /F2 16 Tf
@@ -314,92 +297,102 @@ BT
 ET
 BT
 /F1 11 Tf
-1 0 0 1 72 750 Tm
-(- Chat already closed: run_patient_chat returns a closed-chat response immediately.) Tj
+1 0 0 1 72 748 Tm
+(- Chat already closed: run_patient_chat returns a closed-chat response) Tj
 ET
 BT
 /F1 11 Tf
-1 0 0 1 72 734 Tm
-(- User asks for profile info: the supervisor answers from patient_profile and skips) Tj
+1 0 0 1 72 731 Tm
+(immediately.) Tj
 ET
 BT
 /F1 11 Tf
-1 0 0 1 72 720 Tm
-(the medical flow.) Tj
+1 0 0 1 72 706 Tm
+(- User asks for profile info: the supervisor answers from patient_profile and) Tj
 ET
 BT
 /F1 11 Tf
-1 0 0 1 72 704 Tm
-(- User asks for a booking lookup: the supervisor returns the active or past bookings) Tj
+1 0 0 1 72 689 Tm
+(skips the medical flow.) Tj
 ET
 BT
 /F1 11 Tf
-1 0 0 1 72 690 Tm
-(summary.) Tj
+1 0 0 1 72 664 Tm
+(- User asks for a booking lookup: the supervisor returns the active or past) Tj
 ET
 BT
 /F1 11 Tf
-1 0 0 1 72 674 Tm
-(- User asks for a remedy during booking: the booking state is cleared and the flow) Tj
+1 0 0 1 72 647 Tm
+(bookings summary.) Tj
 ET
 BT
 /F1 11 Tf
-1 0 0 1 72 660 Tm
-(returns to remedy_agent.) Tj
+1 0 0 1 72 622 Tm
+(- User asks for a remedy during booking: the booking state is cleared and the) Tj
 ET
 BT
 /F1 11 Tf
-1 0 0 1 72 644 Tm
-(- RAG cannot confidently match a department: the flow returns to conversation_agent) Tj
+1 0 0 1 72 605 Tm
+(flow returns to remedy_agent.) Tj
 ET
 BT
 /F1 11 Tf
-1 0 0 1 72 630 Tm
-(for more intake.) Tj
+1 0 0 1 72 580 Tm
+(- RAG cannot confidently match a department: the flow returns to) Tj
 ET
 BT
 /F1 11 Tf
-1 0 0 1 72 614 Tm
-(- Emergency severity: the remedy step is bypassed in favor of emergency guidance.) Tj
+1 0 0 1 72 563 Tm
+(conversation_agent for more intake.) Tj
+ET
+BT
+/F1 11 Tf
+1 0 0 1 72 538 Tm
+(- Emergency severity: the remedy step is bypassed in favor of emergency) Tj
+ET
+BT
+/F1 11 Tf
+1 0 0 1 72 521 Tm
+(guidance.) Tj
 ET
 BT
 /F2 14 Tf
-1 0 0 1 72 585 Tm
+1 0 0 1 72 540 Tm
 (Data Stores and Supporting Services) Tj
 ET
 BT
 /F1 11 Tf
-1 0 0 1 72 560 Tm
-(- Chat history and session summaries are persisted by app/services/chat_history.py) Tj
+1 0 0 1 72 515 Tm
+(- Chat history and session summaries are persisted by) Tj
 ET
 BT
 /F1 11 Tf
-1 0 0 1 72 546 Tm
-(and app/services/llm_usage.py.) Tj
+1 0 0 1 72 498 Tm
+(app/services/chat_history.py and app/services/llm_usage.py.) Tj
 ET
 BT
 /F1 11 Tf
-1 0 0 1 72 530 Tm
+1 0 0 1 72 473 Tm
 (- Appointments use app/services/appointments.py and the routes in) Tj
 ET
 BT
 /F1 11 Tf
-1 0 0 1 72 516 Tm
+1 0 0 1 72 456 Tm
 (app/api/routes/appointments.py.) Tj
 ET
 BT
 /F1 11 Tf
-1 0 0 1 72 500 Tm
+1 0 0 1 72 431 Tm
 (- Medical department matching uses app/services/rag.py with vector search and) Tj
 ET
 BT
 /F1 11 Tf
-1 0 0 1 72 486 Tm
+1 0 0 1 72 414 Tm
 (reranking.) Tj
 ET
 BT
 /F1 11 Tf
-1 0 0 1 72 470 Tm
+1 0 0 1 72 389 Tm
 (- Database schema and rebuild scripts live under app/db.) Tj
 ET
 endstream
@@ -408,25 +401,465 @@ endobj
 << /Type /Page /Parent 3 0 R /MediaBox [0 0 595 842] /Resources << /Font << /F1 1 0 R /F2 2 0 R >> >> /Contents 10 0 R >>
 endobj
 12 0 obj
+<< /Length 2801 >>
+stream
+BT
+/F2 16 Tf
+1 0 0 1 72 780 Tm
+(API Surface and Functions Used) Tj
+ET
+BT
+/F1 11 Tf
+1 0 0 1 72 748 Tm
+(- Auth API: POST /auth/signup, POST /auth/login, POST /auth/admin/login, GET) Tj
+ET
+BT
+/F1 11 Tf
+1 0 0 1 72 731 Tm
+(/auth/me, PATCH /auth/profile.) Tj
+ET
+BT
+/F1 11 Tf
+1 0 0 1 72 706 Tm
+(- Chat API: POST /chat, POST /chat/stream, GET /chat/history, POST) Tj
+ET
+BT
+/F1 11 Tf
+1 0 0 1 72 689 Tm
+(/chat/upload, POST /chat/confirm-processing, GET /chat/document-status/{id}.) Tj
+ET
+BT
+/F1 11 Tf
+1 0 0 1 72 664 Tm
+(- Appointment API: GET /appointments/departments, /doctors, /slots,) Tj
+ET
+BT
+/F1 11 Tf
+1 0 0 1 72 647 Tm
+(/available, /upcoming, /previous, POST /book, /{id}/cancel, /{id}/reschedule,) Tj
+ET
+BT
+/F1 11 Tf
+1 0 0 1 72 630 Tm
+(GET /{id}/reschedule-options.) Tj
+ET
+BT
+/F1 11 Tf
+1 0 0 1 72 605 Tm
+(- Admin API: analytics, doctors, slots, holidays, and appointment dashboard) Tj
+ET
+BT
+/F1 11 Tf
+1 0 0 1 72 588 Tm
+(endpoints under /admin.) Tj
+ET
+BT
+/F1 11 Tf
+1 0 0 1 72 563 Tm
+(- WebSockets: /ws/status/{session_id} for document-ingestion progress and) Tj
+ET
+BT
+/F1 11 Tf
+1 0 0 1 72 546 Tm
+(/chat/deepgram for live audio bridging.) Tj
+ET
+BT
+/F2 14 Tf
+1 0 0 1 72 540 Tm
+(Main Functions) Tj
+ET
+BT
+/F1 10 Tf
+1 0 0 1 72 515 Tm
+(- app/api/main.py: FastAPI app creation, lifespan startup, health check,) Tj
+ET
+BT
+/F1 10 Tf
+1 0 0 1 72 500 Tm
+(static file serving, and WebSocket connection manager.) Tj
+ET
+BT
+/F1 10 Tf
+1 0 0 1 72 477 Tm
+(- app/api/routes/chat.py: _prepare_chat_state, _run_chat_with_usage, chat,) Tj
+ET
+BT
+/F1 10 Tf
+1 0 0 1 72 462 Tm
+(chat_stream, upload_document, confirm_processing, document_status.) Tj
+ET
+BT
+/F1 10 Tf
+1 0 0 1 72 439 Tm
+(- app/agents/graph.py: initialise_hybrid_memory, compact_hybrid_memory,) Tj
+ET
+BT
+/F1 10 Tf
+1 0 0 1 72 424 Tm
+(arun_patient_chat, run_patient_chat.) Tj
+ET
+BT
+/F1 10 Tf
+1 0 0 1 72 401 Tm
+(- app/agents/supervisor.py: supervisor_node, route_from_supervisor,) Tj
+ET
+BT
+/F1 10 Tf
+1 0 0 1 72 386 Tm
+(continue_current_node, general_qa_node, routing heuristics.) Tj
+ET
+BT
+/F1 10 Tf
+1 0 0 1 72 363 Tm
+(- app/agents/triage_router.py: triage_router_node and triage streaming) Tj
+ET
+BT
+/F1 10 Tf
+1 0 0 1 72 348 Tm
+(helpers.) Tj
+ET
+BT
+/F1 10 Tf
+1 0 0 1 72 325 Tm
+(- app/agents/conversation_agent.py: conversation_agent_node,) Tj
+ET
+BT
+/F1 10 Tf
+1 0 0 1 72 310 Tm
+(conversation_agent_stream, finalize_conv_stream_state.) Tj
+ET
+BT
+/F1 10 Tf
+1 0 0 1 72 287 Tm
+(- app/agents/remedy_agent.py: remedy_agent_node.) Tj
+ET
+BT
+/F1 10 Tf
+1 0 0 1 72 264 Tm
+(- app/agents/medical_rag.py: medical_rag_node.) Tj
+ET
+BT
+/F1 10 Tf
+1 0 0 1 72 241 Tm
+(- app/agents/appointment_booker.py: appointment_booker_node and booking-menu) Tj
+ET
+BT
+/F1 10 Tf
+1 0 0 1 72 226 Tm
+(helpers.) Tj
+ET
+BT
+/F1 10 Tf
+1 0 0 1 72 203 Tm
+(- app/agents/document_analyzer.py: document_analyzer_node.) Tj
+ET
+endstream
+endobj
+13 0 obj
+<< /Type /Page /Parent 3 0 R /MediaBox [0 0 595 842] /Resources << /Font << /F1 1 0 R /F2 2 0 R >> >> /Contents 12 0 R >>
+endobj
+14 0 obj
+<< /Length 3079 >>
+stream
+BT
+/F2 16 Tf
+1 0 0 1 72 780 Tm
+(How The App Handles 100000 Users) Tj
+ET
+BT
+/F1 11 Tf
+1 0 0 1 72 748 Tm
+(- Short answer: not safely as-is. The code is structured well, but it is not) Tj
+ET
+BT
+/F1 11 Tf
+1 0 0 1 72 731 Tm
+(yet production-hardened for 100000 truly simultaneous users.) Tj
+ET
+BT
+/F1 11 Tf
+1 0 0 1 72 706 Tm
+(- Current bottlenecks: psycopg2.connect\(\) creates a fresh blocking DB) Tj
+ET
+BT
+/F1 11 Tf
+1 0 0 1 72 689 Tm
+(connection per call; the app does not show an async database pool; LLM calls) Tj
+ET
+BT
+/F1 11 Tf
+1 0 0 1 72 672 Tm
+(and vector searches can become latency hotspots; document extraction is) Tj
+ET
+BT
+/F1 11 Tf
+1 0 0 1 72 655 Tm
+(CPU-heavy; and LangGraph checkpoints are stored in SQLite, which is not ideal) Tj
+ET
+BT
+/F1 11 Tf
+1 0 0 1 72 638 Tm
+(for massive concurrent writes.) Tj
+ET
+BT
+/F1 11 Tf
+1 0 0 1 72 613 Tm
+(- What already helps: conversation memory is compacted, recent-history windows) Tj
+ET
+BT
+/F1 11 Tf
+1 0 0 1 72 596 Tm
+(are small, static prompts are reused, booking lookups are limited, and session) Tj
+ET
+BT
+/F1 11 Tf
+1 0 0 1 72 579 Tm
+(state is namespaced by patient_id + session_id to reduce leakage.) Tj
+ET
+BT
+/F1 11 Tf
+1 0 0 1 72 554 Tm
+(- What would be needed for 100k scale: a real PostgreSQL connection pool,) Tj
+ET
+BT
+/F1 11 Tf
+1 0 0 1 72 537 Tm
+(async DB access or worker isolation, Redis or another external session/cache) Tj
+ET
+BT
+/F1 11 Tf
+1 0 0 1 72 520 Tm
+(layer, separate queues for document ingestion and long LLM jobs, horizontal) Tj
+ET
+BT
+/F1 11 Tf
+1 0 0 1 72 503 Tm
+(stateless API replicas behind a load balancer, and rate limits with) Tj
+ET
+BT
+/F1 11 Tf
+1 0 0 1 72 486 Tm
+(backpressure.) Tj
+ET
+BT
+/F1 11 Tf
+1 0 0 1 72 461 Tm
+(- Critical booking safety: slot booking must stay transactional with unique) Tj
+ET
+BT
+/F1 11 Tf
+1 0 0 1 72 444 Tm
+(constraints and row locks so two users cannot reserve the same slot at once.) Tj
+ET
+BT
+/F1 11 Tf
+1 0 0 1 72 419 Tm
+(- Operational reality: 100000 simultaneous browser sessions is different from) Tj
+ET
+BT
+/F1 11 Tf
+1 0 0 1 72 402 Tm
+(100000 active LLM calls. The app can support many idle sessions only if chat) Tj
+ET
+BT
+/F1 11 Tf
+1 0 0 1 72 385 Tm
+(state is kept out of process and expensive work is throttled.) Tj
+ET
+BT
+/F2 14 Tf
+1 0 0 1 72 540 Tm
+(Recommended Hardening Plan) Tj
+ET
+BT
+/F1 10 Tf
+1 0 0 1 72 515 Tm
+(1. Replace psycopg2 connect-per-call usage with a pooled async layer or a) Tj
+ET
+BT
+/F1 10 Tf
+1 0 0 1 72 500 Tm
+(shared PgBouncer-backed pool.) Tj
+ET
+BT
+/F1 10 Tf
+1 0 0 1 72 477 Tm
+(2. Move SQLite checkpoints to PostgreSQL or Redis for multi-replica) Tj
+ET
+BT
+/F1 10 Tf
+1 0 0 1 72 462 Tm
+(durability.) Tj
+ET
+BT
+/F1 10 Tf
+1 0 0 1 72 439 Tm
+(3. Put document analysis and any long-running LLM work on background workers.) Tj
+ET
+BT
+/F1 10 Tf
+1 0 0 1 72 416 Tm
+(4. Add Redis-backed rate limiting, per-user quotas, and request timeouts.) Tj
+ET
+BT
+/F1 10 Tf
+1 0 0 1 72 393 Tm
+(5. Cache department lookups, doctor lists, and common prompts where safe.) Tj
+ET
+BT
+/F1 10 Tf
+1 0 0 1 72 370 Tm
+(6. Load test booking writes separately from read-heavy chat traffic.) Tj
+ET
+endstream
+endobj
+15 0 obj
+<< /Type /Page /Parent 3 0 R /MediaBox [0 0 595 842] /Resources << /Font << /F1 1 0 R /F2 2 0 R >> >> /Contents 14 0 R >>
+endobj
+16 0 obj
+<< /Length 1989 >>
+stream
+BT
+/F2 16 Tf
+1 0 0 1 72 780 Tm
+(Data Stores, Integrations, and Runtime Notes) Tj
+ET
+BT
+/F1 11 Tf
+1 0 0 1 72 748 Tm
+(- PostgreSQL stores users, patient profiles, doctors, slots, holidays,) Tj
+ET
+BT
+/F1 11 Tf
+1 0 0 1 72 731 Tm
+(bookings, chat history, admin data, token logs, and document catalog rows.) Tj
+ET
+BT
+/F1 11 Tf
+1 0 0 1 72 706 Tm
+(- Qdrant stores the clinical knowledge base that powers department matching) Tj
+ET
+BT
+/F1 11 Tf
+1 0 0 1 72 689 Tm
+(and medical RAG.) Tj
+ET
+BT
+/F1 11 Tf
+1 0 0 1 72 664 Tm
+(- Azure OpenAI is used for chat generation, routing, summary generation,) Tj
+ET
+BT
+/F1 11 Tf
+1 0 0 1 72 647 Tm
+(document relevance checks, and document extraction.) Tj
+ET
+BT
+/F1 11 Tf
+1 0 0 1 72 622 Tm
+(- Azure Blob Storage stores staged uploads, vault files, and generated JSON) Tj
+ET
+BT
+/F1 11 Tf
+1 0 0 1 72 605 Tm
+(summaries.) Tj
+ET
+BT
+/F1 11 Tf
+1 0 0 1 72 580 Tm
+(- Sentence Transformers provide embeddings for vector search, and optional) Tj
+ET
+BT
+/F1 11 Tf
+1 0 0 1 72 563 Tm
+(CrossEncoder reranking improves department matching.) Tj
+ET
+BT
+/F1 11 Tf
+1 0 0 1 72 538 Tm
+(- Nginx serves the frontend and reverse-proxies API and WebSocket traffic.) Tj
+ET
+BT
+/F2 14 Tf
+1 0 0 1 72 540 Tm
+(Key Runtime Safeguards) Tj
+ET
+BT
+/F1 11 Tf
+1 0 0 1 72 515 Tm
+(- JWT authentication is required for patient actions.) Tj
+ET
+BT
+/F1 11 Tf
+1 0 0 1 72 490 Tm
+(- Profile data and bookings are reloaded from the database each turn instead) Tj
+ET
+BT
+/F1 11 Tf
+1 0 0 1 72 473 Tm
+(of trusting client state.) Tj
+ET
+BT
+/F1 11 Tf
+1 0 0 1 72 448 Tm
+(- Chat state uses patient_id plus session_id thread IDs to reduce cross-user) Tj
+ET
+BT
+/F1 11 Tf
+1 0 0 1 72 431 Tm
+(leakage.) Tj
+ET
+BT
+/F1 11 Tf
+1 0 0 1 72 406 Tm
+(- Document uploads are size-limited, MIME-filtered, and verified before) Tj
+ET
+BT
+/F1 11 Tf
+1 0 0 1 72 389 Tm
+(staging.) Tj
+ET
+BT
+/F1 11 Tf
+1 0 0 1 72 364 Tm
+(- Booking queries respect a 30-minute minimum lead time and a 7-day lookahead) Tj
+ET
+BT
+/F1 11 Tf
+1 0 0 1 72 347 Tm
+(window.) Tj
+ET
+endstream
+endobj
+17 0 obj
+<< /Type /Page /Parent 3 0 R /MediaBox [0 0 595 842] /Resources << /Font << /F1 1 0 R /F2 2 0 R >> >> /Contents 16 0 R >>
+endobj
+18 0 obj
 << /Type /Catalog /Pages 3 0 R >>
 endobj
 xref
-0 13
+0 19
 0000000000 65535 f 
 0000000009 00000 n 
 0000000079 00000 n 
 0000000154 00000 n 
-0000000230 00000 n 
-0000002024 00000 n 
-0000002160 00000 n 
-0000003922 00000 n 
-0000004058 00000 n 
-0000005575 00000 n 
-0000005711 00000 n 
-0000007496 00000 n 
-0000007634 00000 n 
+0000000251 00000 n 
+0000002045 00000 n 
+0000002181 00000 n 
+0000003593 00000 n 
+0000003729 00000 n 
+0000005285 00000 n 
+0000005421 00000 n 
+0000007284 00000 n 
+0000007422 00000 n 
+0000010276 00000 n 
+0000010414 00000 n 
+0000013546 00000 n 
+0000013684 00000 n 
+0000015726 00000 n 
+0000015864 00000 n 
 trailer
-<< /Size 13 /Root 12 0 R >>
+<< /Size 19 /Root 18 0 R >>
 startxref
-7684
+15914
 %%EOF

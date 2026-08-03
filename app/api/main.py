@@ -7,6 +7,8 @@ from pathlib import Path
 from typing import Any
 
 from fastapi import FastAPI, WebSocket, WebSocketDisconnect
+from fastapi.responses import FileResponse
+from fastapi.staticfiles import StaticFiles
 
 from app.api.routes import admin, appointments, auth, chat
 
@@ -59,6 +61,17 @@ app.include_router(admin.router, prefix="/admin", tags=["admin"])
 @app.get("/health")
 def health_check():
     return {"status": "ok"}
+
+
+_STATIC_DIR = Path(__file__).resolve().parent / "static"
+
+
+@app.get("/")
+def serve_index():
+    return FileResponse(_STATIC_DIR / "index.html")
+
+
+app.mount("/static", StaticFiles(directory=_STATIC_DIR), name="static")
 
 
 # ---- WebSocket connection manager ----

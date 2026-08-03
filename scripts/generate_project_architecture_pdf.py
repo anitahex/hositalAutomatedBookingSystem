@@ -144,56 +144,39 @@ def build_page_one() -> str:
 def build_page_two() -> str:
     parts: list[str] = []
     parts.append(draw_text(72, 780, "Primary Runtime Flow", font="F2", size=16))
-
-    def box(x: int, y: int, w: int, h: int, label: str) -> list[str]:
-        return [
-            "0.8 w",
-            f"{x} {y} {w} {h} re S",
-            draw_text(x + 10, y + 15, label, font="F1", size=10),
-        ]
-
-    parts.extend(box(72, 690, 110, 42, "Frontend"))
-    parts.extend(box(212, 690, 125, 42, "POST /chat"))
-    parts.extend(box(367, 690, 122, 42, "run_patient_chat"))
-    parts.extend(box(519, 690, 110, 42, "Supervisor"))
-    parts.extend([
-        "0.8 w",
-        "182 711 m 212 711 l S",
-        "337 711 m 367 711 l S",
-        "489 711 m 519 711 l S",
-    ])
-
     text, _ = draw_multiline(
         72,
-        620,
-        "The supervisor first checks deterministic shortcuts such as profile questions, booking lookup, cancellation, end-chat, and direct booking. If none match, it falls back to the LLM router.",
-        size=10,
-        width=88,
-        line_gap=13,
+        742,
+        "Frontend -> POST /chat or /chat/stream -> run_patient_chat -> LangGraph supervisor -> specialist agent -> supervisor -> final response.",
+        size=11,
+        width=84,
+        line_gap=15,
     )
     parts.append(text)
-    text, _ = draw_multiline(
-        72,
-        590,
-        "After routing, the selected node updates GraphState and returns control to the supervisor until a final_response is produced or the graph reaches finish.",
-        size=10,
-        width=88,
-        line_gap=13,
-    )
-    parts.append(text)
-    parts.append(draw_text(72, 545, "Special Routes", font="F2", size=14))
-
-    specials = [
-        "Profile query -> finish with a direct response from patient_profile",
-        "Symptoms -> triage_router -> conversation_agent -> remedy_agent",
-        "Persisting symptoms -> medical_rag -> appointment_booker",
-        "Doctor/department request -> appointment_booker, or medical_rag first when the department is unknown",
-        "Booking lookup / cancellation / reschedule -> appointment_booker",
-        "End chat -> end_confirmation -> finish",
+    parts.append(draw_text(72, 690, "What The Supervisor Checks First", font="F2", size=14))
+    checks = [
+        "Profile and account questions",
+        "Chat end / close requests",
+        "Booking lookup, cancel, or reschedule requests",
+        "Direct booking requests",
+        "Symptom triage or medical routing",
     ]
-    y = 520
+    y = 665
+    for item in checks:
+        parts.append(draw_text(84, y, f"- {item}", size=11))
+        y -= 24
+    parts.append(draw_text(72, 530, "Special Routes", font="F2", size=14))
+    specials = [
+        "Profile query -> answer from patient_profile and bypass medical agents.",
+        "Symptoms -> triage_router -> conversation_agent -> remedy_agent.",
+        "Persisting symptoms -> medical_rag -> appointment_booker.",
+        "Unknown department -> medical_rag before booking.",
+        "Booking lookup, cancellation, reschedule -> appointment_booker.",
+        "End chat -> end_confirmation -> finish.",
+    ]
+    y = 505
     for item in specials:
-        block, y = draw_multiline(84, y, "- " + item, size=11, width=84, line_gap=14)
+        block, y = draw_multiline(84, y, "- " + item, size=11, width=84, line_gap=15)
         parts.append(block)
         y -= 4
     return "\n".join(parts)
@@ -202,7 +185,7 @@ def build_page_two() -> str:
 def build_page_three() -> str:
     parts: list[str] = []
     parts.append(draw_text(72, 780, "Agents and Responsibilities", font="F2", size=16))
-    y = 750
+    y = 748
     items = [
         "Supervisor: decides whether the message continues the current flow or diverts to a specialist.",
         "Triage router: extracts intent, symptoms, and severity from the latest message.",
@@ -212,17 +195,17 @@ def build_page_three() -> str:
         "Appointment booker: handles doctor selection, slot selection, booking confirmation, rescheduling, and cancellation.",
     ]
     for item in items:
-        block, y = draw_multiline(72, y, "- " + item, size=11, width=85, line_gap=14)
+        block, y = draw_multiline(72, y, "- " + item, size=11, width=78, line_gap=17)
         parts.append(block)
-        y -= 2
-    parts.append(draw_text(72, 610, "State That Drives Routing", font="F2", size=14))
+        y -= 8
+    parts.append(draw_text(72, 540, "State That Drives Routing", font="F2", size=14))
     state_line, _ = draw_multiline(
         72,
-        585,
+        515,
         "awaiting, intent, symptoms, severity, target_department, remedy_given, persisting, booking_active, confirmed_booking, confirmed_bookings, chat_closed, and patient_profile.",
         size=11,
-        width=85,
-        line_gap=15,
+        width=76,
+        line_gap=16,
     )
     parts.append(state_line)
     return "\n".join(parts)
@@ -231,7 +214,7 @@ def build_page_three() -> str:
 def build_page_four() -> str:
     parts: list[str] = []
     parts.append(draw_text(72, 780, "Important Bypass Scenarios", font="F2", size=16))
-    y = 750
+    y = 748
     bypasses = [
         "Chat already closed: run_patient_chat returns a closed-chat response immediately.",
         "User asks for profile info: the supervisor answers from patient_profile and skips the medical flow.",
@@ -241,21 +224,122 @@ def build_page_four() -> str:
         "Emergency severity: the remedy step is bypassed in favor of emergency guidance.",
     ]
     for item in bypasses:
-        block, y = draw_multiline(72, y, "- " + item, size=11, width=85, line_gap=14)
+        block, y = draw_multiline(72, y, "- " + item, size=11, width=78, line_gap=17)
         parts.append(block)
-        y -= 2
-    parts.append(draw_text(72, 585, "Data Stores and Supporting Services", font="F2", size=14))
+        y -= 8
+    parts.append(draw_text(72, 540, "Data Stores and Supporting Services", font="F2", size=14))
     services = [
         "Chat history and session summaries are persisted by app/services/chat_history.py and app/services/llm_usage.py.",
         "Appointments use app/services/appointments.py and the routes in app/api/routes/appointments.py.",
         "Medical department matching uses app/services/rag.py with vector search and reranking.",
         "Database schema and rebuild scripts live under app/db.",
     ]
-    y = 560
+    y = 515
     for item in services:
-        block, y = draw_multiline(72, y, "- " + item, size=11, width=85, line_gap=14)
+        block, y = draw_multiline(72, y, "- " + item, size=11, width=78, line_gap=17)
         parts.append(block)
-        y -= 2
+        y -= 8
+    return "\n".join(parts)
+
+
+def build_page_five() -> str:
+    parts: list[str] = []
+    parts.append(draw_text(72, 780, "API Surface and Functions Used", font="F2", size=16))
+    y = 748
+    api_items = [
+        "Auth API: POST /auth/signup, POST /auth/login, POST /auth/admin/login, GET /auth/me, PATCH /auth/profile.",
+        "Chat API: POST /chat, POST /chat/stream, GET /chat/history, POST /chat/upload, POST /chat/confirm-processing, GET /chat/document-status/{id}.",
+        "Appointment API: GET /appointments/departments, /doctors, /slots, /available, /upcoming, /previous, POST /book, /{id}/cancel, /{id}/reschedule, GET /{id}/reschedule-options.",
+        "Admin API: analytics, doctors, slots, holidays, and appointment dashboard endpoints under /admin.",
+        "WebSockets: /ws/status/{session_id} for document-ingestion progress and /chat/deepgram for live audio bridging.",
+    ]
+    for item in api_items:
+        block, y = draw_multiline(72, y, "- " + item, size=11, width=78, line_gap=17)
+        parts.append(block)
+        y -= 8
+    parts.append(draw_text(72, 540, "Main Functions", font="F2", size=14))
+    y = 515
+    functions = [
+        "app/api/main.py: FastAPI app creation, lifespan startup, health check, static file serving, and WebSocket connection manager.",
+        "app/api/routes/chat.py: _prepare_chat_state, _run_chat_with_usage, chat, chat_stream, upload_document, confirm_processing, document_status.",
+        "app/agents/graph.py: initialise_hybrid_memory, compact_hybrid_memory, arun_patient_chat, run_patient_chat.",
+        "app/agents/supervisor.py: supervisor_node, route_from_supervisor, continue_current_node, general_qa_node, routing heuristics.",
+        "app/agents/triage_router.py: triage_router_node and triage streaming helpers.",
+        "app/agents/conversation_agent.py: conversation_agent_node, conversation_agent_stream, finalize_conv_stream_state.",
+        "app/agents/remedy_agent.py: remedy_agent_node.",
+        "app/agents/medical_rag.py: medical_rag_node.",
+        "app/agents/appointment_booker.py: appointment_booker_node and booking-menu helpers.",
+        "app/agents/document_analyzer.py: document_analyzer_node.",
+    ]
+    for item in functions:
+        block, y = draw_multiline(72, y, "- " + item, size=10, width=78, line_gap=15)
+        parts.append(block)
+        y -= 8
+    return "\n".join(parts)
+
+
+def build_page_six() -> str:
+    parts: list[str] = []
+    parts.append(draw_text(72, 780, "How The App Handles 100000 Users", font="F2", size=16))
+    y = 748
+    items = [
+        "Short answer: not safely as-is. The code is structured well, but it is not yet production-hardened for 100000 truly simultaneous users.",
+        "Current bottlenecks: psycopg2.connect() creates a fresh blocking DB connection per call; the app does not show an async database pool; LLM calls and vector searches can become latency hotspots; document extraction is CPU-heavy; and LangGraph checkpoints are stored in SQLite, which is not ideal for massive concurrent writes.",
+        "What already helps: conversation memory is compacted, recent-history windows are small, static prompts are reused, booking lookups are limited, and session state is namespaced by patient_id + session_id to reduce leakage.",
+        "What would be needed for 100k scale: a real PostgreSQL connection pool, async DB access or worker isolation, Redis or another external session/cache layer, separate queues for document ingestion and long LLM jobs, horizontal stateless API replicas behind a load balancer, and rate limits with backpressure.",
+        "Critical booking safety: slot booking must stay transactional with unique constraints and row locks so two users cannot reserve the same slot at once.",
+        "Operational reality: 100000 simultaneous browser sessions is different from 100000 active LLM calls. The app can support many idle sessions only if chat state is kept out of process and expensive work is throttled.",
+    ]
+    for item in items:
+        block, y = draw_multiline(72, y, "- " + item, size=11, width=78, line_gap=17)
+        parts.append(block)
+        y -= 8
+    parts.append(draw_text(72, 540, "Recommended Hardening Plan", font="F2", size=14))
+    y = 515
+    plan = [
+        "1. Replace psycopg2 connect-per-call usage with a pooled async layer or a shared PgBouncer-backed pool.",
+        "2. Move SQLite checkpoints to PostgreSQL or Redis for multi-replica durability.",
+        "3. Put document analysis and any long-running LLM work on background workers.",
+        "4. Add Redis-backed rate limiting, per-user quotas, and request timeouts.",
+        "5. Cache department lookups, doctor lists, and common prompts where safe.",
+        "6. Load test booking writes separately from read-heavy chat traffic.",
+    ]
+    for item in plan:
+        block, y = draw_multiline(72, y, item, size=10, width=78, line_gap=15)
+        parts.append(block)
+        y -= 8
+    return "\n".join(parts)
+
+
+def build_page_seven() -> str:
+    parts: list[str] = []
+    parts.append(draw_text(72, 780, "Data Stores, Integrations, and Runtime Notes", font="F2", size=16))
+    y = 748
+    items = [
+        "PostgreSQL stores users, patient profiles, doctors, slots, holidays, bookings, chat history, admin data, token logs, and document catalog rows.",
+        "Qdrant stores the clinical knowledge base that powers department matching and medical RAG.",
+        "Azure OpenAI is used for chat generation, routing, summary generation, document relevance checks, and document extraction.",
+        "Azure Blob Storage stores staged uploads, vault files, and generated JSON summaries.",
+        "Sentence Transformers provide embeddings for vector search, and optional CrossEncoder reranking improves department matching.",
+        "Nginx serves the frontend and reverse-proxies API and WebSocket traffic.",
+    ]
+    for item in items:
+        block, y = draw_multiline(72, y, "- " + item, size=11, width=78, line_gap=17)
+        parts.append(block)
+        y -= 8
+    parts.append(draw_text(72, 540, "Key Runtime Safeguards", font="F2", size=14))
+    y = 515
+    guards = [
+        "JWT authentication is required for patient actions.",
+        "Profile data and bookings are reloaded from the database each turn instead of trusting client state.",
+        "Chat state uses patient_id plus session_id thread IDs to reduce cross-user leakage.",
+        "Document uploads are size-limited, MIME-filtered, and verified before staging.",
+        "Booking queries respect a 30-minute minimum lead time and a 7-day lookahead window.",
+    ]
+    for item in guards:
+        block, y = draw_multiline(72, y, "- " + item, size=11, width=78, line_gap=17)
+        parts.append(block)
+        y -= 8
     return "\n".join(parts)
 
 
@@ -265,6 +349,9 @@ def main() -> None:
     builder.add_page(build_page_two())
     builder.add_page(build_page_three())
     builder.add_page(build_page_four())
+    builder.add_page(build_page_five())
+    builder.add_page(build_page_six())
+    builder.add_page(build_page_seven())
     OUTPUT.write_bytes(builder.build())
     print(f"Wrote {OUTPUT}")
 

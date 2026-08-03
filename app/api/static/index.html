@@ -25,6 +25,7 @@
         <div class="auth-tabs" role="tablist" aria-label="Authentication mode">
           <button class="tab active" id="showLoginBtn" type="button">Login</button>
           <button class="tab" id="showSignupBtn" type="button">Sign up</button>
+          <button class="tab" id="showAdminBtn" type="button">Admin</button>
         </div>
 
         <form class="auth-form" id="loginForm">
@@ -66,7 +67,18 @@
           </section>
         </form>
 
+        <form class="auth-form hidden" id="adminLoginForm">
+          <p class="form-hint">Admin access is separate from patient accounts.</p>
+          <label>Email<input id="adminLoginEmail" type="email" autocomplete="email" required /></label>
+          <label>Password<input id="adminLoginPassword" type="password" autocomplete="current-password" required /></label>
+          <div class="form-actions">
+            <button class="secondary" id="adminBackBtn" type="button">Back</button>
+            <button type="submit">Admin login</button>
+          </div>
+        </form>
+
         <p class="auth-error" id="authMessage" role="alert"></p>
+        <p class="auth-error" id="adminAuthMessage" role="alert"></p>
       </div>
     </section>
 
@@ -115,6 +127,7 @@
             </span>
             <span class="nav-label">Records &amp; History</span>
           </button>
+
         </nav>
 
         <!-- Patient footer -->
@@ -206,12 +219,28 @@
               <form class="composer" id="chatForm">
                 <div class="composer-shell">
                   <div class="attach-pills" id="attachPills"></div>
+                    <div class="voice-transcript hidden" id="voiceTranscriptPreview" aria-live="polite"></div>
+                    <div class="voice-status hidden" id="voiceStatusPreview" aria-live="polite">
+                      <span class="voice-status-dot" aria-hidden="true"></span>
+                      <span class="voice-status-text"></span>
+                      <span class="voice-wave" aria-hidden="true">
+                        <span></span><span></span><span></span><span></span>
+                      </span>
+                    </div>
                   <div class="composer-row">
                     <label class="attach-label" for="documentUpload" title="Attach a medical document (PDF, JPG, PNG)">
                       <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="m21.44 11.05-9.19 9.19a6 6 0 0 1-8.49-8.49l8.57-8.57A4 4 0 1 1 18 8.84l-8.59 8.57a2 2 0 0 1-2.83-2.83l8.49-8.48"/></svg>
                       <input id="documentUpload" type="file" accept=".pdf,.jpg,.jpeg,.png,application/pdf,image/jpeg,image/png" />
                     </label>
                     <textarea id="messageInput" name="message" rows="1" autocomplete="off" placeholder="Describe symptoms, ask about your documents, or type a message…" required></textarea>
+                    <button type="button" class="voice-btn" id="voiceBtn" title="Speak a message" aria-label="Speak a message">
+                        <svg class="voice-btn-icon" width="18" height="18" viewBox="0 0 24 24" fill="none" aria-hidden="true">
+                          <path d="M12 15a3 3 0 0 0 3-3V6a3 3 0 0 0-6 0v6a3 3 0 0 0 3 3Z" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/>
+                          <path d="M19 11a7 7 0 0 1-14 0" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/>
+                          <path d="M12 18v4" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/>
+                          <path d="M8 22h8" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/>
+                        </svg>
+                    </button>
                     <button type="submit" class="send-btn">
                       <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M3.714 3.048a.498.498 0 0 0-.683.627l2.843 7.627a2 2 0 0 1 0 1.396l-2.842 7.627a.498.498 0 0 0 .682.627l18-8.5a.5.5 0 0 0 0-.904z"/><path d="M6 12h16"/></svg>
                       Send
@@ -439,6 +468,301 @@
           </div>
         </div>
 
+        <!-- ───────── PAGE: ADMIN ───────── -->
+        <div class="page-view hidden" id="pageAdmin">
+          <div class="page-content admin-page">
+            <div class="admin-shell">
+              <aside class="admin-sidebar" aria-label="Admin navigation">
+                <div class="admin-sidebar-brand">
+                  <div class="eyebrow-label text-primary">Admin panel</div>
+                  <h1 class="page-title">Hospital Admin</h1>
+                  <p class="page-subtitle">Manage appointments, doctors, slots, and holidays from one place.</p>
+                </div>
+
+                <nav class="admin-nav">
+                  <button class="admin-nav-item is-active" data-admin-view="overview" type="button">
+                    <span class="nav-icon" aria-hidden="true">
+                      <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="3" y="3" width="7" height="7" rx="1"/><rect x="14" y="3" width="7" height="7" rx="1"/><rect x="14" y="14" width="7" height="7" rx="1"/><rect x="3" y="14" width="7" height="7" rx="1"/></svg>
+                    </span>
+                    <span class="nav-label">Overview</span>
+                  </button>
+                  <button class="admin-nav-item" data-admin-view="appointments" type="button">
+                    <span class="nav-icon" aria-hidden="true">
+                      <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M8 2v4M16 2v4M3 10h18M5 4h14a2 2 0 0 1 2 2v14a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V6a2 2 0 0 1 2-2z"/></svg>
+                    </span>
+                    <span class="nav-label">Appointments</span>
+                  </button>
+                  <button class="admin-nav-item" data-admin-view="manage" type="button">
+                    <span class="nav-icon" aria-hidden="true">
+                      <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M3 6h18M3 12h18M3 18h18"/></svg>
+                    </span>
+                    <span class="nav-label">Doctors & Slots</span>
+                  </button>
+                  <button class="admin-nav-item" data-admin-view="inventory" type="button">
+                    <span class="nav-icon" aria-hidden="true">
+                      <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M4 7h16M4 12h16M4 17h16"/></svg>
+                    </span>
+                    <span class="nav-label">Inventory</span>
+                  </button>
+                </nav>
+
+                <div class="admin-sidebar-footer">
+                  <button class="secondary admin-icon-button" id="adminRefreshBtn" type="button" title="Refresh admin data" aria-label="Refresh admin data">
+                    <span class="admin-icon" aria-hidden="true">
+                      <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M21 12a9 9 0 1 1-3-6.7"/><polyline points="21 3 21 9 15 9"/></svg>
+                    </span>
+                    <span class="admin-action-label">Refresh</span>
+                  </button>
+                  <button class="secondary admin-icon-button" id="adminLogoutBtn" type="button" title="Logout admin" aria-label="Logout admin">
+                    <span class="admin-icon" aria-hidden="true">
+                      <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M9 21H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h4"/><polyline points="16 17 21 12 16 7"/><line x1="21" y1="12" x2="9" y2="12"/></svg>
+                    </span>
+                    <span class="admin-action-label">Logout</span>
+                  </button>
+                </div>
+              </aside>
+
+              <main class="admin-content">
+                <section class="admin-view-pane" id="adminOverviewPane">
+                  <header class="admin-content-header">
+                    <div>
+                      <div class="eyebrow-label text-primary">Admin overview</div>
+                      <h2 class="page-title">Appointment dashboard</h2>
+                      <p class="page-subtitle">Browse appointments on the right and switch sections from the left, just like the patient workspace.</p>
+                    </div>
+                  </header>
+                  <div class="admin-stats" id="adminStats">
+                    <article class="admin-stat-card">
+                      <div class="admin-stat-label">Appointments</div>
+                      <strong class="admin-stat-value" id="adminStatTotal">0</strong>
+                    </article>
+                    <article class="admin-stat-card">
+                      <div class="admin-stat-label">Upcoming</div>
+                      <strong class="admin-stat-value" id="adminStatUpcoming">0</strong>
+                    </article>
+                    <article class="admin-stat-card">
+                      <div class="admin-stat-label">Past</div>
+                      <strong class="admin-stat-value" id="adminStatPast">0</strong>
+                    </article>
+                    <article class="admin-stat-card">
+                      <div class="admin-stat-label">Doctors</div>
+                      <strong class="admin-stat-value" id="adminStatDoctors">0</strong>
+                    </article>
+                    <article class="admin-stat-card">
+                      <div class="admin-stat-label">Patients</div>
+                      <strong class="admin-stat-value" id="adminStatPatients">0</strong>
+                    </article>
+                  </div>
+                </section>
+
+                <section class="admin-view-pane hidden" id="adminAppointmentsPane">
+                  <div class="admin-list-header">
+                    <div>
+                      <div class="eyebrow-label">Appointment dashboard</div>
+                      <h2 class="panel-title">Appointments</h2>
+                    </div>
+                    <span class="panel-note" id="adminResultCount">0 appointments</span>
+                  </div>
+                  <section class="panel admin-filter-panel" aria-label="Appointment filters">
+                    <div class="admin-filter-grid">
+                      <label class="admin-field" for="adminDoctorFilter">
+                        <span>Doctor</span>
+                        <select id="adminDoctorFilter">
+                          <option value="">All doctors</option>
+                        </select>
+                      </label>
+                      <div class="admin-status-tabs tab-bar" role="tablist" aria-label="Appointment status filter">
+                        <button class="tab-btn is-active" data-admin-status="all" type="button" role="tab">All</button>
+                        <button class="tab-btn" data-admin-status="upcoming" type="button" role="tab">Upcoming</button>
+                        <button class="tab-btn" data-admin-status="past" type="button" role="tab">Past</button>
+                      </div>
+                    </div>
+                    <p class="panel-note" id="adminFilterHint">Choose a doctor to narrow the dashboard. The summary reflects the currently loaded scope.</p>
+                  </section>
+                  <div class="admin-modal-list-shell">
+                    <div class="appt-list admin-modal-list" id="adminAppointmentsList">
+                      <p class="panel-note">Loading appointment data...</p>
+                    </div>
+                    <div class="admin-pagination" aria-label="Appointment pagination">
+                      <button class="secondary compact" id="adminPrevPageBtn" type="button">Previous</button>
+                      <span class="panel-note" id="adminPageIndicator">Page 1 of 1</span>
+                      <button class="secondary compact" id="adminNextPageBtn" type="button">Next</button>
+                    </div>
+                  </div>
+                </section>
+
+                <section class="admin-view-pane hidden" id="adminManagePane">
+                  <div class="admin-list-header">
+                    <div>
+                      <div class="eyebrow-label">Admin management</div>
+                      <h2 class="panel-title">Doctors, slots, and holidays</h2>
+                    </div>
+                    <p class="panel-note">Use this area to add doctors, create slots, and block universal or doctor-specific holidays.</p>
+                  </div>
+                  <div class="admin-management-grid admin-management-grid--manage">
+                    <form class="glass-panel admin-form" id="adminDoctorForm">
+                      <div class="admin-form-head">
+                        <h3>Doctor registry</h3>
+                        <p class="panel-note">Create a new doctor or update an existing one.</p>
+                      </div>
+                      <div class="admin-departments" id="adminDepartmentsList"></div>
+                      <label class="admin-field">
+                        <span>Existing doctor</span>
+                        <select id="adminDoctorSelect">
+                          <option value="">Create new doctor</option>
+                        </select>
+                      </label>
+                      <label class="admin-field">
+                        <span>Name</span>
+                        <input id="adminDoctorName" type="text" placeholder="Dr. Name" required />
+                      </label>
+                      <label class="admin-field">
+                        <span>Department</span>
+                        <input id="adminDoctorDepartment" type="text" placeholder="Cardiology" required />
+                      </label>
+                      <label class="admin-field">
+                        <span>Experience years</span>
+                        <input id="adminDoctorExperience" type="number" min="0" max="80" value="0" required />
+                      </label>
+                      <label class="admin-checkline">
+                        <input id="adminDoctorActive" type="checkbox" checked />
+                        <span>Doctor is active</span>
+                      </label>
+                      <div class="form-actions">
+                        <button type="submit">Save doctor</button>
+                        <button class="secondary" id="adminDoctorResetBtn" type="button">Clear</button>
+                      </div>
+                      <p class="auth-error" id="adminDoctorMessage"></p>
+                    </form>
+
+                    <form class="glass-panel admin-form" id="adminSlotForm">
+                      <div class="admin-form-head">
+                        <h3>Slot management</h3>
+                        <p class="panel-note">Add or deactivate a specific time slot for a doctor.</p>
+                      </div>
+                      <label class="admin-field">
+                        <span>Doctor</span>
+                        <select id="adminSlotDoctorSelect"></select>
+                      </label>
+                      <label class="admin-field">
+                        <span>Working start time</span>
+                        <select id="adminSlotWorkStart" required></select>
+                      </label>
+                      <label class="admin-field">
+                        <span>Lunch break start</span>
+                        <select id="adminSlotLunchStart"></select>
+                      </label>
+                      <label class="admin-field">
+                        <span>Lunch break end</span>
+                        <select id="adminSlotLunchEnd"></select>
+                      </label>
+                      <label class="admin-field">
+                        <span>Working end time</span>
+                        <select id="adminSlotWorkEnd" required></select>
+                      </label>
+                      <label class="admin-field">
+                        <span>Start date</span>
+                        <input id="adminSlotStartDate" type="date" required />
+                      </label>
+                      <label class="admin-field">
+                        <span>End date</span>
+                        <input id="adminSlotEndDate" type="date" required />
+                      </label>
+                      <label class="admin-field">
+                        <span>Slot duration (minutes)</span>
+                        <input id="adminSlotDuration" type="number" min="5" max="480" step="5" value="30" required />
+                      </label>
+                      <label class="admin-checkline">
+                        <input id="adminSlotActive" type="checkbox" checked />
+                        <span>Generated slots are active</span>
+                      </label>
+                      <div class="form-actions">
+                        <button type="submit">Generate slots</button>
+                      </div>
+                      <p class="auth-error" id="adminSlotMessage"></p>
+                    </form>
+
+                    <form class="glass-panel admin-form" id="adminHolidayForm">
+                      <div class="admin-form-head">
+                        <h3>Holiday blocks</h3>
+                        <p class="panel-note">Block a single doctor or the whole hospital across a date range.</p>
+                      </div>
+                      <label class="admin-field">
+                        <span>Scope</span>
+                        <select id="adminHolidayScope">
+                          <option value="universal">Universal holiday</option>
+                          <option value="doctor">Doctor-specific holiday</option>
+                        </select>
+                      </label>
+                      <label class="admin-field">
+                        <span>Doctor</span>
+                        <select id="adminHolidayDoctorSelect"></select>
+                      </label>
+                      <label class="admin-field">
+                        <span>Start date</span>
+                        <input id="adminHolidayStart" type="date" required />
+                      </label>
+                      <label class="admin-field">
+                        <span>End date</span>
+                        <input id="adminHolidayEnd" type="date" required />
+                      </label>
+                      <label class="admin-field">
+                        <span>Reason</span>
+                        <input id="adminHolidayReason" type="text" placeholder="Annual leave / public holiday" />
+                      </label>
+                      <label class="admin-checkline">
+                        <input id="adminHolidayActive" type="checkbox" checked />
+                        <span>Holiday is active</span>
+                      </label>
+                      <div class="form-actions">
+                        <button type="submit">Add holiday</button>
+                      </div>
+                      <p class="auth-error" id="adminHolidayMessage"></p>
+                    </form>
+                  </div>
+                </section>
+
+                <section class="admin-view-pane hidden" id="adminInventoryPane">
+                  <div class="admin-list-header">
+                    <div>
+                      <div class="eyebrow-label">Admin inventory</div>
+                      <h2 class="panel-title">Doctors, slots, and holidays</h2>
+                    </div>
+                    <p class="panel-note">Use this area to review what is active right now.</p>
+                  </div>
+                  <div class="admin-management-grid admin-management-grid--inventory">
+                    <section class="glass-panel admin-list-panel">
+                      <div class="admin-form-head">
+                        <h3>Doctors</h3>
+                        <p class="panel-note">Active doctors, their departments, and current slot counts.</p>
+                      </div>
+                      <div class="admin-inline-list" id="adminDoctorsList"></div>
+                    </section>
+
+                    <section class="glass-panel admin-list-panel">
+                      <div class="admin-form-head">
+                        <h3>Slots</h3>
+                        <p class="panel-note">Scheduled availability pulled from appointment_slots.</p>
+                      </div>
+                      <div class="admin-inline-list" id="adminSlotsList"></div>
+                    </section>
+
+                    <section class="glass-panel admin-list-panel">
+                      <div class="admin-form-head">
+                        <h3>Holidays</h3>
+                        <p class="panel-note">Universal and doctor-specific blocks from schedule_holidays.</p>
+                      </div>
+                      <div class="admin-inline-list" id="adminHolidaysList"></div>
+                    </section>
+                  </div>
+                </section>
+              </main>
+            </div>
+            <div class="admin-toast hidden" id="adminToast" role="status" aria-live="polite"></div>
+
+          </div>
+        </div>
+
       </div><!-- .app-main -->
     </section><!-- .workspace -->
 
@@ -462,6 +786,7 @@
           dashboard: document.getElementById("pageDashboard"),
           appointments: document.getElementById("pageAppointments"),
           records: document.getElementById("pageRecords"),
+          admin: document.getElementById("pageAdmin"),
         };
 
         function navigate(page) {
@@ -474,6 +799,7 @@
           localStorage.setItem("activePage", page);
           if (page === "dashboard") syncDashboard();
           if (page === "appointments") syncAppointments();
+          if (page === "admin") syncAdmin();
         }
 
         document.querySelectorAll("[data-nav]").forEach(function (el) {
@@ -607,7 +933,7 @@
         // Restore last page after authentication check
         window.addEventListener("load", function () {
           var saved = localStorage.getItem("activePage") || "assistant";
-          if (document.body.classList.contains("authenticated")) {
+          if (document.body.classList.contains("authenticated") || document.body.classList.contains("admin-authenticated")) {
             navigate(saved);
           }
         });
