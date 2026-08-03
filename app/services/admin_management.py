@@ -270,15 +270,19 @@ def update_doctor(
     return get_doctor(doctor_id)
 
 
-def list_slots(doctor_id: str | None = None, limit: int = 500):
+def list_slots(doctor_id: str | None = None, limit: int = 500, upcoming_only: bool = True):
     with connect_db() as conn:
         ensure_booking_schema(conn)
         with conn.cursor() as cur:
-            params: list[object] = [limit]
-            where_sql = ""
+            conditions = []
+            params: list[object] = []
             if doctor_id:
-                where_sql = "WHERE s.doctor_id::text = %s"
-                params = [doctor_id, limit]
+                conditions.append("s.doctor_id::text = %s")
+                params.append(doctor_id)
+            if upcoming_only:
+                conditions.append("s.start_time >= NOW()")
+            where_sql = f"WHERE {' AND '.join(conditions)}" if conditions else ""
+            params.append(limit)
             cur.execute(
                 f"""
                 SELECT

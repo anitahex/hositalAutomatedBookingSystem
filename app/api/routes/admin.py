@@ -197,8 +197,8 @@ def admin_update_doctor(doctor_id: str, request: DoctorRequest, admin: dict = De
 
 
 @router.get("/slots")
-def admin_slots(doctor_id: str | None = None, admin: dict = Depends(current_admin)):
-    return {"slots": list_slots(doctor_id=doctor_id)}
+def admin_slots(doctor_id: str | None = None, upcoming_only: bool = True, admin: dict = Depends(current_admin)):
+    return {"slots": list_slots(doctor_id=doctor_id, upcoming_only=upcoming_only)}
 
 
 @router.post("/slots")
