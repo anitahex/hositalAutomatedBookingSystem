@@ -1241,6 +1241,14 @@ def appointment_booker_node(state: GraphState):
         return capture_symptom_follow_up(state)
 
     if awaiting in {"doctor_selection", "doctor_selection_retry_1", "doctor_selection_retry_2", "slot_selection", "slot_selection_retry_1", "slot_selection_retry_2"}:
+        # A bare number reply to a numbered list is unambiguous - resolve it
+        # deterministically instead of round-tripping through the LLM classifier,
+        # which occasionally fails to parse and would otherwise re-show the same menu.
+        if state.get("user_input", "").strip().isdigit():
+            if awaiting.startswith("doctor_selection"):
+                return ask_preferred_slot(state)
+            return book_preferred_slot(state)
+
         decision = classify_booking_menu_reply(state, awaiting)
 
         if decision and decision.action == "request_remedy":
