@@ -264,7 +264,7 @@ Use appropriate sections for the document type found.
 
 Rules:
 - Transcribe values EXACTLY as written; never invent values.
-- If illegible write: *Illegible in document*
+- For unclear handwriting, give your single best-effort reading of the full word/name rather than truncating it — mark low-confidence readings inline with (?), e.g. "Tab Oxyral (?)". Only write *Illegible in document* if truly nothing can be read at all, not merely because you are uncertain of a letter or two.
 - If the patient asked a specific question, add: ### Answer to Your Question
 - Always include the Recommended Specialist section last.
 - Use markdown tables for medications and lab values.
