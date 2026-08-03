@@ -122,7 +122,7 @@ async def gpt4o_relevance_check(
                 {"role": "system", "content": _RELEVANCE_SYSTEM},
                 {"role": "user", "content": user_content},
             ],
-            max_tokens=10,
+            max_completion_tokens=10,
             temperature=0,
         )
         raw = (response.choices[0].message.content or "").strip().upper()
@@ -178,7 +178,7 @@ async def gpt4o_structured_extraction(
                 {"role": "system", "content": _EXTRACTION_SYSTEM},
                 {"role": "user", "content": user_content},
             ],
-            max_tokens=1500,
+            max_completion_tokens=1500,
             temperature=0,
             response_format={"type": "json_object"},
         )
@@ -311,7 +311,7 @@ async def gpt4o_stream_analysis(
             {"role": "system", "content": _STREAM_FORMAT_SYSTEM},
             {"role": "user", "content": user_content},
         ],
-        max_tokens=2000,
+        max_completion_tokens=2000,
         temperature=0,
         stream=True,
     )
