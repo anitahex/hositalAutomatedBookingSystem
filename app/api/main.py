@@ -44,9 +44,18 @@ def _ensure_catalog_tables() -> None:
         logger.error("startup: could not create document catalog tables: %s", exc)
 
 
+def _ensure_bootstrap_admin() -> None:
+    try:
+        from app.services.admin_auth import ensure_bootstrap_admin
+        ensure_bootstrap_admin()
+    except Exception as exc:
+        logger.error("startup: admin bootstrap failed: %s", exc)
+
+
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     _ensure_catalog_tables()
+    _ensure_bootstrap_admin()
     yield
 
 

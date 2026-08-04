@@ -1,10 +1,14 @@
 from __future__ import annotations
 
+import logging
+import os
 from dataclasses import dataclass
 
 from app.db.connection import connect_db
-from app.services.passwords import verify_password
+from app.services.passwords import hash_password, verify_password
 from app.services.tokens import create_access_token
+
+logger = logging.getLogger(__name__)
 
 
 @dataclass(frozen=True)
@@ -65,6 +69,41 @@ def get_admin_account_by_email(email: str) -> AdminAccount | None:
         name=str(name),
         is_active=bool(is_active),
     )
+
+
+def ensure_bootstrap_admin() -> None:
+    """
+    Create the first admin account from ADMIN_EMAIL/ADMIN_PASSWORD/ADMIN_NAME
+    env vars, but ONLY if admin_accounts is completely empty. Never touches an
+    existing account - a redeploy with the same .env must not silently reset
+    a password that's since been changed through the app.
+    """
+    email = os.getenv("ADMIN_EMAIL", "").strip().lower()
+    password = os.getenv("ADMIN_PASSWORD", "")
+    name = os.getenv("ADMIN_NAME", "Admin").strip() or "Admin"
+
+    if not email or not password:
+        return
+
+    with connect_db() as conn:
+        ensure_admin_schema(conn)
+        with conn.cursor() as cur:
+            cur.execute("SELECT COUNT(*) FROM admin_accounts;")
+            (existing_count,) = cur.fetchone()
+
+            if existing_count > 0:
+                logger.info("startup: admin bootstrap skipped (%d admin account(s) already exist)", existing_count)
+                return
+
+            cur.execute(
+                """
+                INSERT INTO admin_accounts (email, password_hash, name, is_active)
+                VALUES (%s, %s, %s, TRUE);
+                """,
+                (email, hash_password(password), name),
+            )
+        conn.commit()
+    logger.info("startup: bootstrapped first admin account for %s", email)
 
 
 def authenticate_admin(email: str, password: str) -> dict | None:
