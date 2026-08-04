@@ -1,4 +1,0 @@
-services:
-  frontend:
-    ports: !override
-      - "8020:80"
