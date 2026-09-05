@@ -20,6 +20,7 @@ from app.services.admin_management import (
     update_doctor,
 )
 from app.services.appointments import ensure_booking_schema
+from app.services.doctor_auth import issue_invite
 
 
 router = APIRouter()
@@ -57,6 +58,14 @@ class HolidayRequest(BaseModel):
 
 class ToggleRequest(BaseModel):
     is_active: bool = True
+
+
+class DoctorInviteRequest(BaseModel):
+    email: str
+
+
+class DoctorResetInviteRequest(DoctorInviteRequest):
+    confirm_reset: bool = False
 
 
 def _clinical_summary_expression(cur) -> str:
@@ -194,6 +203,35 @@ def admin_update_doctor(doctor_id: str, request: DoctorRequest, admin: dict = De
     if not doctor:
         raise HTTPException(status_code=404, detail="Doctor not found.")
     return {"doctor": doctor}
+
+
+def _send_doctor_invite(doctor_id: str, email: str, *, reset: bool = False):
+    try:
+        issue_invite(doctor_id, email, reset=reset)
+    except PermissionError as exc:
+        raise HTTPException(status_code=409, detail=str(exc))
+    except ValueError as exc:
+        raise HTTPException(status_code=404, detail=str(exc))
+    except RuntimeError as exc:
+        raise HTTPException(status_code=503, detail="Doctor invite email delivery is not configured.")
+    return {"status": "reset_invite_sent" if reset else "invite_sent"}
+
+
+@router.post("/doctors/{doctor_id}/invite")
+def admin_invite_doctor(doctor_id: str, request: DoctorInviteRequest, admin: dict = Depends(current_admin)):
+    return _send_doctor_invite(doctor_id, request.email)
+
+
+@router.post("/doctors/{doctor_id}/resend-invite")
+def admin_resend_doctor_invite(doctor_id: str, request: DoctorInviteRequest, admin: dict = Depends(current_admin)):
+    return _send_doctor_invite(doctor_id, request.email)
+
+
+@router.post("/doctors/{doctor_id}/reset-invite")
+def admin_reset_doctor_invite(doctor_id: str, request: DoctorResetInviteRequest, admin: dict = Depends(current_admin)):
+    if not request.confirm_reset:
+        raise HTTPException(status_code=400, detail="confirm_reset must be true to reset an active doctor account.")
+    return _send_doctor_invite(doctor_id, request.email, reset=True)
 
 
 @router.get("/slots")

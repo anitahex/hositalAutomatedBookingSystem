@@ -3,6 +3,11 @@ uvicorn
 python-multipart>=0.0.9
 pydantic
 python-dotenv
+fasttext-wheel>=0.9.2
+numpy<2
+# fasttext-wheel 0.9.2 requires NumPy 1.x; keep the existing RAG stack compatible.
+scipy<1.14
+scikit-learn<1.6
 
 # Hugging Face — agents, routing, answer composition
 huggingface-hub
@@ -27,7 +32,7 @@ pillow
 # Vector DB — global clinical-reference RAG only
 qdrant-client
 
-# Azure OpenAI — ingestion path only (Guardrail 1 + Tier 2 extraction)
+# OpenAI API — ingestion path only (Guardrail 1 + Tier 2 extraction)
 openai>=1.0
 
 # Azure Blob Storage — vault + summary JSON
@@ -39,3 +44,5 @@ websockets
 
 # Testing
 pytest
+pyotp
+cryptography

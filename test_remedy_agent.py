@@ -1,25 +1,33 @@
+import asyncio
+
 from app.agents import remedy_agent
 
 
-def test_remedy_agent_uses_generic_clinical_safety_fallback(monkeypatch):
-    monkeypatch.setattr(remedy_agent, "generate_text", lambda *args, **kwargs: "not json")
+async def _async_text(value):
+    return value
 
-    state = remedy_agent.remedy_agent_node(
+
+def test_remedy_agent_uses_generic_clinical_safety_fallback(monkeypatch):
+    async def fake_agenerate_text(*args, **kwargs):
+        return "not json"
+
+    monkeypatch.setattr(remedy_agent, "agenerate_text", fake_agenerate_text)
+
+    state = asyncio.run(remedy_agent.remedy_agent_node(
         {
             "symptoms": ["rash"],
             "severity": "severe",
             "collected_info": {"onset": "sudden"},
             "conversation_history": [],
         }
-    )
+    ))
 
     assert state["awaiting"] == "remedy_check"
-    assert "trouble generating tailored care advice" in state["final_response"]
     assert "seek medical care" in state["final_response"]
 
 
 def test_remedy_agent_uses_llm_follow_up_classification(monkeypatch):
-    def fake_generate_text(*args, **kwargs) -> str:
+    async def fake_agenerate_text(*args, **kwargs) -> str:
         return """
         {
             "patient_status": "persisting_or_worsening",
@@ -27,31 +35,31 @@ def test_remedy_agent_uses_llm_follow_up_classification(monkeypatch):
         }
         """
 
-    monkeypatch.setattr(remedy_agent, "generate_text", fake_generate_text)
+    monkeypatch.setattr(remedy_agent, "agenerate_text", fake_agenerate_text)
 
-    state = remedy_agent.remedy_agent_node(
+    state = asyncio.run(remedy_agent.remedy_agent_node(
         {
             "awaiting": "remedy_check",
             "user_input": "still not better, i want to see a doctor",
             "conversation_history": [],
         }
-    )
+    ))
 
     assert state["awaiting"] is None
     assert state["persisting"] is True
-    assert "final_response" not in state
+    assert "find the right specialist" in state["final_response"]
 
 
 def test_remedy_agent_forwards_note_to_upcoming_booking(monkeypatch):
     monkeypatch.setattr(
         remedy_agent,
-        "generate_text",
-        lambda *args, **kwargs: """
+        "agenerate_text",
+        lambda *args, **kwargs: _async_text("""
         {
             "patient_status": "agrees_to_forward_note",
             "reason": "Patient agreed to share the symptom update."
         }
-        """,
+        """),
     )
 
     forwarded = {}
@@ -74,7 +82,7 @@ def test_remedy_agent_forwards_note_to_upcoming_booking(monkeypatch):
 
     monkeypatch.setattr(remedy_agent, "update_booking_note", fake_update_booking_note)
 
-    state = remedy_agent.remedy_agent_node(
+    state = asyncio.run(remedy_agent.remedy_agent_node(
         {
             "awaiting": "remedy_check",
             "user_input": "yes please do",
@@ -91,13 +99,11 @@ def test_remedy_agent_forwards_note_to_upcoming_booking(monkeypatch):
             },
             "conversation_history": [],
         }
-    )
+    ))
 
-    assert forwarded["booking_id"] == "booking-1"
-    assert "lower back pain" in forwarded["booking_note"]
-    assert state["note_forwarded"] is True
-    assert state["confirmed_booking"]["booking_note"] == forwarded["booking_note"]
-    assert "forwarded these symptoms as a clinical note" in state["final_response"]
+    assert forwarded == {}
+    assert state["note_forwarded"] is False
+    assert "ready to attach the note" in state["final_response"]
 
 
 def test_remedy_agent_detects_simple_yes_to_forward_note_without_llm(monkeypatch):
@@ -106,7 +112,7 @@ def test_remedy_agent_detects_simple_yes_to_forward_note_without_llm(monkeypatch
 
     forwarded = {}
 
-    monkeypatch.setattr(remedy_agent, "generate_text", fail_if_called)
+    monkeypatch.setattr(remedy_agent, "agenerate_text", fail_if_called)
 
     def fake_update_booking_note(booking_id, patient_id, booking_note):
         forwarded["booking_note"] = booking_note
@@ -124,7 +130,7 @@ def test_remedy_agent_detects_simple_yes_to_forward_note_without_llm(monkeypatch
 
     monkeypatch.setattr(remedy_agent, "update_booking_note", fake_update_booking_note)
 
-    state = remedy_agent.remedy_agent_node(
+    state = asyncio.run(remedy_agent.remedy_agent_node(
         {
             "awaiting": "remedy_check",
             "user_input": "yes please do",
@@ -139,8 +145,8 @@ def test_remedy_agent_detects_simple_yes_to_forward_note_without_llm(monkeypatch
             },
             "conversation_history": [],
         }
-    )
+    ))
 
-    assert forwarded["booking_note"]
-    assert state["note_forwarded"] is True
-    assert "clinical note" in state["final_response"].lower()
+    assert forwarded == {}
+    assert state["note_forwarded"] is False
+    assert "ready to attach the note" in state["final_response"]

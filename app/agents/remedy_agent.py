@@ -8,6 +8,7 @@ from app.agents.intake_utils import compact_booking_summary, compact_fact_summar
 from app.inference.llm import agenerate_text
 from app.services.appointments import update_booking_note
 from app.services.memory_policy import get_memory_policy
+from app.services.language import language_prompt_context
 
 parser = PydanticOutputParser(pydantic_object=RemedyResponse)
 follow_up_parser = PydanticOutputParser(pydantic_object=RemedyFollowUpDecision)
@@ -195,7 +196,7 @@ Collected facts: {compact_fact_summary(state.get('collected_data') or state.get(
 Previous remedy: {state.get('remedy_text') or 'None'}
 Latest reply: {user_text}"""
     raw_output = await agenerate_text(
-        system_prompt=STATIC_FOLLOWUP_PROMPT,
+        system_prompt=STATIC_FOLLOWUP_PROMPT + language_prompt_context(state),
         user_prompt=dynamic_user_prompt,
         node_name="remedy_agent",
         chat_summary=state.get("chat_summary"),
@@ -253,7 +254,7 @@ Upcoming bookings: {compact_booking_summary(state.get('upcoming_bookings') or st
 Current symptoms: {', '.join(state.get('symptoms') or []) or 'None'}
 Collected facts: {compact_fact_summary(state.get('collected_data') or state.get('collected_info'))}"""
     raw_output = await agenerate_text(
-        system_prompt=STATIC_REMEDY_PROMPT,
+        system_prompt=STATIC_REMEDY_PROMPT + language_prompt_context(state),
         user_prompt=dynamic_user_prompt,
         node_name="remedy_agent",
         chat_summary=state.get("chat_summary"),

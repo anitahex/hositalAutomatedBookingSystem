@@ -3,28 +3,26 @@ import os
 import time
 
 from dotenv import load_dotenv
-from openai import AzureOpenAI, AsyncAzureOpenAI
+from openai import OpenAI, AsyncOpenAI
 
 from app.services.llm_usage import record_llm_usage
 
 load_dotenv()
 
-# ---- Azure OpenAI config ----
-AZURE_ENDPOINT = os.getenv("AZURE_CONV_ENDPOINT") or os.getenv("AZURE_OPENAI_ENDPOINT", "")
-AZURE_API_KEY = os.getenv("AZURE_CONV_API_KEY") or os.getenv("AZURE_OPENAI_API_KEY", "")
-AZURE_API_VERSION = os.getenv("AZURE_CONV_API_VERSION") or os.getenv("AZURE_OPENAI_API_VERSION", "2024-07-18")
+# ---- OpenAI API config ----
+OPENAI_API_KEY = os.getenv("OPENAI_API_KEY", "")
 
-CONV_DEPLOYMENT = os.getenv("AZURE_CONV_DEPLOYMENT", "gpt-4o")
-ROUTER_DEPLOYMENT = os.getenv("AZURE_ROUTER_DEPLOYMENT", "gpt-4o")
-SUMMARY_DEPLOYMENT = os.getenv("AZURE_SUMMARY_DEPLOYMENT", "gpt-4o")
-VISION_DEPLOYMENT = os.getenv("AZURE_VISION_DEPLOYMENT", "gpt-4o")
+CONV_MODEL = os.getenv("OPENAI_MODEL", os.getenv("OPENAI_CONV_MODEL", "gpt-4o"))
+ROUTER_MODEL = os.getenv("OPENAI_ROUTER_MODEL", CONV_MODEL)
+SUMMARY_MODEL = os.getenv("OPENAI_SUMMARY_MODEL", CONV_MODEL)
+VISION_MODEL = os.getenv("OPENAI_VISION_MODEL", CONV_MODEL)
 
-MAX_TOKENS = int(os.getenv("AZURE_MAX_TOKENS", "1024"))
-ROUTER_MAX_TOKENS = int(os.getenv("AZURE_ROUTER_MAX_TOKENS", "512"))
-SUMMARY_MAX_TOKENS = int(os.getenv("AZURE_SUMMARY_MAX_TOKENS", "512"))
-PROMPT_WINDOW_TURNS = int(os.getenv("AZURE_PROMPT_WINDOW_TURNS", "2"))
+MAX_TOKENS = int(os.getenv("OPENAI_MAX_TOKENS", "1024"))
+ROUTER_MAX_TOKENS = int(os.getenv("OPENAI_ROUTER_MAX_TOKENS", "512"))
+SUMMARY_MAX_TOKENS = int(os.getenv("OPENAI_SUMMARY_MAX_TOKENS", "512"))
+PROMPT_WINDOW_TURNS = int(os.getenv("OPENAI_PROMPT_WINDOW_TURNS", "2"))
 SYSTEM_PROMPT = os.getenv(
-    "AZURE_SYSTEM_PROMPT",
+    "OPENAI_SYSTEM_PROMPT",
     "You are a clinical AI assistant for a hospital triage and intake system. You are knowledgeable about medical symptoms, anatomy, and appropriate clinical referrals. Always prioritize patient safety. Provide clear, evidence-based guidance and always recommend professional medical evaluation when appropriate.",
 )
 
@@ -35,23 +33,28 @@ HF_SUMMARY_MAX_TOKENS = SUMMARY_MAX_TOKENS
 HF_PROMPT_WINDOW_TURNS = PROMPT_WINDOW_TURNS
 HF_SYSTEM_PROMPT = SYSTEM_PROMPT
 
-_TIMEOUT = float(os.getenv("AZURE_TIMEOUT_SECONDS", "120"))
+_TIMEOUT = float(os.getenv("OPENAI_TIMEOUT_SECONDS", "120"))
 
-_sync_client: AzureOpenAI | None = None
-_async_client: AsyncAzureOpenAI | None = None
-if AZURE_ENDPOINT and AZURE_API_KEY:
-    _sync_client = AzureOpenAI(
-        azure_endpoint=AZURE_ENDPOINT,
-        api_key=AZURE_API_KEY,
-        api_version=AZURE_API_VERSION,
-        timeout=_TIMEOUT,
-    )
-    _async_client = AsyncAzureOpenAI(
-        azure_endpoint=AZURE_ENDPOINT,
-        api_key=AZURE_API_KEY,
-        api_version=AZURE_API_VERSION,
-        timeout=_TIMEOUT,
-    )
+_sync_client: OpenAI | None = None
+_async_client: AsyncOpenAI | None = None
+if OPENAI_API_KEY:
+    _sync_client = OpenAI(api_key=OPENAI_API_KEY, timeout=_TIMEOUT)
+    _async_client = AsyncOpenAI(api_key=OPENAI_API_KEY, timeout=_TIMEOUT)
+
+
+def _completion_options(model: str, *, max_tokens: int, temperature: float, stream: bool = False) -> dict:
+    """Build OpenAI options compatible with reasoning models.
+
+    The configured gpt-5.6 reasoning models reject custom temperature values
+    and only accept the API default. Older chat/vision models retain the
+    existing temperature behavior.
+    """
+    options = {"max_completion_tokens": max_tokens}
+    if not str(model).lower().startswith("gpt-5"):
+        options["temperature"] = temperature
+    if stream:
+        options["stream"] = True
+    return options
 
 
 def _trim_chat_history(chat_history: list[dict] | None, max_patient_turns: int | None = None) -> list[dict]:
@@ -73,7 +76,7 @@ def _trim_chat_history(chat_history: list[dict] | None, max_patient_turns: int |
 
 
 def _chat_completion(
-    client: AzureOpenAI,
+    client: OpenAI,
     system_prompt: str,
     user_prompt: str,
     *,
@@ -116,8 +119,7 @@ def _chat_completion(
         response = client.chat.completions.create(
             model=deployment,
             messages=messages,
-            max_completion_tokens=max_tokens,
-            temperature=temperature,
+            **_completion_options(deployment, max_tokens=max_tokens, temperature=temperature),
         )
         content = response.choices[0].message.content
         if isinstance(content, list):
@@ -147,7 +149,7 @@ def _chat_completion(
 
 
 async def _achat_completion(
-    client: AsyncAzureOpenAI,
+    client: AsyncOpenAI,
     system_prompt: str,
     user_prompt: str,
     *,
@@ -190,8 +192,7 @@ async def _achat_completion(
         response = await client.chat.completions.create(
             model=deployment,
             messages=messages,
-            max_completion_tokens=max_tokens,
-            temperature=temperature,
+            **_completion_options(deployment, max_tokens=max_tokens, temperature=temperature),
         )
         content = response.choices[0].message.content
         if isinstance(content, list):
@@ -237,7 +238,7 @@ def _build_multimodal_messages(system_prompt: str, user_parts: list[dict]) -> li
 
 
 def _multimodal_completion(
-    client: AzureOpenAI,
+    client: OpenAI,
     messages: list[dict],
     *,
     deployment: str,
@@ -260,8 +261,7 @@ def _multimodal_completion(
         response = client.chat.completions.create(
             model=deployment,
             messages=messages,
-            max_completion_tokens=max_tokens,
-            temperature=temperature,
+            **_completion_options(deployment, max_tokens=max_tokens, temperature=temperature),
         )
         content = _normalize_completion_content(response.choices[0].message.content)
         if not content:
@@ -285,7 +285,7 @@ def _multimodal_completion(
 
 
 async def _amultimodal_completion(
-    client: AsyncAzureOpenAI,
+    client: AsyncOpenAI,
     messages: list[dict],
     *,
     deployment: str,
@@ -308,8 +308,7 @@ async def _amultimodal_completion(
         response = await client.chat.completions.create(
             model=deployment,
             messages=messages,
-            max_completion_tokens=max_tokens,
-            temperature=temperature,
+            **_completion_options(deployment, max_tokens=max_tokens, temperature=temperature),
         )
         content = _normalize_completion_content(response.choices[0].message.content)
         if not content:
@@ -346,12 +345,12 @@ def generate_text(
 ) -> str:
     try:
         if not _sync_client:
-            raise RuntimeError("Azure OpenAI client is not configured.")
+            raise RuntimeError("OpenAI client is not configured.")
         return _chat_completion(
             _sync_client,
             system_prompt=system_prompt,
             user_prompt=user_prompt,
-            deployment=CONV_DEPLOYMENT,
+            deployment=CONV_MODEL,
             max_tokens=MAX_TOKENS,
             temperature=0.1,
             call_type="generation",
@@ -364,7 +363,7 @@ def generate_text(
             chat_session_id=chat_session_id,
         )
     except Exception as exc:
-        print(f"LLM call failed for {CONV_DEPLOYMENT}: {exc}")
+        print(f"LLM call failed for {CONV_MODEL}: {exc}")
         return _local_fallback(system_prompt, user_prompt)
 
 
@@ -382,12 +381,12 @@ async def agenerate_text(
 ) -> str:
     try:
         if not _async_client:
-            raise RuntimeError("Azure OpenAI async client is not configured.")
+            raise RuntimeError("OpenAI async client is not configured.")
         return await _achat_completion(
             _async_client,
             system_prompt=system_prompt,
             user_prompt=user_prompt,
-            deployment=CONV_DEPLOYMENT,
+            deployment=CONV_MODEL,
             max_tokens=MAX_TOKENS,
             temperature=0.1,
             call_type="generation",
@@ -400,7 +399,7 @@ async def agenerate_text(
             chat_session_id=chat_session_id,
         )
     except Exception as exc:
-        print(f"Async LLM call failed for {CONV_DEPLOYMENT}: {exc}")
+        print(f"Async LLM call failed for {CONV_MODEL}: {exc}")
         return _local_fallback(system_prompt, user_prompt)
 
 
@@ -417,7 +416,7 @@ async def astream_text(
     chat_session_id: str | None = None,
 ):
     if not _async_client:
-        raise RuntimeError("Azure OpenAI async client is not configured.")
+        raise RuntimeError("OpenAI async client is not configured.")
 
     messages = [{"role": "system", "content": system_prompt}]
     if include_history and chat_history:
@@ -434,15 +433,13 @@ async def astream_text(
     messages.append({"role": "user", "content": user_prompt})
 
     print(f"--- [LLM STREAM: {node_name.upper()}] ---")
-    print(json.dumps({"model": CONV_DEPLOYMENT, "messages": messages}, ensure_ascii=False, indent=2))
+    print(json.dumps({"model": CONV_MODEL, "messages": messages}, ensure_ascii=False, indent=2))
 
     try:
         stream = await _async_client.chat.completions.create(
-            model=CONV_DEPLOYMENT,
+            model=CONV_MODEL,
             messages=messages,
-            max_completion_tokens=MAX_TOKENS,
-            temperature=0.1,
-            stream=True,
+            **_completion_options(CONV_MODEL, max_tokens=MAX_TOKENS, temperature=0.1, stream=True),
         )
         async for chunk in stream:
             if chunk.choices:
@@ -450,13 +447,13 @@ async def astream_text(
                 if delta:
                     yield delta
     except Exception as exc:
-        print(f"astream_text failed for {CONV_DEPLOYMENT}, falling back to full response: {exc}")
+        print(f"astream_text failed for {CONV_MODEL}, falling back to full response: {exc}")
         try:
             fallback = await _achat_completion(
                 _async_client,
                 system_prompt=system_prompt,
                 user_prompt=user_prompt,
-                deployment=CONV_DEPLOYMENT,
+                deployment=CONV_MODEL,
                 max_tokens=MAX_TOKENS,
                 temperature=0.1,
                 call_type="stream_fallback",
@@ -486,12 +483,12 @@ def generate_multimodal_text(
 ) -> str:
     try:
         if not _sync_client:
-            raise RuntimeError("Azure OpenAI client is not configured.")
+            raise RuntimeError("OpenAI client is not configured.")
         messages = _build_multimodal_messages(system_prompt, user_parts)
         return _multimodal_completion(
             _sync_client,
             messages,
-            deployment=VISION_DEPLOYMENT,
+            deployment=VISION_MODEL,
             max_tokens=max_tokens,
             temperature=temperature,
             call_type="vision",
@@ -500,7 +497,7 @@ def generate_multimodal_text(
             chat_session_id=chat_session_id,
         )
     except Exception as exc:
-        print(f"Vision LLM call failed for {VISION_DEPLOYMENT}: {exc}")
+        print(f"Vision LLM call failed for {VISION_MODEL}: {exc}")
         return _local_fallback(system_prompt, json.dumps(user_parts, ensure_ascii=False))
 
 
@@ -516,12 +513,12 @@ async def agenerate_multimodal_text(
 ) -> str:
     try:
         if not _async_client:
-            raise RuntimeError("Azure OpenAI async client is not configured.")
+            raise RuntimeError("OpenAI async client is not configured.")
         messages = _build_multimodal_messages(system_prompt, user_parts)
         return await _amultimodal_completion(
             _async_client,
             messages,
-            deployment=VISION_DEPLOYMENT,
+            deployment=VISION_MODEL,
             max_tokens=max_tokens,
             temperature=temperature,
             call_type="vision",
@@ -530,7 +527,7 @@ async def agenerate_multimodal_text(
             chat_session_id=chat_session_id,
         )
     except Exception as exc:
-        print(f"Async vision LLM call failed for {VISION_DEPLOYMENT}: {exc}")
+        print(f"Async vision LLM call failed for {VISION_MODEL}: {exc}")
         return _local_fallback(system_prompt, json.dumps(user_parts, ensure_ascii=False))
 
 
@@ -549,12 +546,12 @@ def generate_router_text(
 ) -> str:
     try:
         if not _sync_client:
-            raise RuntimeError("Azure OpenAI client is not configured.")
+            raise RuntimeError("OpenAI client is not configured.")
         return _chat_completion(
             _sync_client,
             system_prompt=system_prompt,
             user_prompt=user_prompt,
-            deployment=ROUTER_DEPLOYMENT,
+            deployment=ROUTER_MODEL,
             max_tokens=ROUTER_MAX_TOKENS,
             temperature=0,
             call_type="router",
@@ -567,7 +564,7 @@ def generate_router_text(
             chat_session_id=chat_session_id,
         )
     except Exception as exc:
-        print(f"Router LLM call failed for {ROUTER_DEPLOYMENT}: {exc}")
+        print(f"Router LLM call failed for {ROUTER_MODEL}: {exc}")
         if raise_on_error:
             raise
         return _local_fallback(system_prompt, user_prompt)
@@ -588,12 +585,12 @@ async def agenerate_router_text(
 ) -> str:
     try:
         if not _async_client:
-            raise RuntimeError("Azure OpenAI async client is not configured.")
+            raise RuntimeError("OpenAI async client is not configured.")
         return await _achat_completion(
             _async_client,
             system_prompt=system_prompt,
             user_prompt=user_prompt,
-            deployment=ROUTER_DEPLOYMENT,
+            deployment=ROUTER_MODEL,
             max_tokens=ROUTER_MAX_TOKENS,
             temperature=0,
             call_type="router",
@@ -606,7 +603,7 @@ async def agenerate_router_text(
             chat_session_id=chat_session_id,
         )
     except Exception as exc:
-        print(f"Async router LLM call failed for {ROUTER_DEPLOYMENT}: {exc}")
+        print(f"Async router LLM call failed for {ROUTER_MODEL}: {exc}")
         if raise_on_error:
             raise
         return _local_fallback(system_prompt, user_prompt)
@@ -625,12 +622,12 @@ def summarize_chat_history(
 ) -> str:
     try:
         if not _sync_client:
-            raise RuntimeError("Azure OpenAI client is not configured.")
+            raise RuntimeError("OpenAI client is not configured.")
         return _chat_completion(
             _sync_client,
             system_prompt=SYSTEM_PROMPT,
             user_prompt=prompt,
-            deployment=SUMMARY_DEPLOYMENT,
+            deployment=SUMMARY_MODEL,
             max_tokens=SUMMARY_MAX_TOKENS,
             temperature=0,
             call_type="summary",
@@ -643,7 +640,7 @@ def summarize_chat_history(
             chat_session_id=chat_session_id,
         )
     except Exception as exc:
-        print(f"Summary LLM call failed for {SUMMARY_DEPLOYMENT}: {exc}")
+        print(f"Summary LLM call failed for {SUMMARY_MODEL}: {exc}")
         return chat_summary or ""
 
 
@@ -660,12 +657,12 @@ async def asummarize_chat_history(
 ) -> str:
     try:
         if not _async_client:
-            raise RuntimeError("Azure OpenAI async client is not configured.")
+            raise RuntimeError("OpenAI async client is not configured.")
         return await _achat_completion(
             _async_client,
             system_prompt=SYSTEM_PROMPT,
             user_prompt=prompt,
-            deployment=SUMMARY_DEPLOYMENT,
+            deployment=SUMMARY_MODEL,
             max_tokens=SUMMARY_MAX_TOKENS,
             temperature=0,
             call_type="summary",
@@ -678,7 +675,7 @@ async def asummarize_chat_history(
             chat_session_id=chat_session_id,
         )
     except Exception as exc:
-        print(f"Async summary LLM call failed for {SUMMARY_DEPLOYMENT}: {exc}")
+        print(f"Async summary LLM call failed for {SUMMARY_MODEL}: {exc}")
         return chat_summary or ""
 
 

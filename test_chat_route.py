@@ -9,7 +9,7 @@ def test_chat_route_respects_explicit_empty_conversation_history(monkeypatch):
     def fail_if_loaded(patient_id):
         raise AssertionError("Saved chat history should not load for a reset chat.")
 
-    def fake_run_patient_chat(user_input, patient_id=None, state=None):
+    async def fake_arun_patient_chat(user_input, patient_id=None, state=None):
         assert state["conversation_history"] == []
         return {
             "conversation_history": [{"role": "patient", "text": user_input}],
@@ -26,7 +26,7 @@ def test_chat_route_respects_explicit_empty_conversation_history(monkeypatch):
         lambda patient_id, messages, chat_session_id=None: None,
     )
     monkeypatch.setattr(chat_route, "persist_chat_session_memory", lambda **kwargs: None)
-    monkeypatch.setattr(chat_route, "run_patient_chat", fake_run_patient_chat)
+    monkeypatch.setattr(chat_route, "arun_patient_chat", fake_arun_patient_chat)
 
     response = chat_route.chat(
         chat_route.ChatRequest(message="chest pain", state={"conversation_history": []}),

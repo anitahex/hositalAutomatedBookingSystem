@@ -9,6 +9,8 @@ from app.agents.state import GraphState
 from app.agents.intake_utils import compact_booking_summary, compact_fact_summary, compact_state_summary
 from app.inference.llm import generate_router_text, generate_text
 from app.services.appointments import CANONICAL_DEPARTMENTS, DEPARTMENT_ALIASES, normalize_department_name, update_booking_note
+from app.services.language import language_prompt_context
+from app.services.patient_text import is_localized_choice, patient_message
 
 _TEMPORAL_TERMS = frozenset({
     "today", "tonight", "this morning", "this afternoon", "this evening",
@@ -200,9 +202,27 @@ def _latest_booking(state: GraphState) -> dict | None:
     return None
 
 
+def _report_forwarding_booking(state: GraphState) -> dict | None:
+    """Return the appointment named by the report-consent prompt."""
+    booking_id = str(state.get("report_forwarding_booking_id") or "").strip()
+    if booking_id:
+        for source in (
+            state.get("upcoming_bookings"),
+            state.get("confirmed_bookings"),
+            state.get("active_appointments"),
+        ):
+            for booking in source or []:
+                if isinstance(booking, dict) and str(booking.get("booking_id") or "") == booking_id:
+                    return booking
+        confirmed = state.get("confirmed_booking")
+        if isinstance(confirmed, dict) and str(confirmed.get("booking_id") or "") == booking_id:
+            return confirmed
+    return _latest_booking(state)
+
+
 def _is_affirmative(text: str) -> bool:
     lowered = " ".join((text or "").lower().replace("'", "").split())
-    return lowered in {
+    return is_localized_choice(lowered, "yes") or lowered in {
         "yes",
         "y",
         "yeah",
@@ -220,7 +240,7 @@ def _is_affirmative(text: str) -> bool:
 
 def _is_negative(text: str) -> bool:
     lowered = " ".join((text or "").lower().replace("'", "").split())
-    return lowered in {"no", "nope", "nah", "not now", "no thanks", "no thank you"} or any(
+    return is_localized_choice(lowered, "no") or lowered in {"no", "nope", "nah", "not now", "no thanks", "no thank you"} or any(
         phrase in lowered for phrase in ("not right now", "maybe later", "no need", "dont need", "do not need")
     )
 
@@ -456,17 +476,14 @@ def _heuristic_supervisor_route(state: GraphState) -> dict | None:
             return _route(
                 "finish",
                 awaiting=None,
-                final_response=(
-                    "No problem. If you change your mind or feel worse, feel free to start a new chat. "
-                    "Take care and rest well!"
-                ),
+                final_response=patient_message(state, "booking_declined"),
             )
         if awaiting == "booking_decision":
             # Ambiguous reply — re-ask
             return _route(
                 "finish",
                 awaiting="booking_decision",
-                final_response="Would you like me to find available appointment slots for you? (yes / no)",
+                final_response=patient_message(state, "booking_prompt"),
             )
 
     if awaiting == "conversation":
@@ -677,7 +694,9 @@ def _generate_clinical_note(state: GraphState, user_text: str | None = None) -> 
 
     try:
         return generate_text(
-            system_prompt=_CLINICAL_NOTE_PROMPT,
+            # This is an internal doctor-facing artifact. It must remain in
+            # English even when the patient-facing conversation is localized.
+            system_prompt=_CLINICAL_NOTE_PROMPT + "\n\nIMPORTANT: Return this clinical note in English only. Do not translate it to the patient's active language.",
             user_prompt=user_prompt,
             node_name="supervisor_clinical_note",
             chat_summary=state.get("chat_summary"),
@@ -827,7 +846,7 @@ def _generate_supervisor_decision(state: GraphState) -> CombinedSupervisorDecisi
 Latest user message: {user_input_with_context}"""
 
     raw_output = generate_router_text(
-        system_prompt=STATIC_SUPERVISOR_PROMPT,
+        system_prompt=STATIC_SUPERVISOR_PROMPT + language_prompt_context(state),
         user_prompt=dynamic_user_prompt,
         node_name="supervisor",
         chat_history=_current_messages(state),
@@ -959,7 +978,7 @@ def continue_current_node(state: GraphState):
         }
 
     if awaiting == "report_forwarding_decision":
-        booking = _latest_booking(state)
+        booking = _report_forwarding_booking(state)
         if not booking:
             response = "I could not find your appointment to attach the report to."
             history.append({"role": "assistant", "text": response})
@@ -1021,6 +1040,7 @@ def continue_current_node(state: GraphState):
             return _sync_state_aliases(
                 {
                     "awaiting": "end_confirmation",
+                    "report_forwarding_booking_id": None,
                     "note_forwarded": True,
                     "conversation_history": history,
                     "messages": history[-10:],
@@ -1097,8 +1117,10 @@ def continue_current_node(state: GraphState):
         if not synced_bookings:
             synced_bookings = [updated_booking]
 
+        doctor_name = updated_booking.get("doctor") or updated_booking.get("doctor_name") or "your doctor"
+        appointment_time = updated_booking.get("time") or updated_booking.get("start_time") or "your appointment"
         response = (
-            f"I've forwarded the note to {updated_booking['doctor']} for your upcoming appointment on {updated_booking['time']}."
+            f"I've forwarded the note to {doctor_name} for your upcoming appointment on {appointment_time}."
         )
         history.append({"role": "assistant", "text": response})
         return _sync_state_aliases(
@@ -1130,7 +1152,7 @@ Answer the user's hospital-related question clearly, safely, and concisely. If t
         system_prompt=(
             "You are a helpful hospital assistant answering general questions, policies, and simple medical explanations. "
             "Be careful, concise, and do not invent facts."
-        ),
+        ) + language_prompt_context(state),
         user_prompt=dynamic_user_prompt,
         node_name="general_qa",
         chat_history=history,
@@ -1163,6 +1185,9 @@ def supervisor_node(state: GraphState):
     awaiting = state.get("awaiting")
     supervisor_checked = state.get("supervisor_checked_input")
     print(f"[SUPERVISOR_NODE] awaiting={awaiting}, supervisor_checked={supervisor_checked}")
+
+    if state.get("next_agent") == "finish" and state.get("language_control_response"):
+        return _route("finish", final_response=state["language_control_response"], awaiting=None)
 
     if supervisor_checked:
         route = _fallback_route_after_node(state)

@@ -1,0 +1,309 @@
+from __future__ import annotations
+
+import hashlib
+import json
+import os
+import secrets
+import smtplib
+import time
+from collections import defaultdict, deque
+from datetime import datetime, timedelta, timezone
+from email.message import EmailMessage
+from threading import Lock
+from uuid import UUID
+
+import pyotp
+from cryptography.fernet import Fernet, InvalidToken
+
+from app.db.connection import connect_db
+from app.services.passwords import hash_password, verify_password
+from app.services.users import validate_password
+from app.services.account_registry import ensure_registry_schema, reserve_email
+
+
+INVITE_TTL = timedelta(hours=48)
+LOCKOUT_THRESHOLD = 5
+LOCKOUT_DURATION = timedelta(minutes=30)
+TOTP_INTERVAL = 30
+_rate_lock = Lock()
+_rate_windows: dict[str, deque[float]] = defaultdict(deque)
+
+
+def ensure_doctor_auth_schema(conn) -> None:
+    with conn.cursor() as cur:
+        cur.execute("CREATE EXTENSION IF NOT EXISTS pgcrypto;")
+        cur.execute("""
+            CREATE TABLE IF NOT EXISTS doctor_accounts (
+                id UUID PRIMARY KEY DEFAULT gen_random_uuid(), doctor_id UUID NOT NULL UNIQUE REFERENCES doctors(doctor_id) ON DELETE CASCADE,
+                email TEXT NOT NULL UNIQUE, hashed_password TEXT, totp_secret TEXT,
+                mfa_enabled BOOLEAN NOT NULL DEFAULT FALSE, recovery_codes TEXT[] NOT NULL DEFAULT ARRAY[]::TEXT[],
+                is_active BOOLEAN NOT NULL DEFAULT FALSE, invite_token_hash TEXT, invite_expires_at TIMESTAMP,
+                invite_consumed_at TIMESTAMP, failed_login_attempts INTEGER NOT NULL DEFAULT 0, locked_until TIMESTAMP,
+                last_login_at TIMESTAMP, last_totp_step BIGINT, created_at TIMESTAMP NOT NULL DEFAULT NOW(), updated_at TIMESTAMP NOT NULL DEFAULT NOW()
+            );
+            CREATE TABLE IF NOT EXISTS doctor_auth_audit_log (
+                audit_id UUID PRIMARY KEY DEFAULT gen_random_uuid(), doctor_id UUID REFERENCES doctors(doctor_id) ON DELETE SET NULL,
+                attempted_email TEXT, action_type TEXT NOT NULL, metadata JSONB NOT NULL DEFAULT '{}'::jsonb,
+                created_at TIMESTAMP NOT NULL DEFAULT NOW()
+            );
+            CREATE INDEX IF NOT EXISTS idx_doctor_auth_audit_doctor_created ON doctor_auth_audit_log(doctor_id, created_at DESC);
+        """)
+
+
+def _email(value: str) -> str:
+    return value.strip().lower()
+
+
+def _token_hash(token: str) -> str:
+    return hashlib.sha256(token.encode("utf-8")).hexdigest()
+
+
+def _audit(cur, action: str, doctor_id=None, email: str | None = None, **metadata) -> None:
+    cur.execute(
+        "INSERT INTO doctor_auth_audit_log (doctor_id, attempted_email, action_type, metadata) VALUES (%s, %s, %s, %s::jsonb)",
+        (doctor_id, _email(email) if email else None, action, json.dumps(metadata)),
+    )
+
+
+def _fernet() -> Fernet:
+    key = os.getenv("DOCTOR_AUTH_ENCRYPTION_KEY", "").strip()
+    if not key:
+        raise RuntimeError("DOCTOR_AUTH_ENCRYPTION_KEY must be configured.")
+    return Fernet(key.encode("utf-8"))
+
+
+def _decrypt_totp(value: str) -> str:
+    try:
+        return _fernet().decrypt(value.encode("utf-8")).decode("utf-8")
+    except (InvalidToken, ValueError) as exc:
+        raise ValueError("The enrolled MFA factor is unavailable.") from exc
+
+
+def _send_invite_email(email: str, token: str, *, reset: bool) -> None:
+    frontend = os.getenv("DOCTOR_AUTH_FRONTEND_URL", "").rstrip("/")
+    if not frontend:
+        raise RuntimeError("DOCTOR_AUTH_FRONTEND_URL must be configured.")
+    link = f"{frontend}/doctor/set-password?token={token}"
+    if os.getenv("DOCTOR_AUTH_EMAIL_NO_SEND", "false").lower() == "true":
+        # Do not emit the link/token, even in development logs.
+        return
+    host = os.getenv("DOCTOR_AUTH_SMTP_HOST", "").strip()
+    sender = os.getenv("DOCTOR_AUTH_EMAIL_FROM", "").strip()
+    if not host or not sender:
+        raise RuntimeError("SMTP host and sender are required when doctor email delivery is enabled.")
+    message = EmailMessage()
+    message["Subject"] = "Reset your hospital doctor account password" if reset else "Set up your hospital doctor account"
+    message["From"] = sender
+    message["To"] = email
+    message.set_content(f"Use this one-time link within 48 hours: {link}")
+    port = int(os.getenv("DOCTOR_AUTH_SMTP_PORT", "587"))
+    with smtplib.SMTP(host, port, timeout=15) as smtp:
+        if os.getenv("DOCTOR_AUTH_SMTP_USE_TLS", "true").lower() == "true":
+            smtp.starttls()
+        if os.getenv("DOCTOR_AUTH_SMTP_USERNAME"):
+            smtp.login(os.environ["DOCTOR_AUTH_SMTP_USERNAME"], os.getenv("DOCTOR_AUTH_SMTP_PASSWORD", ""))
+        smtp.send_message(message)
+
+
+def issue_invite(doctor_id: str, email: str, *, reset: bool = False) -> None:
+    try:
+        UUID(doctor_id)
+    except ValueError as exc:
+        raise ValueError("Doctor not found.") from exc
+    normalized = _email(email)
+    token = secrets.token_urlsafe(32)
+    with connect_db() as conn:
+        ensure_doctor_auth_schema(conn)
+        with conn.cursor() as cur:
+            cur.execute("SELECT doctor_id FROM doctors WHERE doctor_id = %s", (doctor_id,))
+            if not cur.fetchone():
+                raise ValueError("Doctor not found.")
+            cur.execute(
+                "SELECT doctor_id FROM doctor_accounts WHERE email = %s AND doctor_id <> %s",
+                (normalized, doctor_id),
+            )
+            if cur.fetchone():
+                _audit(cur, "invite_rejected_email_in_use", doctor_id, normalized)
+                raise ValueError("This email is already associated with another doctor account.")
+            cur.execute("SELECT id, email, is_active FROM doctor_accounts WHERE doctor_id = %s FOR UPDATE", (doctor_id,))
+            account = cur.fetchone()
+            if account and account[2] and not reset:
+                _audit(cur, "invite_rejected_active_account", doctor_id, normalized)
+                raise PermissionError("An active account requires the explicit reset-invite endpoint.")
+            if account and reset and account[1] != normalized:
+                _audit(cur, "password_reset_rejected_email_mismatch", doctor_id, normalized)
+                raise PermissionError("The supplied email does not match the doctor account.")
+            if not account and reset:
+                _audit(cur, "password_reset_rejected_no_account", doctor_id, normalized)
+                raise ValueError("Doctor account not found.")
+            if account:
+                cur.execute("""UPDATE doctor_accounts SET email = %s, invite_token_hash = %s,
+                    invite_expires_at = NOW() + INTERVAL '48 hours', invite_consumed_at = NULL, updated_at = NOW()
+                    WHERE doctor_id = %s""", (normalized, _token_hash(token), doctor_id))
+            else:
+                cur.execute("""INSERT INTO doctor_accounts (doctor_id, email, invite_token_hash, invite_expires_at)
+                    VALUES (%s, %s, %s, NOW() + INTERVAL '48 hours') RETURNING id""", (doctor_id, normalized, _token_hash(token)))
+                account_id = cur.fetchone()[0]
+                ensure_registry_schema(conn)
+                reserve_email(cur, normalized, "doctor", account_id)
+            _audit(cur, "password_reset_invite_sent" if reset else "invite_sent", doctor_id, normalized)
+    try:
+        _send_invite_email(normalized, token, reset=reset)
+    except Exception:
+        # The token remains valid; the event records that issuance happened without disclosing it.
+        with connect_db() as conn:
+            ensure_doctor_auth_schema(conn)
+            with conn.cursor() as cur:
+                _audit(cur, "invite_email_delivery_failed", doctor_id, normalized, reset=reset)
+        raise
+
+
+def complete_invite(token: str, password: str) -> dict:
+    validate_password(password)
+    digest = _token_hash(token)
+    with connect_db() as conn:
+        ensure_doctor_auth_schema(conn)
+        with conn.cursor() as cur:
+            cur.execute("""SELECT id, doctor_id, email, invite_expires_at, invite_consumed_at
+                FROM doctor_accounts WHERE invite_token_hash = %s FOR UPDATE""", (digest,))
+            row = cur.fetchone()
+            if not row:
+                raise PermissionError("Invite token is invalid or has already been used.")
+            account_id, doctor_id, email, expires_at, consumed_at = row
+            now = datetime.now()
+            if consumed_at:
+                _audit(cur, "invite_completion_rejected_consumed", doctor_id, email)
+                raise PermissionError("Invite token has already been used.")
+            if not expires_at or expires_at < now:
+                _audit(cur, "invite_completion_rejected_expired", doctor_id, email)
+                raise PermissionError("Invite token has expired.")
+            cur.execute("""UPDATE doctor_accounts SET hashed_password = %s, is_active = TRUE,
+                invite_consumed_at = NOW(), failed_login_attempts = 0, locked_until = NULL, updated_at = NOW()
+                WHERE id = %s""", (hash_password(password), account_id))
+            _audit(cur, "invite_completed", doctor_id, email)
+    return {"doctor_id": str(doctor_id), "account_id": str(account_id), "email": email}
+
+
+def start_mfa_enrollment(account_id: str) -> str:
+    secret = pyotp.random_base32()
+    encrypted = _fernet().encrypt(secret.encode("utf-8")).decode("utf-8")
+    with connect_db() as conn:
+        ensure_doctor_auth_schema(conn)
+        with conn.cursor() as cur:
+            cur.execute("SELECT doctor_id, email, is_active, mfa_enabled FROM doctor_accounts WHERE id = %s FOR UPDATE", (account_id,))
+            row = cur.fetchone()
+            if not row or not row[2] or row[3]:
+                raise PermissionError("MFA enrollment is not available.")
+            cur.execute("UPDATE doctor_accounts SET totp_secret = %s, updated_at = NOW() WHERE id = %s", (encrypted, account_id))
+            _audit(cur, "mfa_enrollment_started", row[0], row[1])
+            return pyotp.TOTP(secret, interval=TOTP_INTERVAL).provisioning_uri(name=row[1], issuer_name="Smart Hospital Portal")
+
+
+def verify_mfa_enrollment(account_id: str, code: str) -> list[str]:
+    with connect_db() as conn:
+        ensure_doctor_auth_schema(conn)
+        with conn.cursor() as cur:
+            cur.execute("SELECT doctor_id, email, totp_secret, is_active, mfa_enabled FROM doctor_accounts WHERE id = %s FOR UPDATE", (account_id,))
+            row = cur.fetchone()
+            if not row or not row[3] or row[4] or not row[2]:
+                raise PermissionError("MFA enrollment is not available.")
+            secret = _decrypt_totp(row[2])
+            if not pyotp.TOTP(secret, interval=TOTP_INTERVAL).verify(code, valid_window=1):
+                _audit(cur, "mfa_enrollment_verification_failed", row[0], row[1])
+                raise PermissionError("Invalid MFA code.")
+            recovery_codes = [secrets.token_urlsafe(10) for _ in range(10)]
+            hashes = [hash_password(value) for value in recovery_codes]
+            cur.execute("UPDATE doctor_accounts SET mfa_enabled = TRUE, recovery_codes = %s, updated_at = NOW() WHERE id = %s", (hashes, account_id))
+            _audit(cur, "mfa_enrolled", row[0], row[1])
+            return recovery_codes
+
+
+def authenticate_doctor_password(email: str, password: str) -> tuple[str, str, str]:
+    normalized = _email(email)
+    with connect_db() as conn:
+        ensure_doctor_auth_schema(conn)
+        with conn.cursor() as cur:
+            cur.execute("""SELECT id, doctor_id, email, hashed_password, is_active, mfa_enabled,
+                failed_login_attempts, locked_until FROM doctor_accounts WHERE email = %s FOR UPDATE""", (normalized,))
+            row = cur.fetchone()
+            if not row:
+                _audit(cur, "login_failed_unknown_email", None, normalized)
+                raise PermissionError("Invalid email or password.")
+            account_id, doctor_id, db_email, password_hash, active, mfa_enabled, failures, locked_until = row
+            now = datetime.now()
+            if locked_until and locked_until > now:
+                _audit(cur, "login_rejected_locked", doctor_id, db_email)
+                raise PermissionError("Invalid email or password.")
+            if not active or not password_hash or not verify_password(password, password_hash):
+                failures = int(failures) + 1
+                locked = now + LOCKOUT_DURATION if failures >= LOCKOUT_THRESHOLD else None
+                cur.execute("UPDATE doctor_accounts SET failed_login_attempts = %s, locked_until = %s, updated_at = NOW() WHERE id = %s", (failures, locked, account_id))
+                _audit(cur, "account_locked" if locked else "login_failed", doctor_id, db_email)
+                raise PermissionError("Invalid email or password.")
+            if not mfa_enabled:
+                _audit(cur, "login_rejected_mfa_not_enrolled", doctor_id, db_email)
+                raise PermissionError("MFA enrollment is required before login.")
+            cur.execute("UPDATE doctor_accounts SET failed_login_attempts = 0, locked_until = NULL, updated_at = NOW() WHERE id = %s", (account_id,))
+            _audit(cur, "password_verified_mfa_pending", doctor_id, db_email)
+            return str(account_id), str(doctor_id), db_email
+
+
+def complete_mfa_challenge(account_id: str, code: str) -> tuple[str, str, str, bool]:
+    with connect_db() as conn:
+        ensure_doctor_auth_schema(conn)
+        with conn.cursor() as cur:
+            cur.execute("""SELECT doctor_id, email, totp_secret, recovery_codes, is_active, mfa_enabled, last_totp_step
+                FROM doctor_accounts WHERE id = %s FOR UPDATE""", (account_id,))
+            row = cur.fetchone()
+            if not row or not row[4] or not row[5] or not row[2]:
+                raise PermissionError("Invalid MFA challenge.")
+            doctor_id, email, encrypted_secret, recovery_hashes, _, _, last_step = row
+            secret = _decrypt_totp(encrypted_secret)
+            step = int(time.time() // TOTP_INTERVAL)
+            totp = pyotp.TOTP(secret, interval=TOTP_INTERVAL)
+            if totp.verify(code, valid_window=1):
+                # Accept clock-skew neighbours, but permanently consume the actual matching interval.
+                matching_step = next((candidate for candidate in (step, step - 1, step + 1)
+                                      if totp.at(candidate * TOTP_INTERVAL) == code), None)
+                if matching_step is None or (last_step is not None and matching_step <= int(last_step)):
+                    _audit(cur, "mfa_challenge_rejected_replay", doctor_id, email)
+                    raise PermissionError("Invalid MFA code.")
+                cur.execute("UPDATE doctor_accounts SET last_totp_step = %s, last_login_at = NOW(), updated_at = NOW() WHERE id = %s", (matching_step, account_id))
+                _audit(cur, "login_success", doctor_id, email)
+                return str(doctor_id), email, str(account_id), False
+            matched_hash = next((stored for stored in recovery_hashes if verify_password(code, stored)), None)
+            if not matched_hash:
+                _audit(cur, "mfa_challenge_failed", doctor_id, email)
+                raise PermissionError("Invalid MFA code.")
+            cur.execute("UPDATE doctor_accounts SET recovery_codes = array_remove(recovery_codes, %s), last_login_at = NOW(), updated_at = NOW() WHERE id = %s", (matched_hash, account_id))
+            _audit(cur, "recovery_code_used", doctor_id, email)
+            _audit(cur, "login_success", doctor_id, email, recovery_code=True)
+            return str(doctor_id), email, str(account_id), True
+
+
+def get_doctor_profile(doctor_id: str, account_id: str) -> dict | None:
+    with connect_db() as conn:
+        ensure_doctor_auth_schema(conn)
+        with conn.cursor() as cur:
+            cur.execute("""SELECT d.doctor_id, d.name, d.department, d.experience_years, d.is_active,
+                a.id, a.email, a.mfa_enabled, a.is_active
+                FROM doctor_accounts a JOIN doctors d ON d.doctor_id = a.doctor_id
+                WHERE a.id = %s AND d.doctor_id = %s""", (account_id, doctor_id))
+            row = cur.fetchone()
+    if not row or not row[8] or not row[4]:
+        return None
+    return {"doctor_id": str(row[0]), "name": row[1], "department": row[2], "experience_years": row[3],
+            "is_active": bool(row[4]), "account_id": str(row[5]), "email": row[6], "mfa_enabled": bool(row[7])}
+
+
+def check_rate_limit(scope: str, ip: str, account_key: str) -> None:
+    limit = int(os.getenv("DOCTOR_AUTH_LOGIN_RATE_LIMIT" if scope == "login" else "DOCTOR_AUTH_MFA_RATE_LIMIT", "10"))
+    now = time.monotonic()
+    for key in (f"{scope}:ip:{ip}", f"{scope}:account:{account_key}"):
+        with _rate_lock:
+            window = _rate_windows[key]
+            while window and now - window[0] >= 300:
+                window.popleft()
+            if len(window) >= limit:
+                raise PermissionError("Too many authentication attempts. Please try again later.")
+            window.append(now)

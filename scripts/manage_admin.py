@@ -12,6 +12,7 @@ if str(PROJECT_ROOT) not in sys.path:
 from app.db.connection import connect_db
 from app.services.admin_auth import ensure_admin_schema, get_admin_account_by_email
 from app.services.passwords import hash_password
+from app.services.account_registry import ensure_registry_schema, reserve_email
 
 
 def _prompt_email(value: str | None) -> str:
@@ -38,6 +39,7 @@ def _prompt_password(value: str | None) -> str:
 def create_or_update_admin(*, email: str, name: str, password: str, is_active: bool = True) -> None:
     with connect_db() as conn:
         ensure_admin_schema(conn)
+        ensure_registry_schema(conn)
         password_hash = hash_password(password)
         with conn.cursor() as cur:
             cur.execute(
@@ -53,6 +55,11 @@ def create_or_update_admin(*, email: str, name: str, password: str, is_active: b
                 """,
                 (email, password_hash, name, is_active),
             )
+            cur.execute("SELECT admin_id FROM admin_accounts WHERE email = %s", (email,))
+            admin_id = cur.fetchone()[0]
+            cur.execute("SELECT 1 FROM account_email_registry WHERE email = %s", (email,))
+            if not cur.fetchone():
+                reserve_email(cur, email, "admin", admin_id)
         conn.commit()
 
 

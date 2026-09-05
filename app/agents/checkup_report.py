@@ -4,6 +4,8 @@ import json
 from app.agents.intake_utils import compact_fact_summary
 from app.agents.state import GraphState
 from app.inference.llm import generate_text, generate_router_text
+from app.services.language import language_prompt_context
+from app.services.patient_text import display_label, patient_message
 from app.services.appointments import normalize_department_name
 
 # INTELLIGENT CLINICAL ANALYZER — Deep analysis of symptom pattern
@@ -195,7 +197,7 @@ def checkup_report_node(state: GraphState):
     )
 
     analysis_resp = generate_text(
-        system_prompt=STATIC_CLINICAL_ANALYZER_PROMPT,
+        system_prompt=STATIC_CLINICAL_ANALYZER_PROMPT + language_prompt_context(state),
         user_prompt=analyzer_prompt,
         node_name="clinical_analyzer",
         chat_summary=state.get("chat_summary"),
@@ -245,7 +247,8 @@ def checkup_report_node(state: GraphState):
     )
 
     comprehensive_summary = generate_text(
-        system_prompt=STATIC_CHECKUP_PROMPT,
+        # This is the doctor-facing artifact and must remain canonical English.
+        system_prompt=STATIC_CHECKUP_PROMPT + "\n\nIMPORTANT: Generate this clinical summary in English only. Do not translate it to the patient's conversation language.",
         user_prompt=user_prompt,
         node_name="checkup_report",
         chat_summary=state.get("chat_summary"),
@@ -261,16 +264,16 @@ def checkup_report_node(state: GraphState):
 
     # STEP 4: DISPLAY INTELLIGENT ANALYSIS + REMEDY
     response = (
-        f"## CLINICAL ANALYSIS\n\n"
-        f"**What's happening:** {clinical_analysis}\n\n"
-        f"**Why {department}:** {reasoning}\n\n"
-        f"**IMMEDIATE HOME CARE (before your appointment):**\n"
+        f"## {display_label(state, 'clinical_analysis')}\n\n"
+        f"**{display_label(state, 'whats_happening')}:** {clinical_analysis}\n\n"
+        f"**{display_label(state, 'why_department')} {department}:** {reasoning}\n\n"
+        f"**{display_label(state, 'home_care')} (before your appointment):**\n"
         f"{home_care}\n\n"
         f"---\n\n"
-        f"## DETAILED CLINICAL SUMMARY\n"
+        f"## {display_label(state, 'detailed_summary')}\n"
         f"{comprehensive_summary}\n\n"
         f"---\n\n"
-        f"**Would you like to book an appointment with a {department} doctor?** (yes / no)"
+        f"{patient_message(state, 'department_booking_prompt', department=department)}"
     )
 
     history.append({"role": "assistant", "text": response})

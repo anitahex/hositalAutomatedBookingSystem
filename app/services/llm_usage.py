@@ -5,7 +5,7 @@ import threading
 from contextlib import contextmanager
 from contextvars import ContextVar
 from dataclasses import dataclass
-from datetime import datetime
+from datetime import datetime, timezone
 
 from app.db.connection import connect_db
 
@@ -120,7 +120,7 @@ def record_llm_usage(
                 "prompt_tokens": usage.prompt_tokens,
                 "completion_tokens": usage.completion_tokens,
                 "total_tokens": usage.total_tokens,
-                "created_at": datetime.utcnow(),
+                "created_at": datetime.now(timezone.utc),
                 "node_name": node_name or call_type,
                 "session_id": session_id,
                 "patient_id": patient_id,

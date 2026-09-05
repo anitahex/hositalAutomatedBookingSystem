@@ -12,7 +12,7 @@ services:
       interval: 5s
       timeout: 5s
       retries: 15
-
+00
   qdrant:
     image: qdrant/qdrant:latest
     volumes:

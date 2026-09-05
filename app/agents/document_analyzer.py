@@ -257,7 +257,7 @@ def _format_finding_value(v: Any) -> str:
     return str(v)
 
 
-async def _try_azure_extraction(payload: dict[str, Any]) -> dict[str, Any] | None:
+async def _try_openai_extraction(payload: dict[str, Any]) -> dict[str, Any] | None:
     """Attempt structured extraction via Azure GPT-4o. Returns None on any failure."""
     try:
         from app.inference.azure_client import gpt4o_structured_extraction
@@ -339,7 +339,7 @@ async def _in_memory_document_analysis(state: GraphState) -> dict:
     payload = _file_payload(state)
 
     # Primary: Azure GPT-4o structured extraction
-    extraction = await _try_azure_extraction(payload)
+    extraction = await _try_openai_extraction(payload)
 
     if extraction:
         response, department, extra_facts = _build_response_from_extraction(extraction)
@@ -426,7 +426,7 @@ async def _multi_file_analysis(state: GraphState, files: list[dict[str, Any]]) -
     primary_dept = "General Physician"
 
     for i, payload in enumerate(files):
-        extraction = await _try_azure_extraction(payload)
+        extraction = await _try_openai_extraction(payload)
         if not extraction:
             logger.warning("document_analyzer: multi-file extraction failed for file %d (%s)", i + 1, payload.get("file_name"))
             sections.append(f"**Document {i + 1} ({payload.get('file_name', 'unknown')}):** Could not extract content — please ensure the file is a readable medical document.")

@@ -33,6 +33,8 @@ def create_access_token(
     subject: str | None = None,
     email: str,
     role: str = "patient",
+    extra_claims: dict | None = None,
+    expires_in_seconds: int | None = None,
 ) -> str:
     token_subject = subject or patient_id
     if not token_subject:
@@ -45,8 +47,10 @@ def create_access_token(
         "email": email,
         "role": role,
         "iat": now,
-        "exp": now + JWT_EXP_SECONDS,
+        "exp": now + (expires_in_seconds or JWT_EXP_SECONDS),
     }
+    if extra_claims:
+        payload.update(extra_claims)
 
     signing_input = ".".join(
         [
@@ -60,6 +64,35 @@ def create_access_token(
         hashlib.sha256,
     ).digest()
     return f"{signing_input}.{_b64url_encode(signature)}"
+
+
+def create_doctor_session_token(*, doctor_id: str, account_id: str, email: str) -> str:
+    return create_access_token(
+        subject=doctor_id,
+        email=email,
+        role="doctor",
+        extra_claims={"token_kind": "doctor_session", "doctor_id": doctor_id, "account_id": account_id},
+    )
+
+
+def create_doctor_mfa_pending_token(*, doctor_id: str, account_id: str, email: str) -> str:
+    return create_access_token(
+        subject=doctor_id,
+        email=email,
+        role="doctor",
+        expires_in_seconds=300,
+        extra_claims={"token_kind": "doctor_mfa_pending", "aud": "doctor_mfa_challenge", "doctor_id": doctor_id, "account_id": account_id},
+    )
+
+
+def create_doctor_mfa_enrollment_token(*, doctor_id: str, account_id: str, email: str) -> str:
+    return create_access_token(
+        subject=doctor_id,
+        email=email,
+        role="doctor",
+        expires_in_seconds=900,
+        extra_claims={"token_kind": "doctor_mfa_enrollment", "aud": "doctor_mfa_enrollment", "doctor_id": doctor_id, "account_id": account_id},
+    )
 
 
 def verify_access_token(token: str) -> dict | None:

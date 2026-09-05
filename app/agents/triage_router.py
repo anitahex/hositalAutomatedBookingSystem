@@ -4,6 +4,7 @@ from app.agents.schemas import PatientExtraction
 from app.agents.state import GraphState
 from app.inference.llm import agenerate_text, astream_text
 from app.services.memory_policy import get_memory_policy
+from app.services.language import language_prompt_context
 
 parser = PydanticOutputParser(pydantic_object=PatientExtraction)
 MEMORY_POLICY = get_memory_policy("triage_router")
@@ -70,7 +71,7 @@ Minimal profile: {profile}
 Latest message: {user_input}"""
 
     raw_output = await agenerate_text(
-        system_prompt=STATIC_TRIAGE_PROMPT,
+        system_prompt=STATIC_TRIAGE_PROMPT + language_prompt_context(state),
         user_prompt=dynamic_user_prompt,
         node_name="triage_router",
         chat_summary=state.get("chat_summary"),
@@ -176,7 +177,7 @@ async def triage_intake_stream(state: GraphState, message: str):
     json_yielded = False
 
     async for token in astream_text(
-        system_prompt=MERGED_TRIAGE_STREAM_SYSTEM,
+        system_prompt=MERGED_TRIAGE_STREAM_SYSTEM + language_prompt_context(state),
         user_prompt=user_prompt,
         node_name="triage_intake_stream",
         patient_id=str(state.get("patient_id") or ""),

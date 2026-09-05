@@ -2,6 +2,7 @@ from datetime import date
 from langchain_core.output_parsers import PydanticOutputParser
 from app.agents.schemas import ConversationDecision
 from app.agents.state import GraphState
+from app.services.language import language_prompt_context
 from app.agents.intake_utils import (
     compact_state_summary,
     extract_json_object,
@@ -147,7 +148,7 @@ Topics ALREADY COVERED — do NOT ask about these again: {', '.join(sorted(asked
 Do not ask again about any topic already covered above."""
 
     raw_output = generate_text(
-        system_prompt=STATIC_CONVERSATION_PROMPT,
+        system_prompt=STATIC_CONVERSATION_PROMPT + language_prompt_context(state),
         user_prompt=dynamic_user_prompt,
         node_name="conversation_agent",
         chat_summary=state.get("chat_summary"),
@@ -344,7 +345,7 @@ async def conversation_agent_stream(state: GraphState):
     )
 
     async for token in astream_text(
-        system_prompt=STATIC_CONV_STREAM_SYSTEM,
+        system_prompt=STATIC_CONV_STREAM_SYSTEM + language_prompt_context(state),
         user_prompt=user_prompt,
         node_name="conv_stream",
         patient_id=str(state.get("patient_id") or ""),

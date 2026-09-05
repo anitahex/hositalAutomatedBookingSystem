@@ -25,13 +25,17 @@
         <div class="auth-tabs" role="tablist" aria-label="Authentication mode">
           <button class="tab active" id="showLoginBtn" type="button">Login</button>
           <button class="tab" id="showSignupBtn" type="button">Sign up</button>
-          <button class="tab" id="showAdminBtn" type="button">Admin</button>
         </div>
 
         <form class="auth-form" id="loginForm">
           <label>Email<input id="loginEmail" type="email" autocomplete="email" required /></label>
           <label>Password<input id="loginPassword" type="password" autocomplete="current-password" required /></label>
           <button type="submit">Login</button>
+        </form>
+        <form class="auth-form hidden" id="doctorMfaForm">
+          <p class="form-hint">Enter the 6-digit code from your authenticator app.</p>
+          <label>Authentication code<input id="doctorMfaCode" inputmode="numeric" autocomplete="one-time-code" maxlength="64" required /></label>
+          <button type="submit">Verify and continue</button>
         </form>
 
         <form class="auth-form hidden" id="signupForm">
@@ -67,18 +71,8 @@
           </section>
         </form>
 
-        <form class="auth-form hidden" id="adminLoginForm">
-          <p class="form-hint">Admin access is separate from patient accounts.</p>
-          <label>Email<input id="adminLoginEmail" type="email" autocomplete="email" required /></label>
-          <label>Password<input id="adminLoginPassword" type="password" autocomplete="current-password" required /></label>
-          <div class="form-actions">
-            <button class="secondary" id="adminBackBtn" type="button">Back</button>
-            <button type="submit">Admin login</button>
-          </div>
-        </form>
 
         <p class="auth-error" id="authMessage" role="alert"></p>
-        <p class="auth-error" id="adminAuthMessage" role="alert"></p>
       </div>
     </section>
 
@@ -895,13 +889,7 @@
 
         // ── Sync appointments page from activeAppointmentsPreview ────────────
         function syncAppointments() {
-          var preview = document.getElementById("activeAppointmentsPreview");
-          var upcomingList = document.getElementById("upcomingApptList");
-          if (!preview || !upcomingList) return;
-          var note = preview.querySelector(".panel-note");
-          if (!note) {
-            upcomingList.innerHTML = preview.innerHTML;
-          }
+          if (typeof refreshAppointmentsPage === "function") refreshAppointmentsPage();
         }
 
         // ── Sync dashboard appointments panel ────────────────────────────────

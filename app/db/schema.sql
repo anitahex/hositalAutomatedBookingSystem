@@ -2,6 +2,10 @@ CREATE EXTENSION IF NOT EXISTS pgcrypto;
 
 DROP TABLE IF EXISTS appointment_bookings;
 DROP TABLE IF EXISTS appointment_slots;
+DROP TABLE IF EXISTS doctor_auth_audit_log;
+DROP TABLE IF EXISTS doctor_accounts;
+DROP TABLE IF EXISTS unified_auth_audit_log;
+DROP TABLE IF EXISTS account_email_registry;
 DROP TABLE IF EXISTS doctors;
 DROP TABLE IF EXISTS admin_accounts;
 DROP TABLE IF EXISTS schedule_holidays;
@@ -28,6 +32,7 @@ CREATE TABLE patient_profiles (
     email TEXT NOT NULL,
     blood_group TEXT NOT NULL,
     health_issues TEXT,
+    preferred_language TEXT NOT NULL DEFAULT 'en',
     updated_at TIMESTAMP NOT NULL DEFAULT NOW()
 );
 
@@ -49,6 +54,50 @@ CREATE TABLE doctors (
     is_active BOOLEAN NOT NULL DEFAULT TRUE,
     created_at TIMESTAMP NOT NULL DEFAULT NOW(),
     updated_at TIMESTAMP NOT NULL DEFAULT NOW()
+);
+
+CREATE TABLE doctor_accounts (
+    id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+    doctor_id UUID NOT NULL UNIQUE REFERENCES doctors(doctor_id) ON DELETE CASCADE,
+    email TEXT NOT NULL UNIQUE,
+    hashed_password TEXT,
+    totp_secret TEXT,
+    mfa_enabled BOOLEAN NOT NULL DEFAULT FALSE,
+    recovery_codes TEXT[] NOT NULL DEFAULT ARRAY[]::TEXT[],
+    is_active BOOLEAN NOT NULL DEFAULT FALSE,
+    invite_token_hash TEXT,
+    invite_expires_at TIMESTAMP,
+    invite_consumed_at TIMESTAMP,
+    failed_login_attempts INTEGER NOT NULL DEFAULT 0,
+    locked_until TIMESTAMP,
+    last_login_at TIMESTAMP,
+    last_totp_step BIGINT,
+    created_at TIMESTAMP NOT NULL DEFAULT NOW(),
+    updated_at TIMESTAMP NOT NULL DEFAULT NOW()
+);
+
+CREATE TABLE doctor_auth_audit_log (
+    audit_id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+    doctor_id UUID REFERENCES doctors(doctor_id) ON DELETE SET NULL,
+    attempted_email TEXT,
+    action_type TEXT NOT NULL,
+    metadata JSONB NOT NULL DEFAULT '{}'::jsonb,
+    created_at TIMESTAMP NOT NULL DEFAULT NOW()
+);
+
+CREATE TABLE account_email_registry (
+    email TEXT PRIMARY KEY,
+    account_type TEXT NOT NULL CHECK (account_type IN ('patient', 'doctor', 'admin')),
+    account_id UUID NOT NULL,
+    created_at TIMESTAMP NOT NULL DEFAULT NOW()
+);
+
+CREATE TABLE unified_auth_audit_log (
+    audit_id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+    email TEXT NOT NULL,
+    account_type TEXT,
+    action_type TEXT NOT NULL,
+    created_at TIMESTAMP NOT NULL DEFAULT NOW()
 );
 
 CREATE TABLE appointment_slots (
@@ -132,6 +181,7 @@ CREATE TABLE chat_messages (
 );
 
 CREATE INDEX idx_doctors_department ON doctors(department);
+CREATE INDEX idx_doctor_auth_audit_doctor_created ON doctor_auth_audit_log(doctor_id, created_at DESC);
 CREATE INDEX idx_slots_available ON appointment_slots(start_time)
     WHERE is_booked = FALSE;
 CREATE INDEX idx_appointment_bookings_active

@@ -12,9 +12,26 @@ An AI-powered hospital assistant that handles clinical intake, symptom triage, d
 - **Appointment Management** — Book, cancel (>24 h policy), and reschedule appointments through chat or the sidebar panel
 - **Home Care Remedies** — Evidence-based temporary care advice specific to the patient's symptoms, with a feedback loop to escalate to booking if symptoms persist
 - **Pre-Appointment Clinical Summary** — GPT-generated structured clinical notes forwarded to the doctor before the appointment, with patient consent
-- **Medical Document Ingestion** — Upload PDFs and images via chat; Azure GPT-4o extracts structured data and stores it in a persistent document vault
+- **Medical Document Ingestion** — Upload PDFs and images via chat; OpenAI vision models extract structured data and store it in a persistent document vault
 - **Real-time Streaming** — WebSocket-based response streaming with live typing indicator
 - **Chat History** — Full conversation history per case, browsable in the sidebar
+- **WhatsApp Booking** — Patients can continue the same intake and appointment-booking workflow through a Twilio WhatsApp number
+
+### Twilio WhatsApp setup
+
+The WhatsApp webhook is exposed at `POST /webhooks/whatsapp`. In the Twilio Console, open the WhatsApp-enabled sender, set its incoming message webhook to:
+
+`https://YOUR_PUBLIC_HOST/webhooks/whatsapp`
+
+Use HTTP `POST`, and add these values to the backend `.env`:
+
+```dotenv
+TWILIO_AUTH_TOKEN=your-twilio-auth-token
+VALIDATE_TWILIO_WEBHOOK=true
+PUBLIC_BASE_URL=https://your-public-host
+```
+
+The sender's WhatsApp number must match the patient's registered `mobile_number` (prefer E.164 format, for example `+919876543210`). The webhook returns TwiML directly, so incoming messages receive the assistant response without a separate outbound Twilio API call. Patients who have no matching account receive a registration prompt. During local development, expose the backend through an HTTPS tunnel such as ngrok and use that public URL in Twilio.
 
 ---
 
@@ -24,7 +41,7 @@ An AI-powered hospital assistant that handles clinical intake, symptom triage, d
 |---|---|
 | Backend | Python 3.11 · FastAPI · Uvicorn |
 | AI Orchestration | LangGraph · LangChain |
-| LLM | Azure OpenAI (GPT-4.1 Mini for chat/routing · GPT-4o for vision/extraction) |
+| LLM | OpenAI API (same configured chat/routing and vision models) |
 | Embeddings | Sentence Transformers (384-dim) via Hugging Face |
 | Vector Store | Qdrant |
 | Relational DB | PostgreSQL 15 |
@@ -64,7 +81,7 @@ Nginx (port 8010)
          │
    ┌─────┼──────────┐
    ▼     ▼          ▼
-PostgreSQL  Qdrant  Azure Blob
+   PostgreSQL  Qdrant  Azure Blob
 ```
 
 ---
@@ -115,8 +132,8 @@ hositalAutomatedBookingSystem/
 │   │   ├── memory_policy.py       # Per-agent context window settings
 │   │   └── llm_usage.py           # Token tracking & cost analytics
 │   ├── inference/
-│   │   ├── llm.py                 # Azure OpenAI text generation (sync + async)
-│   │   ├── azure_client.py        # GPT-4o client for vision/extraction
+│   │   ├── llm.py                 # OpenAI text generation (sync + async)
+│   │   ├── azure_client.py        # OpenAI vision client for extraction (legacy filename)
 │   │   └── vision.py              # Vision model utilities
 │   └── db/
 │       ├── connection.py          # PostgreSQL connection pooling
@@ -152,7 +169,7 @@ hositalAutomatedBookingSystem/
 | **Remedy Agent** | Generates 2-3 evidence-based home care tips and asks whether symptoms improved before offering to book an appointment |
 | **Checkup Report** | Generates a structured pre-appointment clinical summary using GPT and offers to forward it to the doctor |
 | **Appointment Booker** | Manages the full booking workflow — doctor list, slot selection, confirmation, cancellation, and rescheduling |
-| **Document Analyzer** | Processes uploaded PDFs and images using Azure GPT-4o, extracts structured clinical data, and maps findings to a department |
+| **Document Analyzer** | Processes uploaded PDFs and images using OpenAI vision models, extracts structured clinical data, and maps findings to a department |
 
 ---
 
@@ -194,7 +211,7 @@ hositalAutomatedBookingSystem/
 ### Prerequisites
 
 - Docker and Docker Compose
-- Azure OpenAI resource with `gpt-4.1-mini` and `gpt-4o` deployments
+- OpenAI API key with access to the configured chat and vision models
 - Azure Blob Storage container (for document uploads)
 
 ### 1. Configure Environment
@@ -206,17 +223,12 @@ Create a `.env` file in the project root. The variables below are the only ones 
 JWT_SECRET=your-long-random-secret-min-32-chars
 JWT_EXP_SECONDS=604800
 
-# Azure OpenAI — conversation, routing, summaries
-AZURE_CONV_ENDPOINT=https://your-resource.openai.azure.com/
-AZURE_CONV_API_KEY=your-key
-AZURE_CONV_DEPLOYMENT=gpt-4.1-mini
-AZURE_ROUTER_DEPLOYMENT=gpt-4.1-mini
-AZURE_SUMMARY_DEPLOYMENT=gpt-4.1-mini
-
-# Azure OpenAI — vision / document extraction
-AZURE_OPENAI_ENDPOINT=https://your-resource.openai.azure.com/
-AZURE_OPENAI_API_KEY=your-key
-AZURE_OPENAI_DEPLOYMENT_NAME=gpt-4o
+# OpenAI API — conversation, routing, summaries, and document extraction
+OPENAI_API_KEY=your-openai-api-key
+OPENAI_CONV_MODEL=gpt-5.4-mini
+OPENAI_ROUTER_MODEL=gpt-5.4-mini
+OPENAI_SUMMARY_MODEL=gpt-5.4-mini
+OPENAI_VISION_MODEL=gpt-4o
 
 # Azure Blob Storage
 AZURE_STORAGE_CONNECTION_STRING=DefaultEndpointsProtocol=https;AccountName=...

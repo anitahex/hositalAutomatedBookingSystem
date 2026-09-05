@@ -49,28 +49,20 @@ class DocumentIngestionSummary(BaseModel):
 # ---- Low-level DB helpers ----
 
 def _execute_rows(sql: str, params: tuple = ()) -> list[dict]:
-    conn = connect_db()
-    try:
-        import psycopg2.extras
-        with conn:
-            with conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor) as cur:
-                cur.execute(sql, params)
-                if cur.description:
-                    return [dict(row) for row in cur.fetchall()]
-                return []
-    finally:
-        conn.close()
+    import psycopg2.extras
+    with connect_db() as conn:
+        with conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor) as cur:
+            cur.execute(sql, params)
+            if cur.description:
+                return [dict(row) for row in cur.fetchall()]
+            return []
 
 
 def _execute_write(sql: str, params: tuple = ()) -> None:
-    conn = connect_db()
-    try:
-        with conn:
-            with conn.cursor() as cur:
-                cur.execute(sql, params)
+    with connect_db() as conn:
+        with conn.cursor() as cur:
+            cur.execute(sql, params)
         conn.commit()
-    finally:
-        conn.close()
 
 
 @lru_cache(maxsize=1)

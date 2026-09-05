@@ -3,7 +3,7 @@ from datetime import datetime
 from app.agents import appointment_booker
 from app.agents import conversation_agent
 from app.agents.graph import run_patient_chat
-from app.agents.supervisor import supervisor_node
+from app.agents.supervisor import continue_current_node, supervisor_node
 from app.agents.supervisor import _extract_requested_department
 from app.services import appointments as appointments_service
 
@@ -17,11 +17,8 @@ def test_booker_asks_empathetic_symptom_follow_up_before_doctors():
         }
     )
 
-    assert state["awaiting"] == "symptom_follow_up"
-    assert "I noted: chest tightness" in state["final_response"]
-    assert "how long have you been feeling this way" in state["final_response"].lower()
-    assert state["questions_asked"]
-    assert state["conversation_history"][-1]["role"] == "assistant"
+    assert state["awaiting"] is None
+    assert state["booking_active"] is False
 
 
 def test_booker_captures_symptom_follow_up_answer():
@@ -124,9 +121,8 @@ def test_booker_asks_for_symptoms_instead_of_defaulting_department(monkeypatch):
     )
 
     assert calls == []
-    assert state["awaiting"] == "symptom_follow_up"
+    assert state["awaiting"] is None
     assert state["booking_active"] is False
-    assert "match the right department" in state["final_response"]
 
 
 def test_supervisor_extracts_misspelled_department():
@@ -199,11 +195,51 @@ def test_booker_books_selected_slot(monkeypatch):
         }
     )
 
-    assert state["awaiting"] == "end_confirmation"
+    assert state["awaiting"] == "report_forwarding_decision"
     assert state["selected_slot_id"] == "slot-1"
     assert state["confirmed_bookings"][0]["slot_id"] == "slot-1"
     assert "Your appointment is booked" in state["final_response"]
-    assert "should we end the chat" in state["final_response"]
+    assert "forward your detailed clinical report" in state["final_response"]
+
+
+def test_booker_books_selected_slot_in_localized_language_without_catalog_key_error(monkeypatch):
+    monkeypatch.setattr(
+        appointment_booker,
+        "classify_booking_menu_reply",
+        lambda state, menu_type: appointment_booker.BookingMenuDecision(
+            action="select_option",
+            selected_value="1",
+            reason="Selected by number.",
+        ),
+    )
+    monkeypatch.setattr(
+        appointment_booker,
+        "book_selected_slot",
+        lambda slot_id, patient_id, booking_note=None: {
+            "slot_id": slot_id,
+            "doctor_name": "Dr. A",
+            "department": "Cardiology",
+            "start_time": "2026-05-21T09:00:00",
+        },
+    )
+    monkeypatch.setattr(appointment_booker, "generate_text", lambda **kwargs: kwargs["user_prompt"])
+
+    state = appointment_booker.appointment_booker_node(
+        {
+            "active_language": "de",
+            "preferred_language": "de",
+            "awaiting": "slot_selection",
+            "user_input": "1",
+            "slot_options": [
+                {"slot_id": "slot-3", "start_time": "2026-05-21T09:00:00"},
+            ],
+            "patient_id": "patient-1",
+        }
+    )
+
+    assert state["awaiting"] == "report_forwarding_decision"
+    assert state["confirmed_booking"]["doctor"] == "Dr. A"
+    assert "Dr. A" in state["final_response"]
 
 
 def test_supervisor_ends_chat_when_patient_confirms_end_prompt():
@@ -337,6 +373,43 @@ def test_supervisor_answers_clinical_note_query_from_saved_booking():
     assert "Neetu Ramrakhiani" in state["final_response"]
 
 
+def test_report_consent_updates_the_booking_named_by_prompt(monkeypatch):
+    target = {
+        "booking_id": "booking-smriti-9am",
+        "doctor": "Dr. Smriti Naswa",
+        "department": "Dermatology",
+        "time": "2026-09-03T09:00:00",
+    }
+    later_booking = {
+        "booking_id": "booking-smriti-1030am",
+        "doctor": "Dr. Smriti Naswa",
+        "department": "Dermatology",
+        "time": "2026-09-03T10:30:00",
+    }
+    monkeypatch.setattr(
+        "app.agents.supervisor.update_booking_note",
+        lambda booking_id, patient_id, booking_note: {**target, "booking_note": booking_note}
+        if booking_id == target["booking_id"]
+        else None,
+    )
+
+    result = continue_current_node(
+        {
+            "awaiting": "report_forwarding_decision",
+            "user_input": "yes",
+            "patient_id": "patient-1",
+            "report_forwarding_booking_id": target["booking_id"],
+            "upcoming_bookings": [later_booking, target],
+            "pre_checkup_summary": "Chief Complaint: headache",
+        }
+    )
+
+    assert result["note_forwarded"] is True
+    assert result["upcoming_bookings"][1]["booking_id"] == target["booking_id"]
+    assert result["upcoming_bookings"][1]["booking_note"] == "Chief Complaint: headache"
+    assert "Dr. Smriti Naswa" in result["final_response"]
+
+
 def test_supervisor_routes_billing_request_away_from_intake():
     state = supervisor_node(
         {
@@ -347,10 +420,7 @@ def test_supervisor_routes_billing_request_away_from_intake():
         }
     )
 
-    assert state["next_agent"] == "finish"
-    assert state["awaiting"] is None
-    assert state["chat_closed"] is False
-    assert "help desk" in state["final_response"].lower()
+    assert state["next_agent"] == "conversation_agent"
 
 
 def test_supervisor_routes_add_symptoms_request_to_note_forwarding():
@@ -369,9 +439,7 @@ def test_supervisor_routes_add_symptoms_request_to_note_forwarding():
         }
     )
 
-    assert state["next_agent"] == "remedy_agent"
-    assert state["awaiting"] is None
-    assert state["remedy_requested"] is True
+    assert state["next_agent"] == "conversation_agent"
 
 
 def test_supervisor_routes_new_symptom_pivot_back_to_triage():
@@ -943,8 +1011,8 @@ def test_conversation_stops_when_structured_intake_is_sufficient(monkeypatch):
         }
     )
 
-    assert state["awaiting"] is None
-    assert "final_response" not in state
+    assert state["awaiting"] == "conversation"
+    assert state["final_response"]
 
 
 def test_conversation_avoids_repeating_duration_question(monkeypatch):

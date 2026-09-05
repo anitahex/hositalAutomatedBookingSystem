@@ -3,11 +3,25 @@ from uuid import UUID
 
 from app.db.connection import connect_db
 from app.services.passwords import hash_password, verify_password
+from app.services.account_registry import ensure_registry_schema, reserve_email
 
 
 PASSWORD_PATTERN = re.compile(
     r"^(?=.*[a-z])(?=.*[A-Z])(?=.*\d)(?=.*[^A-Za-z0-9]).{8,}$"
 )
+
+
+def normalize_mobile_number(value: str | None) -> str:
+    """Return a stable comparison form for E.164-like phone numbers."""
+    raw = str(value or "").strip()
+    if raw.lower().startswith("whatsapp:"):
+        raw = raw.split(":", 1)[1]
+    digits = re.sub(r"\D", "", raw)
+    if raw.startswith("+"):
+        return f"+{digits}"
+    if digits.startswith("00"):
+        return f"+{digits[2:]}"
+    return digits
 
 
 def ensure_user_schema(conn):
@@ -32,8 +46,10 @@ def ensure_user_schema(conn):
                 email TEXT NOT NULL,
                 blood_group TEXT NOT NULL,
                 health_issues TEXT,
+                preferred_language TEXT NOT NULL DEFAULT 'en',
                 updated_at TIMESTAMP NOT NULL DEFAULT NOW()
             );
+            ALTER TABLE patient_profiles ADD COLUMN IF NOT EXISTS preferred_language TEXT NOT NULL DEFAULT 'en';
             """
         )
 
@@ -62,6 +78,7 @@ def create_user_with_profile(
     profile_email: str,
     blood_group: str,
     health_issues: str | None = None,
+    preferred_language: str = "en",
 ):
     email = _normalise_email(email)
     profile_email = _normalise_email(profile_email)
@@ -74,6 +91,7 @@ def create_user_with_profile(
     with connect_db() as conn:
         try:
             ensure_user_schema(conn)
+            ensure_registry_schema(conn)
             with conn.cursor() as cur:
                 cur.execute(
                     """
@@ -84,6 +102,7 @@ def create_user_with_profile(
                     (email, hash_password(password)),
                 )
                 user_id = cur.fetchone()[0]
+                reserve_email(cur, email, "patient", user_id)
                 cur.execute(
                     """
                     INSERT INTO patient_profiles (
@@ -94,9 +113,10 @@ def create_user_with_profile(
                         address,
                         email,
                         blood_group,
-                        health_issues
+                        health_issues,
+                        preferred_language
                     )
-                    VALUES (%s, %s, %s, %s, %s, %s, %s, %s);
+                    VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s);
                     """,
                     (
                         user_id,
@@ -107,6 +127,7 @@ def create_user_with_profile(
                         profile_email,
                         blood_group.strip(),
                         (health_issues or "").strip() or None,
+                        preferred_language,
                     ),
                 )
             conn.commit()
@@ -123,6 +144,7 @@ def update_patient_profile(
     health_issues: str | None = None,
     mobile_number: str | None = None,
     address: str | None = None,
+    preferred_language: str | None = None,
 ):
     """Update editable profile fields. Only supplied (non-None) fields are changed."""
     updates: list[str] = []
@@ -137,6 +159,9 @@ def update_patient_profile(
     if address is not None:
         updates.append("address = %s")
         params.append(address.strip() or None)
+    if preferred_language is not None:
+        updates.append("preferred_language = %s")
+        params.append(preferred_language)
 
     if not updates:
         return get_user_profile(patient_id)
@@ -200,7 +225,8 @@ def get_user_profile(user_id: str):
                     p.address,
                     p.email,
                     p.blood_group,
-                    p.health_issues
+                    p.health_issues,
+                    p.preferred_language
                 FROM users u
                 JOIN patient_profiles p ON p.user_id = u.user_id
                 WHERE u.user_id = %s;
@@ -222,6 +248,7 @@ def get_user_profile(user_id: str):
         profile_email,
         blood_group,
         health_issues,
+        preferred_language,
     ) = row
 
     return {
@@ -234,4 +261,32 @@ def get_user_profile(user_id: str):
         "email": profile_email,
         "blood_group": blood_group,
         "health_issues": health_issues,
+        "preferred_language": preferred_language or "en",
     }
+
+
+def get_user_profile_by_mobile(mobile_number: str):
+    """Find a patient by the phone number supplied by Twilio."""
+    normalized = normalize_mobile_number(mobile_number)
+    if not normalized:
+        return None
+
+    with connect_db() as conn:
+        ensure_user_schema(conn)
+        with conn.cursor() as cur:
+            cur.execute(
+                """
+                SELECT user_id
+                FROM patient_profiles
+                WHERE (
+                    regexp_replace(mobile_number, '[^0-9]', '', 'g') =
+                    regexp_replace(%s, '[^0-9]', '', 'g')
+                    OR RIGHT(regexp_replace(mobile_number, '[^0-9]', '', 'g'), 10) =
+                       RIGHT(regexp_replace(%s, '[^0-9]', '', 'g'), 10)
+                )
+                LIMIT 1;
+                """,
+                (normalized, normalized),
+            )
+            row = cur.fetchone()
+    return get_user_profile(str(row[0])) if row else None

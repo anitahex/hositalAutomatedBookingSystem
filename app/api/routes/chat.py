@@ -17,6 +17,7 @@ from websockets.exceptions import ConnectionClosed
 from app.api.dependencies import current_user
 from app.agents.graph import arun_patient_chat, initialise_hybrid_memory, run_patient_chat
 from app.services.appointments import upcoming_bookings_for_patient
+from app.services.language import apply_language_turn
 from app.services.tokens import verify_access_token
 from app.services.document_pipeline import (
     ALLOWED_UPLOAD_MIME_TYPES,
@@ -446,6 +447,7 @@ def chat(request: ChatRequest, user: dict = Depends(current_user)):
     response_text, result, usage_summary = asyncio.run(_run_chat_with_usage(payload, user))
     return {
         "response": response_text,
+        "language": result.get("active_language") or "en",
         "state": result,
         "safety_disclaimer": SAFETY_DISCLAIMER,
     }
@@ -566,6 +568,28 @@ async def chat_stream(request: Request, user: dict = Depends(current_user)):
 
         # Prepare state once for routing checks (payload state, not full LangGraph)
         stream_state, stream_patient_id = _prepare_chat_state(payload, user)
+        language_updates = apply_language_turn(stream_state, payload["message"])
+        stream_state.update(language_updates)
+        if language_updates.get("language_control_response"):
+            response_text = language_updates["language_control_response"]
+            history = list(stream_state.get("conversation_history") or [])
+            history.append({"role": "assistant", "text": response_text})
+            stream_state.update({"conversation_history": history, "messages": history[-6:], "final_response": response_text})
+            if stream_patient_id:
+                try:
+                    append_chat_messages(
+                        stream_patient_id,
+                        [{"role": "patient", "text": payload["message"]}, {"role": "assistant", "text": response_text}],
+                        chat_session_id=stream_state.get("chat_session_id"),
+                    )
+                except Exception as exc:
+                    logger.warning("language switch stream: could not save history: %s", exc)
+            yield _stream_event("start_response")
+            yield _stream_event("token", token=response_text)
+            yield _stream_event("final", response=response_text, language=stream_state.get("active_language") or "en",
+                                state=stream_state, token_usage={"input_tokens": 0, "output_tokens": 0, "total_tokens": 0, "calls": 0},
+                                safety_disclaimer=SAFETY_DISCLAIMER)
+            return
         stream_state = _append_user_message_to_state(stream_state, payload["message"])
         # CRITICAL: expose current message as user_input so extraction/prompts work correctly
         stream_state["user_input"] = payload["message"]
@@ -599,6 +623,7 @@ async def chat_stream(request: Request, user: dict = Depends(current_user)):
             yield _stream_event(
                 "final",
                 response=full_text,
+                language=updated_state.get("active_language") or "en",
                 state=updated_state,
                 token_usage={"input_tokens": 0, "output_tokens": 0, "total_tokens": 0, "calls": 1},
                 safety_disclaimer=SAFETY_DISCLAIMER,
@@ -636,6 +661,7 @@ async def chat_stream(request: Request, user: dict = Depends(current_user)):
             yield _stream_event(
                 "final",
                 response=full_text,
+                language=updated_state.get("active_language") or "en",
                 state=updated_state,
                 token_usage={"input_tokens": 0, "output_tokens": 0, "total_tokens": 0, "calls": 1},
                 safety_disclaimer=SAFETY_DISCLAIMER,
@@ -654,6 +680,7 @@ async def chat_stream(request: Request, user: dict = Depends(current_user)):
             yield _stream_event(
                 "final",
                 response=response_text,
+                language=result.get("active_language") or "en",
                 state=result,
                 token_usage=usage_summary,
                 safety_disclaimer=SAFETY_DISCLAIMER,

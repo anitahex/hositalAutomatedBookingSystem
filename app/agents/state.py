@@ -31,6 +31,17 @@ class GraphState(TypedDict, total=False):
     chat_session_id: Optional[str]
     patient_profile: Optional[dict[str, Any]]
 
+    # Multilingual conversation state
+    preferred_language: Optional[str]
+    active_language: Optional[str]
+    detected_language: Optional[str]
+    language_confidence: Optional[float]
+    language_switch_candidate: Optional[str]
+    language_switch_count: Optional[int]
+    language_changed: Optional[bool]
+    language_control_response: Optional[str]
+    patient_response_language: Optional[str]
+
     # Rolling state / public context
     messages: Annotated[list[dict[str, Any]], rolling_message_reducer]
     recent_history: Optional[list[dict[str, Any]]]

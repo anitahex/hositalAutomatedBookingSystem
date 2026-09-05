@@ -6,6 +6,7 @@ Remedy logic lives in remedy_agent.py.
 """
 
 import re
+import json
 from datetime import date, datetime, timedelta, timezone
 
 from app.agents.state import GraphState
@@ -20,6 +21,8 @@ from app.agents.intake_utils import (
 )
 from app.inference.llm import generate_text
 from app.services.memory_policy import get_memory_policy
+from app.services.language import language_prompt_context, normalize_language
+from app.services.patient_text import display_label, patient_message
 from langchain_core.output_parsers import PydanticOutputParser
 from app.services.appointments import (
     active_bookings_for_patient,
@@ -119,9 +122,11 @@ _IST = timedelta(hours=5, minutes=30)
 
 
 def _fmt_time(iso_str: str) -> str:
-    """Convert UTC naive timestamp to IST for display: 'Today 2:30 PM' / 'Jun 27 9 AM'."""
+    """Format a stored India-local appointment timestamp."""
     try:
-        dt_ist = datetime.fromisoformat(str(iso_str)) + _IST
+        dt_ist = datetime.fromisoformat(str(iso_str).replace("Z", "+00:00"))
+        if dt_ist.tzinfo is not None:
+            dt_ist = dt_ist.astimezone(timezone(timedelta(hours=5, minutes=30))).replace(tzinfo=None)
         now_ist = datetime.now(timezone.utc).replace(tzinfo=None) + _IST
         today_ist = now_ist.date()
         tomorrow_ist = today_ist + timedelta(days=1)
@@ -172,16 +177,14 @@ def format_numbered_options(items: list[dict], label_key: str, extra_keys: list[
 
 
 def _slots_to_ist(slots: list[dict]) -> list[dict]:
-    """Return a copy of slots with start_time/end_time shifted to IST (naive ISO strings).
-    The JS frontend treats naive ISO strings as local time, so sending IST values
-    ensures buttons display the correct local time without needing a 'Z' suffix."""
+    """Annotate India-local slots with an explicit IST offset for the UI."""
     result = []
     for slot in slots:
         s = dict(slot)
         for key in ("start_time", "end_time"):
             if s.get(key):
                 try:
-                    s[key] = (datetime.fromisoformat(s[key]) + _IST).isoformat()
+                    s[key] = datetime.fromisoformat(str(s[key])).isoformat() + "+05:30"
                 except Exception:
                     pass
         result.append(s)
@@ -306,9 +309,12 @@ def _format_booking_options(bookings: list[dict]):
     lines = []
     for index, booking in enumerate(bookings, start=1):
         time_str = booking.get("time") or booking.get("start_time") or "Unknown time"
+        doctor_name = booking.get("doctor") or booking.get("doctor_name") or "Doctor"
+        department = booking.get("department") or "Unknown department"
+        booking_id = booking.get("booking_id") or booking.get("slot_id") or "Unknown reference"
         lines.append(
-            f"{index}. {booking['doctor']} ({booking['department']}) at {time_str} "
-            f"- Reference: {booking['booking_id']}"
+            f"{index}. {doctor_name} ({department}) at {time_str} "
+            f"- Reference: {booking_id}"
         )
     return "\n".join(lines)
 
@@ -389,9 +395,12 @@ def _format_reschedule_booking_options(bookings: list[dict]):
     for index, booking in enumerate(bookings, start=1):
         change_state = "can change date" if booking.get("can_modify", True) else "locked"
         time_str = booking.get("time") or booking.get("start_time") or "Unknown time"
+        doctor_name = booking.get("doctor") or booking.get("doctor_name") or "Doctor"
+        department = booking.get("department") or "Unknown department"
+        booking_id = booking.get("booking_id") or booking.get("slot_id") or "Unknown reference"
         lines.append(
-            f"{index}. {booking['doctor']} ({booking['department']}) at {time_str} "
-            f"- Reference: {booking['booking_id']} [{change_state}]"
+            f"{index}. {doctor_name} ({department}) at {time_str} "
+            f"- Reference: {booking_id} [{change_state}]"
         )
     return "\n".join(lines)
 
@@ -535,9 +544,9 @@ def cancel_selected_appointment(state: GraphState):
         "confirmed_booking": remaining[-1] if remaining else None,
         "final_response": (
             "Your appointment has been cancelled.\n\n"
-            f"Doctor: {cancelled['doctor']}\n"
-            f"Department: {cancelled['department']}\n"
-            f"Date & Time: {cancelled['time']}\n\n"
+            f"Doctor: {cancelled.get('doctor') or cancelled.get('doctor_name') or 'Doctor'}\n"
+            f"Department: {cancelled.get('department') or 'Unknown department'}\n"
+            f"Date & Time: {cancelled.get('time') or cancelled.get('start_time') or 'Unknown time'}\n\n"
             "Would you like help with anything else, or should we end the chat?"
         ),
     }
@@ -757,9 +766,9 @@ def apply_reschedule_slot(state: GraphState):
         "reschedule_slot_options": [],
         "final_response": (
             "Your appointment has been updated.\n\n"
-            f"Doctor: {booked['doctor']}\n"
-            f"Department: {booked['department']}\n"
-            f"Date & Time: {booked['time']}\n"
+            f"Doctor: {booked.get('doctor') or booked.get('doctor_name') or 'Doctor'}\n"
+            f"Department: {booked.get('department') or 'Unknown department'}\n"
+            f"Date & Time: {booked.get('time') or booked.get('start_time') or 'Unknown time'}\n"
             f"Reference ID: {confirmed_booking['booking_id']}\n\n"
             "Would you like help with anything else, or should we end the chat?"
         ),
@@ -795,7 +804,7 @@ Collected facts: {compact_fact_summary(state.get('collected_data') or state.get(
 Latest reply: {state.get('user_input', '')}"""
 
     raw_output = generate_text(
-        system_prompt=STATIC_MENU_PROMPT,
+        system_prompt=STATIC_MENU_PROMPT + language_prompt_context(state),
         user_prompt=dynamic_user_prompt,
         node_name="appointment_booker",
         chat_summary=state.get("chat_summary"),
@@ -1139,13 +1148,17 @@ def book_preferred_slot(state: GraphState):
             ),
         }
 
-    booking_reference = str(booked.get("booking_id") or booked["slot_id"])
+    doctor_name = str(booked.get("doctor") or booked.get("doctor_name") or "Doctor")
+    department_name = str(booked.get("department") or "Unknown department")
+    start_time = str(booked.get("start_time") or booked.get("time") or "Unknown time")
+    slot_reference = str(booked.get("slot_id") or "")
+    booking_reference = str(booked.get("booking_id") or slot_reference)
     confirmed_booking = {
         "booking_id": booking_reference,
-        "doctor": str(booked["doctor_name"]),
-        "department": str(booked["department"]),
-        "time": str(booked["start_time"]),
-        "slot_id": str(booked["slot_id"]),
+        "doctor": doctor_name,
+        "department": department_name,
+        "time": start_time,
+        "slot_id": slot_reference,
     }
     confirmed_bookings = _booking_list(state)
     confirmed_bookings.append(confirmed_booking)
@@ -1174,13 +1187,13 @@ def book_preferred_slot(state: GraphState):
             "slot_options": [],
             "selected_doctor_id": None,
             "selected_doctor_name": None,
-            "selected_slot_id": str(booked["slot_id"]),
+            "selected_slot_id": slot_reference,
             "final_response": (
-                "Your appointment is booked and confirmed!\n\n"
-                f"Doctor: {booked['doctor_name']}\n"
-                f"Department: {booked['department']}\n"
-                f"Date & Time: {booked['start_time']}\n"
-                f"Reference ID: {booking_reference}\n"
+                f"{patient_message(state, 'appointment_confirmed', doctor=doctor_name, date_time=start_time, reference=booking_reference)}\n\n"
+                f"{display_label(state, 'doctor')}: {doctor_name}\n"
+                f"{display_label(state, 'department')}: {department_name}\n"
+                f"{display_label(state, 'date_time')}: {start_time}\n"
+                f"{display_label(state, 'reference')}: {booking_reference}\n"
                 f"{clinical_note_suffix}\n\n"
                 "I can also help with the other department(s) we identified.\n"
                 f"{next_departments}\n\n"
@@ -1190,6 +1203,9 @@ def book_preferred_slot(state: GraphState):
 
     return {
         "awaiting": "report_forwarding_decision",
+        # Keep the exact appointment associated with the consent prompt. Do
+        # not re-select by list order when the patient has multiple bookings.
+        "report_forwarding_booking_id": booking_reference,
         "booking_active": False,
         "upcoming_bookings": confirmed_bookings,
         "confirmed_booking": confirmed_booking,
@@ -1198,22 +1214,102 @@ def book_preferred_slot(state: GraphState):
         "slot_options": [],
         "selected_doctor_id": None,
         "selected_doctor_name": None,
-        "selected_slot_id": str(booked["slot_id"]),
+        "selected_slot_id": slot_reference,
         "final_response": (
-            "✓ Your appointment is booked and confirmed!\n\n"
-            f"**Doctor:** {booked['doctor_name']}\n"
-            f"**Department:** {booked['department']}\n"
-            f"**Date & Time:** {booked['start_time']}\n"
-            f"**Reference ID:** {booking_reference}\n\n"
+            f"✓ {patient_message(state, 'appointment_confirmed', doctor=doctor_name, date_time=start_time, reference=booking_reference)}\n\n"
+            f"**{display_label(state, 'doctor')}:** {doctor_name}\n"
+            f"**{display_label(state, 'department')}:** {department_name}\n"
+            f"**{display_label(state, 'date_time')}:** {start_time}\n"
+            f"**{display_label(state, 'reference')}:** {booking_reference}\n\n"
             "---\n\n"
-            f"**Should I forward your detailed clinical report to {booked['doctor_name']} before your appointment?**\n\n"
-            "This will include all the symptoms, their patterns, triggers, and recommendations we discussed. "
-            "It helps the doctor prepare better for your visit. (yes / no)"
+            f"{patient_message(state, 'report_forward_prompt', doctor=doctor_name)}"
         ),
     }
 
 
+def _localize_booking_response(state: GraphState, result: dict) -> dict:
+    """Ensure deterministic booking workflow output follows active language."""
+    response = result.get("final_response")
+    code = normalize_language(state.get("active_language")) or "en"
+    if not response or code == "en":
+        return result
+    localized = generate_text(
+        system_prompt=(
+            "You are the patient-facing appointment workflow assistant. "
+            f"Write the response entirely in {code}. Preserve all doctor names, "
+            "department names, dates, times, numbers, IDs, option numbers, and "
+            "the exact clinical meaning. Do not add or remove information. "
+            "Return only the patient-facing response."
+        ),
+        user_prompt=str(response),
+        node_name="appointment_booker_localizer",
+        chat_summary=state.get("chat_summary"),
+        include_history=False,
+        history_turns=0,
+        patient_id=str(state.get("patient_id") or ""),
+        chat_session_id=str(state.get("chat_session_id") or ""),
+    ).strip()
+    if not localized:
+        return result
+    updated = {**result, "final_response": localized, "patient_response_language": code}
+    updated = _localize_doctor_options(state, updated)
+    for history_key in ("conversation_history", "messages"):
+        history = updated.get(history_key)
+        if isinstance(history, list) and history:
+            copied = [dict(item) if isinstance(item, dict) else item for item in history]
+            for item in reversed(copied):
+                if isinstance(item, dict) and item.get("role") == "assistant":
+                    item["text"] = localized
+                    break
+            updated[history_key] = copied
+    return updated
+
+
+def _localize_doctor_options(state: GraphState, result: dict) -> dict:
+    """Add ephemeral display names; canonical names and IDs are never changed."""
+    code = normalize_language(state.get("active_language")) or "en"
+    options = result.get("doctor_options")
+    if code == "en" or not isinstance(options, list) or not options:
+        return result
+    names = [str(item.get("doctor_name") or item.get("doctor") or "") for item in options if isinstance(item, dict)]
+    if not names:
+        return result
+    raw = generate_text(
+        system_prompt=(
+            f"Transliterate these doctor names for patient display in language code {code}. "
+            "Return only a JSON array of strings in the same order. Do not translate titles or invent names."
+        ),
+        user_prompt=json.dumps(names, ensure_ascii=False),
+        node_name="appointment_booker_name_display",
+        chat_summary=None,
+        include_history=False,
+        history_turns=0,
+        patient_id=str(state.get("patient_id") or ""),
+        chat_session_id=str(state.get("chat_session_id") or ""),
+    ).strip()
+    try:
+        display_names = json.loads(_clean_json(raw))
+    except (TypeError, ValueError, json.JSONDecodeError):
+        return result
+    if not isinstance(display_names, list) or len(display_names) != len(names):
+        return result
+    localized_options = []
+    index = 0
+    for item in options:
+        copied = dict(item)
+        if copied.get("doctor_name") or copied.get("doctor"):
+            copied["display_name"] = str(display_names[index])
+            index += 1
+        localized_options.append(copied)
+    return {**result, "doctor_options": localized_options}
+
+
 def appointment_booker_node(state: GraphState):
+    result = _appointment_booker_node(state)
+    return _localize_booking_response(state, result)
+
+
+def _appointment_booker_node(state: GraphState):
     awaiting = state.get("awaiting")
 
     if awaiting == "appointment_resolver":

@@ -6,6 +6,7 @@ from app.agents.appointment_booker import appointment_booker_node
 from app.agents.checkup_report import checkup_report_node
 from app.agents.conversation_agent import conversation_agent_node
 from app.agents.document_analyzer import document_analyzer_node
+from app.agents.language_identifier import language_identification_node
 from app.agents.supervisor import continue_current_node
 from app.agents.supervisor import general_qa_node
 from app.agents.medical_rag import medical_rag_node
@@ -14,8 +15,11 @@ from app.agents.state import GraphState
 from app.agents.supervisor import route_from_supervisor, supervisor_node
 from app.agents.triage_router import triage_router_node
 from app.inference.llm import summarize_chat_history
+from app.inference.llm import generate_text
+from app.services.language import normalize_language
 from app.services.memory_policy import get_memory_policy
 from app.services.checkpoint_store import SQLiteCheckpointer
+from app.services.patient_text import is_localized_choice
 
 
 MEMORY_POLICY = get_memory_policy("memory_compactor")
@@ -35,9 +39,11 @@ workflow.add_node("appointment_booker", appointment_booker_node)
 workflow.add_node("appointment_resolver", appointment_booker_node)
 workflow.add_node("continue_current", continue_current_node)
 workflow.add_node("document_analyzer", document_analyzer_node)
+workflow.add_node("language_identification", language_identification_node)
 
 # Entry point
-workflow.set_entry_point("supervisor")
+workflow.set_entry_point("language_identification")
+workflow.add_edge("language_identification", "supervisor")
 
 # Supervisor routes conditionally to any node or END
 workflow.add_conditional_edges(
@@ -194,6 +200,16 @@ async def arun_patient_chat(
     """
     current_state = compact_hybrid_memory(initialise_hybrid_memory(dict(state or {})))
     current_state["user_input"] = user_input
+    # This marker belongs to the current response only; never let it suppress
+    # localization of a newly generated response on the next turn.
+    current_state.pop("patient_response_language", None)
+
+    # Keep the original patient message in history, but canonicalize localized
+    # Yes/No labels for deterministic workflow routing (e.g. German ja/nein).
+    if is_localized_choice(user_input, "yes"):
+        current_state["user_input"] = "yes"
+    elif is_localized_choice(user_input, "no"):
+        current_state["user_input"] = "no"
 
     if patient_id is not None:
         current_state["patient_id"] = patient_id
@@ -221,7 +237,44 @@ async def arun_patient_chat(
         current_state,
         config={"configurable": {"thread_id": thread_id}},
     )
+    result = _ensure_patient_response_language(result)
     return compact_hybrid_memory(result)
+
+
+def _ensure_patient_response_language(result: GraphState) -> GraphState:
+    """Apply active language to the final patient-facing response boundary."""
+    response = result.get("final_response")
+    code = normalize_language(result.get("active_language")) or "en"
+    if not response or code == "en" or result.get("patient_response_language") == code:
+        return result
+    localized = generate_text(
+        system_prompt=(
+            f"You are the final patient-facing healthcare assistant. Respond entirely in language code {code}. "
+            "Preserve the exact meaning, safety guidance, doctor names, department names, dates, times, numbers, "
+            "IDs, option numbers, and markdown structure. Do not add or remove information. "
+            "This is a patient workflow message, not the internal English clinical summary. Return only the response."
+        ),
+        user_prompt=str(response),
+        node_name="patient_response_language_boundary",
+        chat_summary=result.get("chat_summary"),
+        include_history=False,
+        history_turns=0,
+        patient_id=str(result.get("patient_id") or ""),
+        chat_session_id=str(result.get("chat_session_id") or ""),
+    ).strip()
+    if not localized:
+        return result
+    updated = {**result, "final_response": localized, "patient_response_language": code}
+    for history_key in ("conversation_history", "messages"):
+        history = updated.get(history_key)
+        if isinstance(history, list) and history:
+            copied = [dict(item) if isinstance(item, dict) else item for item in history]
+            for item in reversed(copied):
+                if isinstance(item, dict) and item.get("role") == "assistant":
+                    item["text"] = localized
+                    break
+            updated[history_key] = copied
+    return updated
 
 
 def run_patient_chat(

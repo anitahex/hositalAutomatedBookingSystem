@@ -111,6 +111,7 @@ const authTabs = document.querySelector(".auth-tabs");
 const loginForm = document.querySelector("#loginForm");
 const signupForm = document.querySelector("#signupForm");
 const adminLoginForm = document.querySelector("#adminLoginForm");
+const doctorMfaForm = document.querySelector("#doctorMfaForm");
 const adminBackBtn = document.querySelector("#adminBackBtn");
 const pageAssistant = document.querySelector("#pageAssistant");
 const pageDashboard = document.querySelector("#pageDashboard");
@@ -123,6 +124,7 @@ const signupNextBtn = document.querySelector("#signupNextBtn");
 const signupBackBtn = document.querySelector("#signupBackBtn");
 const authMessage = document.querySelector("#authMessage");
 const adminAuthMessage = document.querySelector("#adminAuthMessage");
+let doctorMfaToken = null;
 
 let state = null;
 let currentUser = JSON.parse(localStorage.getItem("currentUser") || "null");
@@ -507,17 +509,12 @@ function showAdminView(view) {
 function showAuthMode(mode) {
   const isLogin = mode === "login";
   const isSignup = mode === "signup";
-  const isAdmin = mode === "admin";
   loginForm.classList.toggle("hidden", !isLogin);
   signupForm.classList.toggle("hidden", !isSignup);
-  if (adminLoginForm) {
-    adminLoginForm.classList.toggle("hidden", !isAdmin);
-  }
+  if (doctorMfaForm) doctorMfaForm.classList.add("hidden");
   showLoginBtn.classList.toggle("active", isLogin);
   showSignupBtn.classList.toggle("active", isSignup);
-  if (showAdminBtn) {
-    showAdminBtn.classList.toggle("active", isAdmin);
-  }
+  if (showAdminBtn) showAdminBtn.classList.remove("active");
   setAuthMessage("");
   setAdminAuthMessage("");
 }
@@ -564,10 +561,19 @@ function normalizeChatState(nextState, fallbackState = null) {
   };
 
   const history = nextState?.messages || nextState?.conversation_history || fallbackState?.messages || fallbackState?.conversation_history || [];
-  const upcomingBookings = mergeBookingLists(
-    nextState?.upcoming_bookings || nextState?.confirmed_bookings || fallbackState?.upcoming_bookings || fallbackState?.confirmed_bookings || [],
-    nextState?.active_appointments || fallbackState?.active_appointments || []
-  );
+  // When the backend supplies active_appointments (for example from
+  // /appointments/upcoming), it is the database-authoritative list. Do not
+  // merge it with an older client/chat list, otherwise a newly booked item
+  // can be hidden by stale entries in the three-card preview.
+  const authoritativeAppointments = Array.isArray(nextState?.active_appointments)
+    ? nextState.active_appointments
+    : null;
+  const upcomingBookings = authoritativeAppointments
+    ? authoritativeAppointments
+    : mergeBookingLists(
+      nextState?.upcoming_bookings || nextState?.confirmed_bookings || fallbackState?.upcoming_bookings || fallbackState?.confirmed_bookings || [],
+      fallbackState?.active_appointments || []
+    );
   const activeIntent = nextState?.active_intent || nextState?.intent || fallbackState?.active_intent || fallbackState?.intent || null;
   const collectedData = nextState?.collected_data || nextState?.collected_info || fallbackState?.collected_data || fallbackState?.collected_info || {};
   const sessionId = nextState?.session_id || nextState?.chat_session_id || fallbackState?.session_id || fallbackState?.chat_session_id || null;
@@ -588,6 +594,12 @@ function normalizeChatState(nextState, fallbackState = null) {
     intent: activeIntent,
     session_id: sessionId,
     chat_session_id: sessionId,
+    preferred_language: nextState?.preferred_language ?? fallbackState?.preferred_language ?? currentUser?.preferred_language ?? "en",
+    active_language: nextState?.active_language ?? fallbackState?.active_language ?? null,
+    detected_language: nextState?.detected_language ?? fallbackState?.detected_language ?? null,
+    language_confidence: nextState?.language_confidence ?? fallbackState?.language_confidence ?? null,
+    language_switch_candidate: nextState?.language_switch_candidate ?? fallbackState?.language_switch_candidate ?? null,
+    language_switch_count: nextState?.language_switch_count ?? fallbackState?.language_switch_count ?? 0,
     pending_file_data: nextState?.pending_file_data ?? fallbackState?.pending_file_data ?? null,
     pending_file_name: nextState?.pending_file_name ?? fallbackState?.pending_file_name ?? null,
     pending_file_mime_type: nextState?.pending_file_mime_type ?? fallbackState?.pending_file_mime_type ?? null,
@@ -1094,7 +1106,11 @@ function formatDateTime(value) {
   if (!value) {
     return "-";
   }
-  const parsed = new Date(value);
+  // Patient appointment timestamps are India-local values or explicitly
+  // marked +05:30 by the backend. Always display them in IST.
+  const raw = String(value);
+  const hasTimezone = /(?:Z|[+-]\d{2}:?\d{2})$/i.test(raw);
+  const parsed = new Date(hasTimezone ? raw : `${raw}+05:30`);
   if (Number.isNaN(parsed.getTime())) {
     return String(value);
   }
@@ -1105,6 +1121,7 @@ function formatDateTime(value) {
     hour: "numeric",
     minute: "2-digit",
     hour12: true,
+    timeZone: "Asia/Kolkata",
   });
 }
 
@@ -1112,7 +1129,9 @@ function formatBookingDateTime(value) {
   if (!value) {
     return "-";
   }
-  const parsed = new Date(value);
+  const raw = String(value);
+  const hasTimezone = /(?:Z|[+-]\d{2}:?\d{2})$/i.test(raw);
+  const parsed = new Date(hasTimezone ? raw : `${raw}+05:30`);
   if (Number.isNaN(parsed.getTime())) {
     return String(value);
   }
@@ -1123,6 +1142,7 @@ function formatBookingDateTime(value) {
     hour: "numeric",
     minute: "2-digit",
     hour12: true,
+    timeZone: "Asia/Kolkata",
   });
 }
 
@@ -1209,7 +1229,7 @@ function buildBookingPanelSummary() {
   label.textContent = "DIRECT BOOKING";
 
   const title = document.createElement("h3");
-  title.textContent = "Departments > doctors > appointment";
+  title.textContent = `${patientUi("department")} > ${patientUi("doctor")} > ${patientUi("appointment")}`;
 
   const text = document.createElement("p");
   text.className = "panel-note";
@@ -1236,18 +1256,18 @@ function renderBookingStudio() {
   const departmentCard = document.createElement("article");
   departmentCard.className = "glass-panel booking-step-card";
   const departmentTitle = document.createElement("h3");
-  departmentTitle.textContent = "1. Department";
+  departmentTitle.textContent = `1. ${patientUi("department")}`;
   const departmentNote = document.createElement("p");
   departmentNote.className = "panel-note";
   departmentNote.textContent = "Pick the department that best matches the concern.";
   const departmentSelect = document.createElement("select");
-  departmentSelect.innerHTML = '<option value="">Loading departments...</option>';
+  departmentSelect.innerHTML = `<option value="">${patientUi("loadingDepartments")}</option>`;
   departmentCard.append(departmentTitle, departmentNote, departmentSelect);
 
   const doctorCard = document.createElement("article");
   doctorCard.className = "glass-panel booking-step-card";
   const doctorTitle = document.createElement("h3");
-  doctorTitle.textContent = "2. Doctor";
+  doctorTitle.textContent = `2. ${patientUi("doctor")}`;
   const doctorNote = document.createElement("p");
   doctorNote.className = "panel-note";
   doctorNote.textContent = "Available doctors will appear after a department is chosen.";
@@ -1258,7 +1278,7 @@ function renderBookingStudio() {
   const slotCard = document.createElement("article");
   slotCard.className = "glass-panel booking-step-card";
   const slotTitle = document.createElement("h3");
-  slotTitle.textContent = "3. Appointment";
+  slotTitle.textContent = `3. ${patientUi("appointment")}`;
   const slotNote = document.createElement("p");
   slotNote.className = "panel-note";
   slotNote.textContent = "Choose a date within the next 7 days and book the slot.";
@@ -1271,7 +1291,7 @@ function renderBookingStudio() {
   const actionCard = document.createElement("article");
   actionCard.className = "glass-panel booking-step-card booking-action-card";
   const actionTitle = document.createElement("h3");
-  actionTitle.textContent = "Booking summary";
+  actionTitle.textContent = patientUi("bookingSummary");
   const actionText = document.createElement("p");
   actionText.className = "panel-note";
   actionText.textContent = "Select a slot to enable booking.";
@@ -1279,7 +1299,7 @@ function renderBookingStudio() {
   actionMeta.className = "booking-meta";
   const actionButton = document.createElement("button");
   actionButton.type = "button";
-  actionButton.textContent = "Book selected slot";
+  actionButton.textContent = patientUi("bookSlot");
   actionButton.disabled = true;
   actionCard.append(actionTitle, actionText, actionMeta, actionButton);
 
@@ -1309,8 +1329,8 @@ function renderBookingStudio() {
     actionMeta.append(dept, doc, slotNode);
     actionButton.disabled = !bookingStudioState.slotId;
     actionText.textContent = bookingStudioState.slotId
-      ? "You can book immediately from here."
-      : "Select a slot to enable booking.";
+      ? patientUi("bookFromHere")
+      : patientUi("selectSlot");
   };
 
   const renderDates = () => {
@@ -1336,7 +1356,7 @@ function renderBookingStudio() {
     if (!bookingStudioState.departments.length) {
       const note = document.createElement("p");
       note.className = "panel-note";
-      note.textContent = "No departments are currently available.";
+      note.textContent = patientUi("noDepartments");
       doctorList.appendChild(note);
       return;
     }
@@ -1344,7 +1364,7 @@ function renderBookingStudio() {
     if (!bookingStudioState.doctors.length) {
       const note = document.createElement("p");
       note.className = "panel-note";
-      note.textContent = "Select a department to see available doctors.";
+      note.textContent = patientUi("selectDepartment");
       doctorList.appendChild(note);
       return;
     }
@@ -1356,7 +1376,7 @@ function renderBookingStudio() {
       button.classList.toggle("active", bookingStudioState.doctor?.doctor_id === doctor.doctor_id);
       const title = document.createElement("strong");
       title.className = "booking-card-title";
-      title.textContent = doctor.doctor_name;
+      title.textContent = doctor.display_name || doctor.doctor_name;
 
       const department = document.createElement("span");
       department.className = "booking-card-meta";
@@ -1368,13 +1388,13 @@ function renderBookingStudio() {
 
       const availability = document.createElement("span");
       availability.className = "booking-card-meta";
-      availability.textContent = `${doctor.available_slot_count || 0} open slots`;
+      availability.textContent = `${doctor.available_slot_count || 0} ${patientUi("openSlots")}`;
 
       const nextSlot = document.createElement("span");
       nextSlot.className = "booking-card-meta";
       nextSlot.textContent = doctor.next_available_time
         ? `Next: ${formatDateTime(doctor.next_available_time)}`
-        : "Next slot not listed";
+        : patientUi("nextSlot");
 
       button.append(title, department, experience, availability, nextSlot);
       button.addEventListener("click", () => {
@@ -1393,7 +1413,7 @@ function renderBookingStudio() {
     if (!bookingStudioState.doctor) {
       const note = document.createElement("p");
       note.className = "panel-note";
-      note.textContent = "Pick a doctor to view slots.";
+      note.textContent = patientUi("pickDoctor");
       slotList.appendChild(note);
       return;
     }
@@ -1401,7 +1421,7 @@ function renderBookingStudio() {
     if (!bookingStudioState.slots.length) {
       const note = document.createElement("p");
       note.className = "panel-note";
-      note.textContent = "No slots are available for this doctor on the selected date.";
+      note.textContent = patientUi("noSlots");
       slotList.appendChild(note);
       return;
     }
@@ -1468,7 +1488,7 @@ function renderBookingStudio() {
     doctorList.replaceChildren();
     const loading = document.createElement("p");
     loading.className = "panel-note";
-    loading.textContent = "Loading doctors...";
+    loading.textContent = patientUi("loadingDoctors");
     doctorList.appendChild(loading);
 
     try {
@@ -1500,7 +1520,7 @@ function renderBookingStudio() {
     slotList.replaceChildren();
     const loading = document.createElement("p");
     loading.className = "panel-note";
-    loading.textContent = "Loading slots...";
+    loading.textContent = patientUi("loadingSlots");
     slotList.appendChild(loading);
 
     try {
@@ -1626,7 +1646,15 @@ function renderActiveAppointments(bookings) {
     return;
   }
 
-  bookings.slice(0, 3).forEach((booking) => {
+  const visibleBookings = [...bookings]
+    .sort((left, right) => {
+      const leftTime = new Date(left?.time || left?.start_time || 0).getTime();
+      const rightTime = new Date(right?.time || right?.start_time || 0).getTime();
+      return rightTime - leftTime;
+    })
+    .slice(0, 3);
+
+  visibleBookings.forEach((booking) => {
     const item = document.createElement("article");
     item.className = "appointment-card";
 
@@ -1642,6 +1670,84 @@ function renderActiveAppointments(bookings) {
 
     activeAppointmentsPreview.appendChild(item);
   });
+}
+
+function renderAppointmentsPageList(container, bookings, { upcoming = false } = {}) {
+  if (!container) return;
+  container.replaceChildren();
+
+  if (!Array.isArray(bookings) || !bookings.length) {
+    const note = document.createElement("p");
+    note.className = "panel-note";
+    note.textContent = upcoming
+      ? "No upcoming appointments found."
+      : "No past appointments found.";
+    container.appendChild(note);
+    return;
+  }
+
+  bookings.forEach((booking) => {
+    const item = document.createElement("article");
+    item.className = "booking-item";
+    item.appendChild(bookingSummary(booking));
+
+    if (upcoming) {
+      const actions = document.createElement("div");
+      actions.className = "booking-actions";
+
+      if (booking.can_modify) {
+        const cancelButton = document.createElement("button");
+        cancelButton.className = "secondary compact";
+        cancelButton.type = "button";
+        cancelButton.textContent = "Cancel";
+        cancelButton.addEventListener("click", () => cancelBooking(booking.booking_id));
+
+        const changeButton = document.createElement("button");
+        changeButton.className = "secondary compact";
+        changeButton.type = "button";
+        changeButton.textContent = "Change date";
+        changeButton.addEventListener("click", () => showRescheduleControls(item, booking));
+        actions.append(cancelButton, changeButton);
+      } else {
+        const note = document.createElement("p");
+        note.className = "panel-note";
+        note.textContent = "Changes are locked because this appointment is within 24 hours.";
+        actions.appendChild(note);
+      }
+
+      item.appendChild(actions);
+    }
+
+    container.appendChild(item);
+  });
+}
+
+async function refreshAppointmentsPage() {
+  const upcomingList = document.getElementById("upcomingApptList");
+  const pastList = document.getElementById("pastApptList");
+  if (!upcomingList || !pastList) return;
+
+  const loading = document.createElement("p");
+  loading.className = "panel-note";
+  loading.textContent = "Loading appointments...";
+  upcomingList.replaceChildren(loading);
+  pastList.replaceChildren();
+
+  try {
+    const [upcomingData, pastData] = await Promise.all([
+      authedJson("/appointments/upcoming"),
+      authedJson("/appointments/previous"),
+    ]);
+    renderAppointmentsPageList(upcomingList, upcomingData.bookings || [], { upcoming: true });
+    renderAppointmentsPageList(pastList, pastData.bookings || []);
+  } catch (error) {
+    upcomingList.replaceChildren();
+    const note = document.createElement("p");
+    note.className = "panel-note";
+    note.textContent = error.message || "Unable to load appointments.";
+    upcomingList.appendChild(note);
+    renderAppointmentsPageList(pastList, []);
+  }
 }
 
 function formatClinicalSummary(value) {
@@ -1922,6 +2028,39 @@ const ADMIN_TIME_DEFAULTS = {
   lunchEnd: "13:30",
   workEnd: "17:00",
 };
+
+// Patient-facing UI labels use the same active language returned by /chat.
+// Backend IDs and enum values remain unchanged.
+const PATIENT_UI_TEXT = {
+  en: { department: "Department", doctor: "Doctor", appointment: "Appointment", bookingSummary: "Booking summary", bookSlot: "Book selected slot", chooseDepartment: "Choose a department", loadingDepartments: "Loading departments...", loadingDoctors: "Loading doctors...", loadingSlots: "Loading slots...", today: "Today", tomorrow: "Tomorrow", bookFromHere: "You can book immediately from here.", selectSlot: "Select a slot to enable booking.", noDepartments: "No departments are currently available.", selectDepartment: "Select a department to see available doctors.", pickDoctor: "Pick a doctor to view slots.", noSlots: "No slots are available for this doctor on the selected date.", nextSlot: "Next slot not listed", openSlots: "open slots", experience: "experience" },
+  hi: { department: "विभाग", doctor: "डॉक्टर", appointment: "अपॉइंटमेंट", bookingSummary: "बुकिंग सारांश", bookSlot: "चुना हुआ स्लॉट बुक करें", chooseDepartment: "विभाग चुनें", loadingDepartments: "विभाग लोड हो रहे हैं...", loadingDoctors: "डॉक्टर लोड हो रहे हैं...", loadingSlots: "स्लॉट लोड हो रहे हैं...", today: "आज", tomorrow: "कल", bookFromHere: "आप यहीं से तुरंत बुक कर सकते हैं।", selectSlot: "बुकिंग शुरू करने के लिए स्लॉट चुनें।", noDepartments: "अभी कोई विभाग उपलब्ध नहीं है।", selectDepartment: "उपलब्ध डॉक्टर देखने के लिए विभाग चुनें।", pickDoctor: "स्लॉट देखने के लिए डॉक्टर चुनें।", noSlots: "चुनी गई तारीख पर इस डॉक्टर के लिए कोई स्लॉट उपलब्ध नहीं है।", nextSlot: "अगला स्लॉट सूचीबद्ध नहीं है", openSlots: "खुले स्लॉट", experience: "अनुभव" },
+  te: { department: "విభాగం", doctor: "వైద్యుడు", appointment: "అపాయింట్‌మెంట్", bookingSummary: "బుకింగ్ సారాంశం", bookSlot: "ఎంచుకున్న సమయాన్ని బుక్ చేయండి", chooseDepartment: "విభాగాన్ని ఎంచుకోండి", loadingDepartments: "విభాగాలు లోడ్ అవుతున్నాయి...", loadingDoctors: "వైద్యులు లోడ్ అవుతున్నారు...", loadingSlots: "సమయాలు లోడ్ అవుతున్నాయి...", today: "ఈరోజు", tomorrow: "రేపు", bookFromHere: "మీరు ఇక్కడి నుంచే వెంటనే బుక్ చేయవచ్చు.", selectSlot: "బుకింగ్ ప్రారంభించడానికి సమయాన్ని ఎంచుకోండి.", noDepartments: "ప్రస్తుతం విభాగాలు అందుబాటులో లేవు.", selectDepartment: "అందుబాటులో ఉన్న వైద్యులను చూడటానికి విభాగాన్ని ఎంచుకోండి.", pickDoctor: "సమయాలను చూడటానికి వైద్యుడిని ఎంచుకోండి.", noSlots: "ఎంచుకున్న తేదీన ఈ వైద్యుడికి సమయాలు అందుబాటులో లేవు.", nextSlot: "తదుపరి సమయం జాబితాలో లేదు", openSlots: "అందుబాటులో ఉన్న సమయాలు", experience: "అనుభవం" },
+  ta: { department: "துறை", doctor: "மருத்துவர்", appointment: "அப்பாயின்ட்மென்ட்", bookingSummary: "பதிவு சுருக்கம்", bookSlot: "தேர்ந்தெடுத்த நேரத்தைப் பதிவு செய்க", chooseDepartment: "துறையைத் தேர்ந்தெடுக்கவும்", loadingDepartments: "துறைகள் ஏற்றப்படுகின்றன...", loadingDoctors: "மருத்துவர்கள் ஏற்றப்படுகின்றனர்...", loadingSlots: "நேரங்கள் ஏற்றப்படுகின்றன...", today: "இன்று", tomorrow: "நாளை", bookFromHere: "இங்கிருந்தே உடனடியாக பதிவு செய்யலாம்.", selectSlot: "பதிவு செய்ய ஒரு நேரத்தைத் தேர்ந்தெடுக்கவும்.", noDepartments: "தற்போது துறைகள் இல்லை.", selectDepartment: "மருத்துவர்களைக் காண ஒரு துறையைத் தேர்ந்தெடுக்கவும்.", pickDoctor: "நேரங்களைக் காண ஒரு மருத்துவரைத் தேர்ந்தெடுக்கவும்.", noSlots: "தேர்ந்தெடுத்த தேதியில் இந்த மருத்துவருக்கு நேரங்கள் இல்லை.", nextSlot: "அடுத்த நேரம் பட்டியலிடப்படவில்லை", openSlots: "கிடைக்கும் நேரங்கள்", experience: "அனுபவம்" },
+  kn: { department: "ವಿಭಾಗ", doctor: "ವೈದ್ಯರು", appointment: "ಅಪಾಯಿಂಟ್‌ಮೆಂಟ್", bookingSummary: "ಬುಕಿಂಗ್ ಸಾರಾಂಶ", bookSlot: "ಆಯ್ಕೆ ಮಾಡಿದ ಸಮಯವನ್ನು ಬುಕ್ ಮಾಡಿ", chooseDepartment: "ವಿಭಾಗವನ್ನು ಆಯ್ಕೆಮಾಡಿ", loadingDepartments: "ವಿಭಾಗಗಳನ್ನು ಲೋಡ್ ಮಾಡಲಾಗುತ್ತಿದೆ...", loadingDoctors: "ವೈದ್ಯರನ್ನು ಲೋಡ್ ಮಾಡಲಾಗುತ್ತಿದೆ...", loadingSlots: "ಸಮಯಗಳನ್ನು ಲೋಡ್ ಮಾಡಲಾಗುತ್ತಿದೆ...", today: "ಇಂದು", tomorrow: "ನಾಳೆ", bookFromHere: "ಇಲ್ಲಿಂದಲೇ ತಕ್ಷಣ ಬುಕ್ ಮಾಡಬಹುದು.", selectSlot: "ಬುಕ್ ಮಾಡಲು ಸಮಯವನ್ನು ಆಯ್ಕೆಮಾಡಿ.", noDepartments: "ಪ್ರಸ್ತುತ ಯಾವುದೇ ವಿಭಾಗಗಳು ಲಭ್ಯವಿಲ್ಲ.", selectDepartment: "ಲಭ್ಯವಿರುವ ವೈದ್ಯರನ್ನು ನೋಡಲು ವಿಭಾಗವನ್ನು ಆಯ್ಕೆಮಾಡಿ.", pickDoctor: "ಸಮಯಗಳನ್ನು ನೋಡಲು ವೈದ್ಯರನ್ನು ಆಯ್ಕೆಮಾಡಿ.", noSlots: "ಆಯ್ಕೆ ಮಾಡಿದ ದಿನಾಂಕದಂದು ಈ ವೈದ್ಯರಿಗೆ ಸಮಯಗಳು ಲಭ್ಯವಿಲ್ಲ.", nextSlot: "ಮುಂದಿನ ಸಮಯ ಪಟ್ಟಿ ಮಾಡಲಾಗಿಲ್ಲ", openSlots: "ಲಭ್ಯವಿರುವ ಸಮಯಗಳು", experience: "ಅನುಭವ" },
+  mr: { department: "विभाग", doctor: "डॉक्टर", appointment: "अपॉइंटमेंट", bookingSummary: "बुकिंग सारांश", bookSlot: "निवडलेला स्लॉट बुक करा", chooseDepartment: "विभाग निवडा", loadingDepartments: "विभाग लोड होत आहेत...", loadingDoctors: "डॉक्टर लोड होत आहेत...", loadingSlots: "स्लॉट लोड होत आहेत...", today: "आज", tomorrow: "उद्या", bookFromHere: "तुम्ही येथून लगेच बुक करू शकता.", selectSlot: "बुक करण्यासाठी स्लॉट निवडा.", noDepartments: "सध्या कोणतेही विभाग उपलब्ध नाहीत.", selectDepartment: "उपलब्ध डॉक्टर पाहण्यासाठी विभाग निवडा.", pickDoctor: "स्लॉट पाहण्यासाठी डॉक्टर निवडा.", noSlots: "निवडलेल्या तारखेला या डॉक्टरसाठी स्लॉट उपलब्ध नाहीत.", nextSlot: "पुढील स्लॉट सूचीबद्ध नाही", openSlots: "उपलब्ध स्लॉट", experience: "अनुभव" },
+  bn: { department: "বিভাগ", doctor: "ডাক্তার", appointment: "অ্যাপয়েন্টমেন্ট", bookingSummary: "বুকিং সারাংশ", bookSlot: "নির্বাচিত সময় বুক করুন", chooseDepartment: "একটি বিভাগ বেছে নিন", loadingDepartments: "বিভাগ লোড হচ্ছে...", loadingDoctors: "ডাক্তার লোড হচ্ছে...", loadingSlots: "সময় লোড হচ্ছে...", today: "আজ", tomorrow: "আগামীকাল", bookFromHere: "এখান থেকেই বুক করতে পারেন।", selectSlot: "বুক করতে একটি সময় বেছে নিন।", noDepartments: "এখন কোনো বিভাগ নেই।", selectDepartment: "ডাক্তার দেখতে একটি বিভাগ বেছে নিন।", pickDoctor: "সময় দেখতে একজন ডাক্তার বেছে নিন।", noSlots: "নির্বাচিত তারিখে এই ডাক্তারের কোনো সময় নেই।", nextSlot: "পরবর্তী সময় তালিকাভুক্ত নয়", openSlots: "খোলা সময়", experience: "অভিজ্ঞতা" },
+  gu: { department: "વિભાગ", doctor: "ડૉક્ટર", appointment: "એપોઇન્ટમેન્ટ", bookingSummary: "બુકિંગ સારાંશ", bookSlot: "પસંદ કરેલો સમય બુક કરો", chooseDepartment: "વિભાગ પસંદ કરો", loadingDepartments: "વિભાગો લોડ થઈ રહ્યા છે...", loadingDoctors: "ડૉક્ટરો લોડ થઈ રહ્યા છે...", loadingSlots: "સમય લોડ થઈ રહ્યા છે...", today: "આજે", tomorrow: "કાલે", bookFromHere: "તમે અહીંથી તરત બુક કરી શકો છો.", selectSlot: "બુક કરવા માટે સમય પસંદ કરો.", noDepartments: "હાલ કોઈ વિભાગ ઉપલબ્ધ નથી.", selectDepartment: "ઉપલબ્ધ ડૉક્ટરો જોવા માટે વિભાગ પસંદ કરો.", pickDoctor: "સમય જોવા માટે ડૉક્ટર પસંદ કરો.", noSlots: "પસંદ કરેલી તારીખે આ ડૉક્ટર માટે સમય ઉપલબ્ધ નથી.", nextSlot: "આગળનો સમય સૂચિબદ્ધ નથી", openSlots: "ખુલ્લા સમય", experience: "અનુભવ" },
+};
+
+function activePatientLanguage() {
+  const code = state?.active_language || state?.preferred_language || "en";
+  return PATIENT_UI_TEXT[code] ? code : "en";
+}
+
+function patientUi(key) {
+  return PATIENT_UI_TEXT[activePatientLanguage()][key] || PATIENT_UI_TEXT.en[key] || key;
+}
+
+const PATIENT_ACTION_TEXT = {
+  en: { noAppointment: "No appointment" }, hi: { noAppointment: "कोई अपॉइंटमेंट नहीं" },
+  te: { noAppointment: "అపాయింట్‌మెంట్ వద్దు" }, ta: { noAppointment: "அப்பாயிண்ட்மெண்ட் வேண்டாம்" },
+  kn: { noAppointment: "ಅಪಾಯಿಂಟ್‌ಮೆಂಟ್ ಬೇಡ" }, mr: { noAppointment: "अपॉइंटमेंट नको" },
+  bn: { noAppointment: "অ্যাপয়েন্টমেন্ট নয়" }, gu: { noAppointment: "એપોઇન્ટમેન્ટ નથી" },
+};
+
+function patientAction(key) {
+  return PATIENT_ACTION_TEXT[activePatientLanguage()]?.[key] || PATIENT_ACTION_TEXT.en[key] || key;
+}
 
 function formatAdminTimeLabel(value) {
   const [hoursRaw, minutesRaw] = String(value).split(":");
@@ -2617,9 +2756,9 @@ function renderQuickActions() {
     state.doctor_options.forEach((doctor, index) => {
       const years = Number(doctor?.experience_years ?? doctor?.years_of_experience ?? 0);
       const experienceLabel = Number.isFinite(years) ? `${years} years experience` : "0 years experience";
-      addQuickAction(`${index + 1}. ${doctor.doctor_name} | ${experienceLabel}`, String(index + 1));
+    addQuickAction(`${index + 1}. ${doctor.display_name || doctor.doctor_name} | ${experienceLabel}`, String(index + 1));
     });
-    addQuickAction("No appointment", "no");
+    addQuickAction(patientAction("noAppointment"), "no");
   }
 
   if (state.awaiting === "slot_selection" && Array.isArray(state.slot_options)) {
@@ -2627,7 +2766,7 @@ function renderQuickActions() {
       const time = formatDateTime(slot.start_time);
       addQuickAction(`${index + 1}. ${time}`, String(index + 1));
     });
-    addQuickAction("No appointment", "no");
+    addQuickAction(patientAction("noAppointment"), "no");
   }
 
   if (state.awaiting === "cancellation_selection" && Array.isArray(state.cancellation_options)) {
@@ -3120,7 +3259,7 @@ async function sendMessage(message) {
   }
 }
 
-async function postJson(url, payload) {
+async function postJson(url, payload, bearerToken = null) {
   const controller = new AbortController();
   const timeoutId = window.setTimeout(() => controller.abort(), 15000);
 
@@ -3128,7 +3267,7 @@ async function postJson(url, payload) {
     const response = await fetch(url, {
       method: "POST",
       signal: controller.signal,
-      headers: { "Content-Type": "application/json" },
+      headers: { "Content-Type": "application/json", ...(bearerToken ? { Authorization: `Bearer ${bearerToken}` } : {}) },
       body: JSON.stringify(payload),
     });
 
@@ -3291,6 +3430,7 @@ async function cancelBooking(bookingId) {
   try {
     await authedJson(`/appointments/${bookingId}/cancel`, { method: "POST" });
     await showUpcomingBookings();
+    await refreshAppointmentsPage();
     setStatus("Ready");
   } catch (error) {
     setStatus("Error");
@@ -3372,6 +3512,7 @@ function renderRescheduleSlots(container, bookingId, slots) {
           body: JSON.stringify({ slot_id: slot.slot_id }),
         });
         await showUpcomingBookings();
+        await refreshAppointmentsPage();
         setStatus("Ready");
       } catch (error) {
         setStatus("Error");
@@ -3863,14 +4004,33 @@ loginForm.addEventListener("submit", async (event) => {
   setAuthMessage("");
 
   try {
-    const data = await postJson("/auth/login", {
+    const data = await postJson("/auth/unified-login", {
       email: document.querySelector("#loginEmail").value.trim(),
       password: document.querySelector("#loginPassword").value,
     });
-    setPatientAuthenticated(data.user, data.access_token);
+    if (data.status === "mfa_required") {
+      doctorMfaToken = data.mfa_token;
+      loginForm.classList.add("hidden");
+      doctorMfaForm?.classList.remove("hidden");
+      document.querySelector("#doctorMfaCode")?.focus();
+      return;
+    }
+    const payload = JSON.parse(atob(data.access_token.split(".")[1].replace(/-/g, "+").replace(/_/g, "/")));
+    if (payload.role === "admin") setAdminAuthenticated({ email: data.email, name: data.name, role: data.role }, data.access_token);
+    else if (payload.role === "patient") setPatientAuthenticated(data.user, data.access_token);
+    else setAuthMessage("Doctor Dashboard — coming soon");
   } catch (error) {
-    setAuthMessage(error.message);
+    setAuthMessage("Invalid email or password.");
   }
+});
+
+if (doctorMfaForm) doctorMfaForm.addEventListener("submit", async (event) => {
+  event.preventDefault(); setAuthMessage("");
+  try {
+    const data = await postJson("/doctor/auth/mfa/challenge", { code: document.querySelector("#doctorMfaCode").value }, doctorMfaToken);
+    localStorage.setItem("doctorAccessToken", data.access_token);
+    document.querySelector("#authView").innerHTML = '<div class="auth-card"><h1>Doctor Dashboard</h1><p class="auth-subtitle">Coming soon</p></div>';
+  } catch (error) { setAuthMessage("Invalid email or password."); }
 });
 
 signupForm.addEventListener("submit", async (event) => {
@@ -3935,7 +4095,7 @@ if (documentUpload) {
     clearAttachPill();
 
     try {
-      // Step 1: POST /chat/upload — Azure GPT-4o medical relevance check + staging
+      // Step 1: POST /chat/upload — OpenAI vision medical relevance check + staging
       const uploadForm = new FormData();
       uploadForm.append("file", file);
       uploadForm.append("session_id", currentSessionId() || "");

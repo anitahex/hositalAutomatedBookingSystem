@@ -1,5 +1,5 @@
 """
-Azure OpenAI GPT-4o client — INGESTION PATH ONLY.
+OpenAI vision client — INGESTION PATH ONLY.
 
 Import this module ONLY from the document ingestion pipeline
 (Guardrail 1 relevance check + Tier 2 structured extraction).
@@ -19,41 +19,34 @@ load_dotenv()
 
 logger = logging.getLogger(__name__)
 
-AZURE_OPENAI_ENDPOINT = os.getenv("AZURE_OPENAI_ENDPOINT", "")
-AZURE_OPENAI_API_KEY = os.getenv("AZURE_OPENAI_API_KEY", "")
-AZURE_OPENAI_API_VERSION = os.getenv("AZURE_OPENAI_API_VERSION", "2024-02-01")
-AZURE_OPENAI_DEPLOYMENT_NAME = os.getenv("AZURE_OPENAI_DEPLOYMENT_NAME", "gpt-4o")
+OPENAI_API_KEY = os.getenv("OPENAI_API_KEY", "")
+OPENAI_VISION_MODEL = os.getenv("OPENAI_VISION_MODEL", "gpt-4o")
 
 try:
-    from openai import AsyncAzureOpenAI
+    from openai import AsyncOpenAI
     _HAS_OPENAI = True
 except ImportError:
-    AsyncAzureOpenAI = None  # type: ignore[assignment, misc]
+    AsyncOpenAI = None  # type: ignore[assignment, misc]
     _HAS_OPENAI = False
 
-_azure_client: "AsyncAzureOpenAI | None" = None
+_openai_client: "AsyncOpenAI | None" = None
 
 
-def _get_azure_client() -> "AsyncAzureOpenAI":
-    global _azure_client
-    if _azure_client is not None:
-        return _azure_client
+def _get_openai_client() -> "AsyncOpenAI":
+    global _openai_client
+    if _openai_client is not None:
+        return _openai_client
     if not _HAS_OPENAI:
         raise RuntimeError(
             "openai package is not installed. Run: pip install openai>=1.0"
         )
-    if not AZURE_OPENAI_ENDPOINT or not AZURE_OPENAI_API_KEY:
+    if not OPENAI_API_KEY:
         raise RuntimeError(
-            "Azure OpenAI is not configured. "
-            "Set AZURE_OPENAI_ENDPOINT and AZURE_OPENAI_API_KEY in .env."
+            "OpenAI is not configured. Set OPENAI_API_KEY in .env."
         )
-    _azure_client = AsyncAzureOpenAI(
-        azure_endpoint=AZURE_OPENAI_ENDPOINT,
-        api_key=AZURE_OPENAI_API_KEY,
-        api_version=AZURE_OPENAI_API_VERSION,
-    )
-    logger.info("azure_client: AsyncAzureOpenAI initialised (deployment=%s)", AZURE_OPENAI_DEPLOYMENT_NAME)
-    return _azure_client
+    _openai_client = AsyncOpenAI(api_key=OPENAI_API_KEY)
+    logger.info("openai_client: AsyncOpenAI initialised (model=%s)", OPENAI_VISION_MODEL)
+    return _openai_client
 
 
 _RELEVANCE_SYSTEM = (
@@ -97,7 +90,7 @@ async def gpt4o_relevance_check(
     Returns True if the document is medical, False otherwise.
     Treats any ambiguous / non-TRUE response as False and logs a warning.
     """
-    client = _get_azure_client()
+    client = _get_openai_client()
 
     if mime_type.startswith("image/"):
         b64 = base64.b64encode(file_bytes).decode("ascii")
@@ -117,12 +110,12 @@ async def gpt4o_relevance_check(
     logger.info("gpt4o_relevance_check: calling GPT-4o (mime=%s)", mime_type)
     try:
         response = await client.chat.completions.create(
-            model=AZURE_OPENAI_DEPLOYMENT_NAME,
+            model=OPENAI_VISION_MODEL,
             messages=[
                 {"role": "system", "content": _RELEVANCE_SYSTEM},
                 {"role": "user", "content": user_content},
             ],
-            max_tokens=10,
+            max_completion_tokens=10,
             temperature=0,
         )
         raw = (response.choices[0].message.content or "").strip().upper()
@@ -153,7 +146,7 @@ async def gpt4o_structured_extraction(
     Returns a dict with keys:
         document_type, clinical_date, overall_impression, findings
     """
-    client = _get_azure_client()
+    client = _get_openai_client()
 
     if mime_type.startswith("image/"):
         b64 = base64.b64encode(file_bytes).decode("ascii")
@@ -173,12 +166,12 @@ async def gpt4o_structured_extraction(
     logger.info("gpt4o_structured_extraction: calling GPT-4o (mime=%s)", mime_type)
     try:
         response = await client.chat.completions.create(
-            model=AZURE_OPENAI_DEPLOYMENT_NAME,
+            model=OPENAI_VISION_MODEL,
             messages=[
                 {"role": "system", "content": _EXTRACTION_SYSTEM},
                 {"role": "user", "content": user_content},
             ],
-            max_tokens=1500,
+            max_completion_tokens=1500,
             temperature=0,
             response_format={"type": "json_object"},
         )
@@ -283,7 +276,7 @@ async def gpt4o_stream_analysis(
     Stream a beautifully formatted markdown analysis of a medical document.
     Yields string tokens suitable for direct SSE forwarding.
     """
-    client = _get_azure_client()
+    client = _get_openai_client()
 
     if mime_type.startswith("image/") and file_bytes:
         b64 = base64.b64encode(file_bytes).decode("ascii")
@@ -306,12 +299,12 @@ async def gpt4o_stream_analysis(
     logger.info("gpt4o_stream_analysis: streaming GPT-4o (mime=%s)", mime_type)
 
     response = await client.chat.completions.create(
-        model=AZURE_OPENAI_DEPLOYMENT_NAME,
+        model=OPENAI_VISION_MODEL,
         messages=[
             {"role": "system", "content": _STREAM_FORMAT_SYSTEM},
             {"role": "user", "content": user_content},
         ],
-        max_tokens=2000,
+        max_completion_tokens=2000,
         temperature=0,
         stream=True,
     )

@@ -10,7 +10,7 @@ from fastapi import FastAPI, WebSocket, WebSocketDisconnect
 from fastapi.responses import FileResponse
 from fastapi.staticfiles import StaticFiles
 
-from app.api.routes import admin, appointments, auth, chat
+from app.api.routes import admin, appointments, auth, chat, doctor, whatsapp
 
 logging.basicConfig(
     level=logging.INFO,
@@ -32,30 +32,44 @@ def _ensure_catalog_tables() -> None:
     sql = _SCHEMA_SQL.read_text()
     try:
         from app.db.connection import connect_db
-        conn = connect_db()
-        try:
-            with conn:
-                with conn.cursor() as cur:
-                    cur.execute(sql)
-            logger.info("startup: document catalog tables ensured")
-        finally:
-            conn.close()
+        with connect_db() as conn:
+            with conn.cursor() as cur:
+                cur.execute(sql)
+        logger.info("startup: document catalog tables ensured")
     except Exception as exc:
         logger.error("startup: could not create document catalog tables: %s", exc)
+
+
+def _bootstrap_admin_account() -> None:
+    from app.services.admin_auth import bootstrap_admin_from_env
+
+    try:
+        if bootstrap_admin_from_env():
+            logger.info("startup: configured admin account synchronized")
+    except Exception as exc:
+        logger.error("startup: configured admin account could not be synchronized: %s", exc)
+        raise
 
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     _ensure_catalog_tables()
-    yield
+    _bootstrap_admin_account()
+    try:
+        yield
+    finally:
+        from app.db.connection import close_db_pool
+        close_db_pool()
 
 
 app = FastAPI(title="Smart Hospital Portal", lifespan=lifespan)
 
 app.include_router(auth.router, prefix="/auth", tags=["auth"])
 app.include_router(chat.router, prefix="/chat", tags=["chat"])
+app.include_router(whatsapp.router, prefix="/webhooks", tags=["webhooks"])
 app.include_router(appointments.router, prefix="/appointments", tags=["appointments"])
 app.include_router(admin.router, prefix="/admin", tags=["admin"])
+app.include_router(doctor.router, prefix="/doctor", tags=["doctor"])
 
 
 @app.get("/health")
