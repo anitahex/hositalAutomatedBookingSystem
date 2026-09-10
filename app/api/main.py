@@ -1,6 +1,9 @@
 from __future__ import annotations
 
+import asyncio
+import contextlib
 import logging
+import os
 import sys
 from contextlib import asynccontextmanager
 from pathlib import Path
@@ -10,7 +13,7 @@ from fastapi import FastAPI, WebSocket, WebSocketDisconnect
 from fastapi.responses import FileResponse
 from fastapi.staticfiles import StaticFiles
 
-from app.api.routes import admin, appointments, auth, chat, doctor, whatsapp
+from app.api.routes import admin, appointments, auth, chat, consult, doctor, whatsapp
 
 logging.basicConfig(
     level=logging.INFO,
@@ -51,18 +54,89 @@ def _bootstrap_admin_account() -> None:
         raise
 
 
+def _cleanup_stale_consult_audio_temp_files() -> None:
+    """Crash-orphaned consult-audio-*.pcm temp files (a WS session that ended without
+    reaching finalize_recording, e.g. a process crash) are never referenced by any
+    consultations row, so they're always safe to delete once they're old enough that no
+    session could still be legitimately writing to them."""
+    from app.services.audio_storage import cleanup_stale_temp_files
+
+    try:
+        deleted = cleanup_stale_temp_files()
+        if deleted:
+            logger.info("startup: cleaned up %d stale consult audio temp file(s)", deleted)
+    except Exception as exc:
+        logger.error("startup: could not clean up stale consult audio temp files: %s", exc)
+
+
+CONSULT_RETENTION_SWEEP_INTERVAL_SECONDS = int(os.getenv("CONSULT_RETENTION_SWEEP_INTERVAL_SECONDS", "3600"))
+
+
+async def _consult_retention_sweep_loop() -> None:
+    """No scheduler/cron mechanism existed anywhere in this codebase before this feature
+    (checked: no APScheduler/Celery, no recurring asyncio loop in lifespan) — this is new
+    infrastructure, kept intentionally simple (a plain asyncio loop) rather than adding a
+    new dependency for a single periodic job."""
+    from app.services.consults import (
+        retry_stuck_transcriptions, run_retention_sweep, sweep_stale_recording_consults,
+    )
+
+    while True:
+        try:
+            await asyncio.sleep(CONSULT_RETENTION_SWEEP_INTERVAL_SECONDS)
+            deleted = await run_retention_sweep()
+            if deleted:
+                logger.info("consult retention sweep: deleted audio for %d consultation(s)", deleted)
+
+            # Safety net: force-end any consult stuck in 'recording' far longer than any
+            # real visit would take, regardless of why (crashed handler, a connection
+            # that neither side ever cleanly closed, etc.) — see sweep_stale_recording_consults's
+            # own docstring for why this doesn't just rely on Deepgram/websockets ping-pong.
+            stale = sweep_stale_recording_consults()
+            if stale:
+                logger.warning("consult stale-recording sweep: force-ended %d stuck consultation(s)", stale)
+
+            # Safety net for the symmetric case: a consult stuck in 'ended'/'transcribing'
+            # because batch re-transcription never got a chance to reach its own
+            # terminal-state guarantee (e.g. a process crash between end_consult() and
+            # its scheduled task actually running) — see retry_stuck_transcriptions.
+            retried = await retry_stuck_transcriptions()
+            if retried:
+                logger.warning("consult stuck-transcription retry: re-attempted %d consultation(s)", retried)
+        except asyncio.CancelledError:
+            raise
+        except Exception as exc:
+            logger.error("consult retention sweep failed: %s", exc)
+
+
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     _ensure_catalog_tables()
     _bootstrap_admin_account()
+    _cleanup_stale_consult_audio_temp_files()
+    sweep_task = asyncio.create_task(_consult_retention_sweep_loop())
     try:
         yield
     finally:
+        sweep_task.cancel()
+        with contextlib.suppress(asyncio.CancelledError):
+            await sweep_task
         from app.db.connection import close_db_pool
         close_db_pool()
 
 
-app = FastAPI(title="Smart Hospital Portal", lifespan=lifespan)
+# Interactive API docs (/docs, /redoc) expose the full request/response schema,
+# including admin-only models — disabled by default (FULL_SYSTEM_AUDIT.md P1 #15).
+# Set ENABLE_API_DOCS=true for local development only.
+_ENABLE_API_DOCS = os.getenv("ENABLE_API_DOCS", "false").strip().lower() in {"1", "true", "yes"}
+
+app = FastAPI(
+    title="Smart Hospital Portal",
+    lifespan=lifespan,
+    docs_url="/docs" if _ENABLE_API_DOCS else None,
+    redoc_url="/redoc" if _ENABLE_API_DOCS else None,
+    openapi_url="/openapi.json" if _ENABLE_API_DOCS else None,
+)
 
 app.include_router(auth.router, prefix="/auth", tags=["auth"])
 app.include_router(chat.router, prefix="/chat", tags=["chat"])
@@ -70,6 +144,7 @@ app.include_router(whatsapp.router, prefix="/webhooks", tags=["webhooks"])
 app.include_router(appointments.router, prefix="/appointments", tags=["appointments"])
 app.include_router(admin.router, prefix="/admin", tags=["admin"])
 app.include_router(doctor.router, prefix="/doctor", tags=["doctor"])
+app.include_router(consult.router, prefix="/doctor/consult", tags=["consult"])
 
 
 @app.get("/health")
@@ -82,6 +157,11 @@ _STATIC_DIR = Path(__file__).resolve().parent / "static"
 
 @app.get("/")
 def serve_index():
+    return FileResponse(_STATIC_DIR / "index.html")
+
+
+@app.get("/doctor/set-password")
+def serve_doctor_set_password():
     return FileResponse(_STATIC_DIR / "index.html")
 
 

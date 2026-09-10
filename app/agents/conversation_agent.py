@@ -7,7 +7,9 @@ from app.agents.intake_utils import (
     compact_state_summary,
     extract_json_object,
     extract_local_intake_info,
+    looks_like_general_knowledge_question,
     looks_like_intake_wrapup,
+    looks_like_non_answer,
     next_missing_intake_question,
     question_topic,
     topic_already_asked,
@@ -34,6 +36,7 @@ RULES:
 8. **Look for red flags** - ask about loss of function, numbness, tingling, balance issues, vision changes, fever, spreading
 9. **Never ask the same thing twice** - track what's been discussed
 10. **Be specific, not generic** - e.g., instead of "how long", ask "Did this start this week, last week, or longer ago?"
+11. **Check if the patient actually answered** - set "reply_addresses_question" to false if their latest message is a greeting, filler ("hi", "ok", "hmm"), an off-topic remark, or a question back at you instead of an answer. When false, do NOT invent a new clinical question or extract any collected_info from it — instead write a short, warm "next_question" that re-engages them and gently repeats what you need to know (e.g. "No worries! Can you tell me a bit more about the pain you mentioned?"). When true, proceed normally.
 
 SYMPTOM-SPECIFIC PROBING:
 - Skin conditions: onset, triggers (products/detergents/stress/weather), spread pattern, discharge/weeping, itchiness severity, sleep impact
@@ -49,9 +52,10 @@ EXAMPLES OF EXCELLENT DYNAMIC QUESTIONS:
 - If "worsens in evening": "What are you doing during the day—sitting at desk, heavy lifting, or something else?"
 
 CRITICAL: Do NOT output conversational text or markdown. Output ONLY valid JSON matching this exact structure:
-{"intent":"continue_intake|direct_booking","has_enough_info":true|false,"next_question":"string or null","collected_info":{"key":"value"}}"""
+{"intent":"continue_intake|direct_booking","reply_addresses_question":true|false,"has_enough_info":true|false,"next_question":"string or null","collected_info":{"key":"value"}}"""
 
 MAX_INTAKE_QUESTIONS = 6
+MAX_IRRELEVANT_STREAK = 2
 OPEN_ENDED_FALLBACK = "Is there anything else about your symptoms that feels important or concerning that I haven't asked?"
 
 def _clean_json(raw_output: str) -> str:
@@ -103,7 +107,12 @@ def conversation_agent_node(state: GraphState):
     symptoms = state.get("symptoms") or []
     existing_collected = state.get("collected_data") or state.get("collected_info") or {}
     questions_asked = state.get("questions_asked") or []
-    user_text = state.get("user_input", "").strip()
+    user_text = (state.get("user_input") or "").strip()
+    if not user_text:
+        for turn in reversed(history):
+            if isinstance(turn, dict) and turn.get("role") in ("patient", "user") and turn.get("text"):
+                user_text = str(turn.get("text")).strip()
+                break
 
     updated_history = list(history)
 
@@ -170,6 +179,7 @@ Do not ask again about any topic already covered above."""
     if local_collected:
         decision = ConversationDecision(
             intent=decision.intent or "continue_intake",
+            reply_addresses_question=decision.reply_addresses_question,
             has_enough_info=bool(decision.has_enough_info),
             next_question=decision.next_question,
             collected_info={**decision.collected_info, **local_collected},
@@ -200,6 +210,51 @@ Do not ask again about any topic already covered above."""
             "awaiting": None,
         }
 
+    # The patient's latest message did not actually answer the question just asked
+    # (a greeting, filler, or off-topic remark). Don't let it silently consume one of
+    # the scripted intake questions or pollute collected_info — nudge them back on
+    # topic instead, up to a couple of tries before moving on regardless.
+    reply_relevant = decision.reply_addresses_question and not looks_like_non_answer(user_text)
+    if not reply_relevant:
+        streak = int(state.get("irrelevant_reply_streak") or 0) + 1
+        if streak < MAX_IRRELEVANT_STREAK:
+            clarifying_question = (decision.next_question or "").strip() or next_missing_intake_question(
+                existing_collected, questions_asked, OPEN_ENDED_FALLBACK
+            )
+            clarifying_question, greeted_now = _with_initial_greeting(state, clarifying_question)
+            updated_history.append({"role": "assistant", "text": clarifying_question})
+            return {
+                "conversation_history": updated_history,
+                "messages": updated_history[-6:],
+                "collected_data": existing_collected,
+                "collected_info": existing_collected,
+                "questions_asked": questions_asked,
+                "irrelevant_reply_streak": streak,
+                "greeted": state.get("greeted") or greeted_now,
+                "awaiting": "conversation",
+                "final_response": clarifying_question,
+                "active_intent": state.get("active_intent") or state.get("intent") or "triage_symptoms",
+                "intent": state.get("active_intent") or state.get("intent") or "triage_symptoms",
+            }
+        # Safety valve: the patient hasn't engaged for a couple of turns in a row —
+        # move on with the next scripted question rather than looping forever.
+        question = next_missing_intake_question(existing_collected, questions_asked, OPEN_ENDED_FALLBACK)
+        question, greeted_now = _with_initial_greeting(state, question)
+        updated_history.append({"role": "assistant", "text": question})
+        return {
+            "conversation_history": updated_history,
+            "messages": updated_history[-6:],
+            "collected_data": existing_collected,
+            "collected_info": existing_collected,
+            "questions_asked": questions_asked + [question],
+            "irrelevant_reply_streak": 0,
+            "greeted": state.get("greeted") or greeted_now,
+            "awaiting": "conversation",
+            "final_response": question,
+            "active_intent": state.get("active_intent") or state.get("intent") or "triage_symptoms",
+            "intent": state.get("active_intent") or state.get("intent") or "triage_symptoms",
+        }
+
     merged_collected = {**existing_collected, **local_collected, **decision.collected_info}
     if decision.has_enough_info or _conversation_intake_complete(merged_collected, questions_asked):
         return {
@@ -208,6 +263,7 @@ Do not ask again about any topic already covered above."""
             "collected_data": merged_collected,
             "collected_info": merged_collected,
             "questions_asked": questions_asked,
+            "irrelevant_reply_streak": 0,
             "awaiting": None,
             "remedy_requested": True,
             "active_intent": state.get("active_intent") or state.get("intent") or "triage_symptoms",
@@ -228,6 +284,7 @@ Do not ask again about any topic already covered above."""
             "collected_data": merged_collected,
             "collected_info": merged_collected,
             "questions_asked": questions_asked,
+            "irrelevant_reply_streak": 0,
             "awaiting": None,
             "remedy_requested": True,
             "active_intent": state.get("active_intent") or state.get("intent") or "triage_symptoms",
@@ -243,6 +300,7 @@ Do not ask again about any topic already covered above."""
         "collected_data": merged_collected,
         "collected_info": merged_collected,
         "questions_asked": questions_asked + [question],
+        "irrelevant_reply_streak": 0,
         "greeted": state.get("greeted") or greeted_now,
         "awaiting": "conversation",
         "final_response": question,
@@ -269,6 +327,7 @@ Guidelines:
 - Ask about patterns: "Is it constant or does it come and go? And when did it start?"
 - Never ask something already answered
 - If red flags detected (numbness, weakness, loss of bladder control, severe chest pain), escalate
+- If the patient's latest reply is a greeting, filler, or otherwise does not answer what you just asked, do NOT move on to a new topic — instead briefly and warmly ask them to answer the previous question again
 
 PROBE FOR THESE DETAILS:
 - Onset: When exactly did this start? Sudden or gradual?
@@ -293,16 +352,21 @@ Output ONLY the question itself — no preamble, no labels. 1-2 sentences, conve
 def should_stream_intake(state: GraphState) -> bool:
     """
     True when we can stream a follow-up question directly without a full LangGraph run.
-    False when intake is complete or after 5 streaming questions (fall to LangGraph
-    which uses LLM extraction to synthesise all answers and route to remedy/RAG).
+    False when intake is complete, after 5 streaming questions, or when the patient's
+    latest reply looks like a greeting/filler/off-topic question rather than an answer —
+    those fall through to the full LangGraph path, which can route a genuinely unrelated
+    message (e.g. "who is the prime minister") to general_qa instead of this fast path
+    silently absorbing it as if it were the next intake answer.
     """
     questions_asked = state.get("questions_asked") or []
     # Safety valve: after 5 questions the LangGraph path uses LLM to properly
     # extract facts from all prior answers and decide if intake is truly complete.
     if len(questions_asked) >= 5:
         return False
-    existing_collected = state.get("collected_data") or state.get("collected_info") or {}
     user_text = state.get("user_input") or ""
+    if looks_like_non_answer(user_text) or looks_like_general_knowledge_question(user_text):
+        return False
+    existing_collected = state.get("collected_data") or state.get("collected_info") or {}
     local_collected = extract_local_intake_info(user_text)
     merged = {**existing_collected, **local_collected}
     return not _conversation_intake_complete(merged, questions_asked)

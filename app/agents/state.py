@@ -64,6 +64,7 @@ class GraphState(TypedDict, total=False):
     symptoms: Optional[list[str]]
     severity: Optional[str]
     questions_asked: Optional[list[str]]
+    irrelevant_reply_streak: Optional[int]
 
     # Remedy / follow-up
     remedy_given: Optional[bool]

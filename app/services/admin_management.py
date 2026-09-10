@@ -4,6 +4,7 @@ from datetime import date, datetime, time, timedelta
 
 from app.db.connection import connect_db
 from app.services.appointments import ensure_booking_schema, normalize_department_name
+from app.services.doctor_auth import ensure_doctor_auth_schema
 
 
 def _normalise_text(value: str | None) -> str | None:
@@ -11,6 +12,22 @@ def _normalise_text(value: str | None) -> str | None:
         return None
     cleaned = " ".join(str(value).strip().split())
     return cleaned or None
+
+
+def _derive_doctor_login_status(account_id, account_active, mfa_enabled, locked_until):
+    """Map doctor_accounts fields to a badge state, distinct from doctors.is_active
+    (the scheduling-availability flag shown separately). Locked is checked before
+    Active/MFA-Enrolled/Invited because authenticate_doctor_password can lock an
+    account before is_active is ever true."""
+    if account_id is None:
+        return "not_invited", "invite"
+    if locked_until and locked_until > datetime.now():
+        return "locked", "reset"
+    if mfa_enabled:
+        return "mfa_enrolled", "reset"
+    if account_active:
+        return "active", "reset"
+    return "invited", "resend"
 
 
 def _doctor_row(row):
@@ -24,7 +41,14 @@ def _doctor_row(row):
         available_slots,
         next_available_time,
         holiday_count,
+        account_id,
+        account_email,
+        account_active,
+        mfa_enabled,
+        locked_until,
     ) = row
+
+    login_status, invite_action = _derive_doctor_login_status(account_id, account_active, mfa_enabled, locked_until)
 
     return {
         "doctor_id": str(doctor_id),
@@ -36,12 +60,18 @@ def _doctor_row(row):
         "available_slots": int(available_slots or 0),
         "next_available_time": next_available_time.isoformat() if next_available_time else None,
         "holiday_count": int(holiday_count or 0),
+        "account_id": str(account_id) if account_id else None,
+        "account_email": account_email,
+        "mfa_enabled": bool(mfa_enabled),
+        "login_status": login_status,
+        "invite_action": invite_action,
     }
 
 
 def list_doctors(limit: int = 500):
     with connect_db() as conn:
         ensure_booking_schema(conn)
+        ensure_doctor_auth_schema(conn)
         with conn.cursor() as cur:
             cur.execute(
                 """
@@ -104,10 +134,17 @@ def list_doctors(limit: int = 500):
                                 h.doctor_id IS NULL
                                 OR h.doctor_id = d.doctor_id
                             )
-                    ) AS holiday_count
+                    ) AS holiday_count,
+                    da.id AS account_id,
+                    da.email AS account_email,
+                    da.is_active AS account_active,
+                    da.mfa_enabled AS mfa_enabled,
+                    da.locked_until AS locked_until
                 FROM doctors d
                 LEFT JOIN appointment_slots s ON s.doctor_id = d.doctor_id
-                GROUP BY d.doctor_id, d.name, d.department, d.experience_years, d.is_active
+                LEFT JOIN doctor_accounts da ON da.doctor_id = d.doctor_id
+                GROUP BY d.doctor_id, d.name, d.department, d.experience_years, d.is_active,
+                    da.id, da.email, da.is_active, da.mfa_enabled, da.locked_until
                 ORDER BY d.department ASC, d.name ASC
                 LIMIT %s;
                 """,
@@ -121,6 +158,7 @@ def list_doctors(limit: int = 500):
 def get_doctor(doctor_id: str):
     with connect_db() as conn:
         ensure_booking_schema(conn)
+        ensure_doctor_auth_schema(conn)
         with conn.cursor() as cur:
             cur.execute(
                 """
@@ -183,11 +221,18 @@ def get_doctor(doctor_id: str):
                                 h.doctor_id IS NULL
                                 OR h.doctor_id = d.doctor_id
                             )
-                    ) AS holiday_count
+                    ) AS holiday_count,
+                    da.id AS account_id,
+                    da.email AS account_email,
+                    da.is_active AS account_active,
+                    da.mfa_enabled AS mfa_enabled,
+                    da.locked_until AS locked_until
                 FROM doctors d
                 LEFT JOIN appointment_slots s ON s.doctor_id = d.doctor_id
+                LEFT JOIN doctor_accounts da ON da.doctor_id = d.doctor_id
                 WHERE d.doctor_id::text = %s
-                GROUP BY d.doctor_id, d.name, d.department, d.experience_years, d.is_active;
+                GROUP BY d.doctor_id, d.name, d.department, d.experience_years, d.is_active,
+                    da.id, da.email, da.is_active, da.mfa_enabled, da.locked_until;
                 """,
                 (doctor_id,),
             )

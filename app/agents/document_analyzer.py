@@ -198,6 +198,58 @@ async def _catalog_retrieval_response(state: GraphState) -> dict | None:
     }
 
 
+async def _session_document_fallback_response(state: GraphState) -> dict | None:
+    """Fallback for when Path A's catalog lookup finds nothing yet — e.g. the
+    background ingestion task for a document uploaded earlier in this same session
+    hasn't finished, or the user hadn't granted consent to persist it. Rather than
+    incorrectly telling the patient no document was ever uploaded, answer from the
+    short summary already captured in state["analyzed_documents"] by the upload
+    fast-path (see app/api/routes/chat.py), which the supervisor router and
+    general_qa can now see via _state_summary's "Analyzed Documents" block too."""
+    docs = state.get("analyzed_documents") or []
+    if not docs:
+        return None
+
+    question = (state.get("user_input") or "").strip()
+    if not question:
+        return None
+
+    doc_context = "\n".join(
+        f"- {d.get('document_type') or 'document'} ({d.get('file_name') or 'file'}): {d.get('summary') or ''}"
+        for d in docs[-4:] if isinstance(d, dict)
+    )
+    if not doc_context.strip():
+        return None
+
+    from app.inference.llm import agenerate_text
+
+    answer = (
+        await agenerate_text(
+            system_prompt=(
+                "You are a hospital assistant. Answer the user's question using ONLY the "
+                "previously-analyzed document summaries below. If they aren't detailed enough "
+                "to answer confidently, say so honestly and suggest re-uploading the document "
+                "or asking their doctor at the visit."
+            ),
+            user_prompt=f"Analyzed documents this session:\n{doc_context}\n\nUser question: {question}",
+            node_name="document_analyzer_session_fallback",
+            patient_id=str(state.get("patient_id") or ""),
+            chat_session_id=str(state.get("chat_session_id") or ""),
+        )
+    ).strip()
+    if not answer:
+        return None
+
+    history = list(state.get("conversation_history") or [])
+    history.append({"role": "assistant", "text": answer})
+    return {
+        "awaiting": "user_input",
+        "conversation_history": history,
+        "messages": history[-6:],
+        "final_response": answer,
+    }
+
+
 # ---- Path B: in-memory analysis — Azure GPT-4o primary, HF vision fallback ----
 
 _DEPT_MAP: dict[str, str] = {
@@ -520,7 +572,11 @@ async def document_analyzer_node(state: GraphState) -> dict:
     if catalog_result is not None:
         return catalog_result
 
-    # Fallback: no file uploaded and no catalog match — ask the user to upload
+    session_result = await _session_document_fallback_response(state)
+    if session_result is not None:
+        return session_result
+
+    # Fallback: no file uploaded and no catalog/session match — ask the user to upload
     response = (
         "I don't see any previously uploaded medical documents for your account. "
         "Please upload a document using the upload button, or describe your symptoms "

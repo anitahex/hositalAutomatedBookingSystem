@@ -305,14 +305,23 @@ def ensure_booking_schema(conn):
                 end_time
             )
             SELECT
-                slot_id,
-                doctor_id,
-                booked_by_patient_id,
+                s.slot_id,
+                s.doctor_id,
+                s.booked_by_patient_id,
                 NULL,
-                start_time,
-                end_time
-            FROM appointment_slots
-            WHERE is_booked = TRUE
+                s.start_time,
+                s.end_time
+            FROM appointment_slots s
+            WHERE s.is_booked = TRUE
+                AND NOT EXISTS (
+                    -- Guard on ANY existing booking row for this slot, not just a
+                    -- 'booked'-status one: the unique index below only covers
+                    -- status='booked', so a slot left is_booked=TRUE with a
+                    -- 'completed'/'cancelled' booking (e.g. a stale bulk import via
+                    -- ingest_relational.py, or a direct SQL edit) would otherwise
+                    -- pass straight through ON CONFLICT DO NOTHING and duplicate.
+                    SELECT 1 FROM appointment_bookings b WHERE b.slot_id = s.slot_id
+                )
             ON CONFLICT DO NOTHING;
 
             UPDATE appointment_bookings
@@ -638,10 +647,28 @@ def first_available_slots(department: str, limit: int = 5):
     return slots[:limit]
 
 
+BOOKING_NOTE_MAX_LENGTH = 4000
+
+_CONTROL_CHAR_RE = re.compile(r"[\x00-\x08\x0b\x0c\x0e-\x1f\x7f]")
+
+
+def _sanitize_booking_note(note: str | None, *, max_length: int = BOOKING_NOTE_MAX_LENGTH) -> str | None:
+    """Strip control characters and cap length for anything written into
+    appointment_bookings.booking_note. This field is ultimately sourced (directly
+    or via an LLM-generated summary) from patient chat input, which is untrusted —
+    see FULL_SYSTEM_AUDIT.md P0 #5. Preserves normal whitespace/newlines/markdown."""
+    if not note:
+        return None
+    cleaned = _CONTROL_CHAR_RE.sub("", str(note)).strip()
+    if not cleaned:
+        return None
+    if len(cleaned) > max_length:
+        cleaned = cleaned[:max_length].rstrip() + "\n[truncated]"
+    return cleaned
+
+
 def book_selected_slot(slot_id: str, patient_id: str | None = None, booking_note: str | None = None):
-    note = " ".join(str(booking_note).strip().split()) if booking_note else None
-    if note == "":
-        note = None
+    note = _sanitize_booking_note(" ".join(str(booking_note).strip().split())) if booking_note else None
     with connect_db() as conn:
         try:
             ensure_booking_schema(conn)
@@ -731,13 +758,16 @@ def book_selected_slot(slot_id: str, patient_id: str | None = None, booking_note
 def _normalized_booking_note(note: str | None) -> str | None:
     if not note:
         return None
-    # Only strip leading/trailing whitespace; preserve internal newlines and markdown structure
+    # Only strip leading/trailing whitespace; preserve internal newlines and markdown structure.
+    # Control-character stripping / length capping happens in _sanitize_booking_note, applied
+    # by the caller (update_booking_note) — kept separate so existing-note reads (which should
+    # not be re-truncated on every read) go through this lighter normalization only.
     cleaned = str(note).strip()
     return cleaned or None
 
 
 def update_booking_note(booking_id: str, patient_id: str, booking_note: str):
-    note = _normalized_booking_note(booking_note)
+    note = _sanitize_booking_note(_normalized_booking_note(booking_note))
     if not note:
         return None
 
@@ -762,6 +792,9 @@ def update_booking_note(booking_id: str, patient_id: str, booking_note: str):
 
                 existing_note = _normalized_booking_note(existing_row[0])
                 combined_note = note if not existing_note else f"{existing_note}\n{note}"
+                # Re-cap after combining — the per-call cap above bounds a single write, but
+                # repeated forwarding requests could otherwise still grow the field unboundedly.
+                combined_note = _sanitize_booking_note(combined_note)
 
                 cur.execute(
                     """
@@ -1206,6 +1239,183 @@ def reschedule_patient_booking(booking_id: str, patient_id: str, new_slot_id: st
         "end_time": end_time.isoformat(),
         "status": "booked",
         "can_modify": True,
+    }
+
+
+def doctor_appointments(doctor_id: str, scope: str, limit: int = 100):
+    """Appointments for one doctor's own bookings only, filtered strictly by doctor_id."""
+    with connect_db() as conn:
+        ensure_booking_schema(conn)
+        with conn.cursor() as cur:
+            if scope == "upcoming":
+                cur.execute(
+                    """
+                    SELECT
+                        b.booking_id,
+                        b.patient_id,
+                        COALESCE(pp.name, 'Unknown patient') AS patient_name,
+                        d.department,
+                        b.booking_note,
+                        b.start_time,
+                        b.end_time,
+                        b.status
+                    FROM appointment_bookings b
+                    JOIN doctors d ON d.doctor_id = b.doctor_id
+                    LEFT JOIN patient_profiles pp ON pp.user_id::text = b.patient_id
+                    WHERE b.doctor_id = %s
+                        AND b.status = 'booked'
+                        AND b.end_time > NOW()
+                    ORDER BY b.start_time ASC
+                    LIMIT %s;
+                    """,
+                    (doctor_id, limit),
+                )
+            else:
+                cur.execute(
+                    """
+                    UPDATE appointment_bookings
+                    SET status = 'completed'
+                    WHERE doctor_id = %s
+                        AND status = 'booked'
+                        AND end_time <= NOW();
+
+                    SELECT
+                        b.booking_id,
+                        b.patient_id,
+                        COALESCE(pp.name, 'Unknown patient') AS patient_name,
+                        d.department,
+                        b.booking_note,
+                        b.start_time,
+                        b.end_time,
+                        b.status
+                    FROM appointment_bookings b
+                    JOIN doctors d ON d.doctor_id = b.doctor_id
+                    LEFT JOIN patient_profiles pp ON pp.user_id::text = b.patient_id
+                    WHERE b.doctor_id = %s
+                        AND (b.status IN ('completed', 'cancelled') OR b.end_time <= NOW())
+                    ORDER BY b.start_time DESC
+                    LIMIT %s;
+                    """,
+                    (doctor_id, doctor_id, limit),
+                )
+            rows = cur.fetchall()
+        conn.commit()
+
+    return [
+        {
+            "booking_id": str(booking_id),
+            "patient_id": str(patient_id) if patient_id is not None else None,
+            "patient_name": str(patient_name),
+            "department": str(department),
+            "booking_note": booking_note,
+            "start_time": start_time.isoformat(),
+            "end_time": end_time.isoformat(),
+            "status": str(status),
+        }
+        for booking_id, patient_id, patient_name, department, booking_note, start_time, end_time, status in rows
+    ]
+
+
+def doctor_patients(doctor_id: str, limit: int = 200):
+    """Distinct patients this doctor has an actual booking history with — never patients they haven't treated."""
+    with connect_db() as conn:
+        ensure_booking_schema(conn)
+        with conn.cursor() as cur:
+            cur.execute(
+                """
+                SELECT
+                    b.patient_id,
+                    COALESCE(pp.name, 'Unknown patient') AS patient_name,
+                    pp.email,
+                    pp.mobile_number,
+                    COUNT(*) AS visit_count,
+                    MAX(b.start_time) AS last_visit
+                FROM appointment_bookings b
+                LEFT JOIN patient_profiles pp ON pp.user_id::text = b.patient_id
+                WHERE b.doctor_id = %s
+                    AND b.patient_id IS NOT NULL
+                GROUP BY b.patient_id, pp.name, pp.email, pp.mobile_number
+                ORDER BY last_visit DESC
+                LIMIT %s;
+                """,
+                (doctor_id, limit),
+            )
+            rows = cur.fetchall()
+
+    return [
+        {
+            "patient_id": str(patient_id),
+            "patient_name": str(patient_name),
+            "email": email,
+            "mobile_number": mobile_number,
+            "visit_count": int(visit_count),
+            "last_visit": last_visit.isoformat() if last_visit else None,
+        }
+        for patient_id, patient_name, email, mobile_number, visit_count, last_visit in rows
+    ]
+
+
+def doctor_patient_detail(doctor_id: str, patient_id: str, limit: int = 100):
+    """Returns None if this doctor has no booking history with this patient — the caller
+    must treat that as a 404, since a doctor must never see a patient they haven't treated."""
+    with connect_db() as conn:
+        ensure_booking_schema(conn)
+        with conn.cursor() as cur:
+            cur.execute(
+                """
+                SELECT
+                    b.booking_id,
+                    d.department,
+                    b.start_time,
+                    b.end_time,
+                    b.status
+                FROM appointment_bookings b
+                JOIN doctors d ON d.doctor_id = b.doctor_id
+                WHERE b.doctor_id = %s
+                    AND b.patient_id = %s
+                ORDER BY b.start_time DESC
+                LIMIT %s;
+                """,
+                (doctor_id, patient_id, limit),
+            )
+            visit_rows = cur.fetchall()
+
+            if not visit_rows:
+                return None
+
+            cur.execute(
+                """
+                SELECT name, age, mobile_number, email, blood_group, health_issues
+                FROM patient_profiles
+                WHERE user_id::text = %s;
+                """,
+                (patient_id,),
+            )
+            profile_row = cur.fetchone()
+
+    if profile_row:
+        name, age, mobile_number, email, blood_group, health_issues = profile_row
+    else:
+        name = age = mobile_number = email = blood_group = health_issues = None
+
+    return {
+        "patient_id": patient_id,
+        "name": name or "Unknown patient",
+        "age": age,
+        "mobile_number": mobile_number,
+        "email": email,
+        "blood_group": blood_group,
+        "health_issues": health_issues,
+        "visits": [
+            {
+                "booking_id": str(booking_id),
+                "department": str(department),
+                "start_time": start_time.isoformat(),
+                "end_time": end_time.isoformat(),
+                "status": str(status),
+            }
+            for booking_id, department, start_time, end_time, status in visit_rows
+        ],
     }
 
 

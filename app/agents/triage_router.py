@@ -2,6 +2,7 @@ from datetime import date
 from langchain_core.output_parsers import PydanticOutputParser
 from app.agents.schemas import PatientExtraction
 from app.agents.state import GraphState
+from app.agents.intake_utils import looks_like_end_chat, looks_like_non_medical_subject, looks_like_thanks
 from app.inference.llm import agenerate_text, astream_text
 from app.services.memory_policy import get_memory_policy
 from app.services.language import language_prompt_context
@@ -14,9 +15,9 @@ STATIC_TRIAGE_PROMPT = """You are an experienced triage nurse for a hospital AI 
 
 INTENT CLASSIFICATION:
 - greeting: Patient is greeting or socializing with no medical/booking request
-- triage_symptoms: Patient describes symptoms, injury, illness, pain, or asks for medical help/remedy
+- triage_symptoms: Patient describes symptoms, injury, illness, pain, or asks for medical help/remedy — this MUST be about the PATIENT'S OWN body, mind, or health. A symptom always belongs to a living person, never to an object.
 - direct_booking: Patient wants to book/reschedule an appointment, see a doctor, or ask about availability
-- unclear: Cannot safely determine intent; ask for clarification
+- unclear: Cannot safely determine intent; ask for clarification. Use this for anything that is not about the patient's own health — e.g. a question about an object, vehicle, device, another topic, or a general-knowledge question. Do NOT invent a "symptom" just because the message mentions a problem — "my car is leaking fuel" is about a car, not a symptom, so intent=unclear and symptoms=[].
 
 SEVERITY LEVELS (use clinical judgment):
 - emergency: Immediately life-threatening (difficulty breathing, chest pain, severe bleeding, self-harm risk, altered consciousness, poisoning). Needs 911/ER immediately.
@@ -102,7 +103,23 @@ Latest message: {user_input}"""
             "final_response": greeting,
         }
 
-    symptoms = list(dict.fromkeys((state.get("symptoms") or []) + extracted.symptoms))
+    # Backstop against LLM misclassification: an extracted "symptom" whose text is
+    # obviously about an inanimate object/device (a car, wifi, ...) is dropped rather
+    # than merged into state — once merged it would persist for the rest of the
+    # session and get echoed into unrelated later answers (see FULL_SYSTEM_AUDIT.md).
+    new_symptoms = [s for s in extracted.symptoms if not looks_like_non_medical_subject(s)]
+    if not new_symptoms and looks_like_non_medical_subject(user_input):
+        clarification = "That doesn't sound like a medical symptom — could you tell me about any health concern you're experiencing, or let me know if you'd like to book an appointment?"
+        updated_history.append({"role": "assistant", "text": clarification})
+        return {
+            "conversation_history": updated_history,
+            "messages": updated_history[-6:],
+            "intent": "unclear",
+            "symptoms": state.get("symptoms") or [],
+            "severity": "mild",
+            "final_response": clarification,
+        }
+    symptoms = list(dict.fromkeys((state.get("symptoms") or []) + new_symptoms))
     intent = "triage_symptoms" if extracted.intent == "triage_symptoms" else extracted.intent
     print(f"[TRIAGE_ROUTER_NODE] RETURNING - intent={intent}, symptoms={len(symptoms)}")
     return {
@@ -140,6 +157,7 @@ PART 1 — Output a single compact JSON line (no newline inside):
 {"intent":"triage_symptoms|greeting|direct_booking|unclear","symptoms":["symptom1","symptom2"],"severity":"mild|moderate|severe|emergency"}
 
 Use clinical judgment: "leg tingling + back pain" → ["sciatica risk", "paresthesia", "lower back pain"]. Mark severity SEVERE if red flags present.
+A symptom always belongs to the patient's own body/mind — never to an object, vehicle, or device. If the message isn't about the patient's own health, use intent="unclear" and symptoms=[].
 
 PART 2 — On the very next line, write a warm, empathetic response:
 - triage_symptoms: Acknowledge their specific symptoms with empathy. Ask ONE focused intake question (duration: "How long?", onset: "When did it start?", location: "Where exactly?", or trigger: "What made it start?"). First response only: "If you have lab reports, prescriptions, or imaging, feel free to attach them using the button below."
@@ -152,8 +170,13 @@ Rules: Output ONLY JSON line + newline + plain text response. No preamble, no ex
 
 
 def should_do_triage_stream(message: str) -> bool:
-    """True when the user's message looks like a first symptom report or greeting."""
+    """True when the user's message looks like a first symptom report or greeting.
+    False for goodbye/thanks-style messages so they fall through to the full
+    LangGraph pipeline, where the supervisor's end-chat/thanks handling (which
+    this merged triage prompt has no concept of) can actually close the chat."""
     lowered = message.lower()
+    if looks_like_end_chat(lowered) or looks_like_thanks(lowered):
+        return False
     return any(kw in lowered for kw in _TRIAGE_SYMPTOM_KEYWORDS) or len(message.split()) <= 6
 
 
@@ -205,7 +228,12 @@ def _parse_triage_json_line(raw: str, state: GraphState) -> dict:
 
     raw_intent = str(data.get("intent") or "unclear")
     intent = "triage_symptoms" if raw_intent == "triage_symptoms" else raw_intent
-    new_symptoms = [str(s) for s in (data.get("symptoms") or []) if str(s).strip()]
+    # Same backstop as triage_router_node: drop an extracted "symptom" that is
+    # obviously about an object/device rather than the patient's own health.
+    new_symptoms = [
+        str(s) for s in (data.get("symptoms") or [])
+        if str(s).strip() and not looks_like_non_medical_subject(str(s))
+    ]
     symptoms = list(dict.fromkeys((state.get("symptoms") or []) + new_symptoms))
     severity = str(data.get("severity") or "mild")
 

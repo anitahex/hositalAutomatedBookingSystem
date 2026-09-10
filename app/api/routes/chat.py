@@ -16,6 +16,7 @@ from websockets.exceptions import ConnectionClosed
 
 from app.api.dependencies import current_user
 from app.agents.graph import arun_patient_chat, initialise_hybrid_memory, run_patient_chat
+from app.agents.intake_utils import CRISIS_SAFETY_RESPONSE, looks_like_crisis_or_harm
 from app.services.appointments import upcoming_bookings_for_patient
 from app.services.language import apply_language_turn
 from app.services.tokens import verify_access_token
@@ -49,9 +50,15 @@ logger = logging.getLogger(__name__)
 active_bookings_for_patient = upcoming_bookings_for_patient
 
 # Server-side cache for extracted file data from /chat/upload.
-# Keyed by user_id (str). Consumed on the next /chat/stream call for that user.
-# Bypasses LangGraph checkpoint merging which silently drops large base64 payloads.
+# Keyed by (user_id, session_id). Consumed on the next /chat/stream call for that
+# session. Bypasses LangGraph checkpoint merging which silently drops large base64
+# payloads. Session-scoped so an upload in one browser tab never gets injected into
+# a different concurrent tab/session for the same patient.
 _doc_analysis_cache: dict[str, list[dict]] = {}
+
+
+def _doc_cache_key(user_id: str, session_id: str | None) -> str:
+    return f"{user_id}:{session_id or ''}"
 
 from app.services.chat_history import (
     append_chat_messages,
@@ -224,11 +231,12 @@ def _append_user_message_to_state(state: dict, message: str) -> dict:
 async def _run_chat_with_usage(payload: dict, user: dict):
     state, patient_id = _prepare_chat_state(payload, user)
 
-    # Inject cached file data from the most recent /chat/upload for this user.
+    # Inject cached file data from the most recent /chat/upload for this session.
     # The cache is populated in upload_document() and consumed here exactly once.
     user_id_str = str(patient_id or "")
-    if user_id_str and user_id_str in _doc_analysis_cache:
-        pending_files = _doc_analysis_cache.pop(user_id_str)
+    cache_key = _doc_cache_key(user_id_str, state.get("chat_session_id"))
+    if user_id_str and cache_key in _doc_analysis_cache:
+        pending_files = _doc_analysis_cache.pop(cache_key)
         if pending_files:
             first = pending_files[0]
             # Always use the server-side cache — it contains full extracted images
@@ -457,11 +465,14 @@ def chat(request: ChatRequest, user: dict = Depends(current_user)):
 async def chat_stream(request: Request, user: dict = Depends(current_user)):
     payload, _ = await _parse_chat_request(request)
     user_id_str = str((user or {}).get("patient_id") or "")
+    stream_cache_key = _doc_cache_key(
+        user_id_str, payload.get("session_id") or (payload.get("state") or {}).get("chat_session_id")
+    )
 
     async def event_stream():
         # ── Fast path: direct GPT-4o streaming for document analysis ──────────
-        if user_id_str and user_id_str in _doc_analysis_cache:
-            files = _doc_analysis_cache.pop(user_id_str, [])
+        if user_id_str and stream_cache_key in _doc_analysis_cache:
+            files = _doc_analysis_cache.pop(stream_cache_key, [])
             if files:
                 from app.inference.azure_client import gpt4o_stream_analysis
 
@@ -593,6 +604,46 @@ async def chat_stream(request: Request, user: dict = Depends(current_user)):
         stream_state = _append_user_message_to_state(stream_state, payload["message"])
         # CRITICAL: expose current message as user_input so extraction/prompts work correctly
         stream_state["user_input"] = payload["message"]
+
+        # ── Hard safety gate: self-harm / intent-to-harm-others language ─────
+        # Checked before any streaming fast-path or LLM call — a freeform LLM
+        # reaction to this kind of input is not reliable, and the no-LLM-routing
+        # fast paths below have no way to recognize it at all, which previously
+        # left the conversation stuck repeating "tell me what's upsetting you"
+        # for several turns regardless of what the patient said next.
+        if looks_like_crisis_or_harm(payload["message"]):
+            yield _stream_event("start_response")
+            yield _stream_event("token", token=CRISIS_SAFETY_RESPONSE)
+            history = list(stream_state.get("conversation_history") or [])
+            history.append({"role": "assistant", "text": CRISIS_SAFETY_RESPONSE})
+            # Deliberately reset awaiting (not left as "conversation") so the very
+            # next message is routed fresh instead of being absorbed as an intake answer.
+            updated_state = {
+                **stream_state,
+                "conversation_history": history,
+                "messages": history[-6:],
+                "awaiting": None,
+                "final_response": CRISIS_SAFETY_RESPONSE,
+            }
+            if stream_patient_id:
+                try:
+                    append_chat_messages(
+                        stream_patient_id,
+                        [{"role": "patient", "text": payload["message"]}, {"role": "assistant", "text": CRISIS_SAFETY_RESPONSE}],
+                        chat_session_id=updated_state.get("chat_session_id"),
+                    )
+                except Exception as exc:
+                    logger.warning("crisis gate: could not save history: %s", exc)
+            yield _stream_event(
+                "final",
+                response=CRISIS_SAFETY_RESPONSE,
+                language=updated_state.get("active_language") or "en",
+                state=updated_state,
+                token_usage={"input_tokens": 0, "output_tokens": 0, "total_tokens": 0, "calls": 0},
+                safety_disclaimer=SAFETY_DISCLAIMER,
+            )
+            return
+
         awaiting = stream_state.get("awaiting")
         active_intent = stream_state.get("active_intent") or stream_state.get("intent")
 
@@ -813,10 +864,11 @@ async def upload_document(
             "page_count": page_count,
             "source": source,
         }
-        _doc_analysis_cache.setdefault(user_id, []).append(entry)
+        cache_key = _doc_cache_key(user_id, session_id)
+        _doc_analysis_cache.setdefault(cache_key, []).append(entry)
         logger.info(
-            "upload: cached extracted data for user=%s file=%s images=%d queued=%d",
-            user_id, original_filename, len(images), len(_doc_analysis_cache[user_id]),
+            "upload: cached extracted data for user=%s session=%s file=%s images=%d queued=%d",
+            user_id, session_id, original_filename, len(images), len(_doc_analysis_cache[cache_key]),
         )
     except Exception as exc:
         logger.warning("upload: could not extract/cache doc for user=%s: %s", user_id, exc)
@@ -866,7 +918,7 @@ async def confirm_processing(
     record — the client-supplied token is the only trusted input.
     """
     record = consume_pending_upload(body.document_token)
-    if not record:
+    if not record or str(record["user_id"]) != str(user["patient_id"]):
         raise HTTPException(
             status_code=410,
             detail="Document token not found, already used, or expired.",
@@ -880,7 +932,7 @@ async def confirm_processing(
 
     if not body.consent_granted:
         # Also discard the in-memory extraction cache so it doesn't bleed into a later turn.
-        _doc_analysis_cache.pop(user_id, None)
+        _doc_analysis_cache.pop(_doc_cache_key(user_id, session_id), None)
         try:
             await delete_blob(staged_path)
         except Exception as exc:

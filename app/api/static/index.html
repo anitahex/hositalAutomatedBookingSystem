@@ -33,9 +33,10 @@
           <button type="submit">Login</button>
         </form>
         <form class="auth-form hidden" id="doctorMfaForm">
-          <p class="form-hint">Enter the 6-digit code from your authenticator app.</p>
-          <label>Authentication code<input id="doctorMfaCode" inputmode="numeric" autocomplete="one-time-code" maxlength="64" required /></label>
+          <p class="form-hint" id="doctorMfaFormHint">Enter the 6-digit code from your authenticator app.</p>
+          <label id="doctorMfaCodeLabel">Authentication code<input id="doctorMfaCode" inputmode="numeric" autocomplete="one-time-code" maxlength="64" required /></label>
           <button type="submit">Verify and continue</button>
+          <button class="secondary" id="doctorMfaRecoveryToggle" type="button">Use a recovery code instead</button>
         </form>
 
         <form class="auth-form hidden" id="signupForm">
@@ -73,6 +74,321 @@
 
 
         <p class="auth-error" id="authMessage" role="alert"></p>
+      </div>
+    </section>
+
+    <!-- ═══════════════════════════════════════ DOCTOR ONBOARDING ═══════════════════════════════════════ -->
+    <section class="auth-view hidden" id="doctorOnboardingView" aria-label="Doctor account setup">
+      <div class="auth-card">
+        <div class="auth-header">
+          <div class="auth-mark" aria-hidden="true">
+            <svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M9.937 15.5A2 2 0 0 0 8.5 14.063l-6.135-1.582a.5.5 0 0 1 0-.962L8.5 9.936A2 2 0 0 0 9.937 8.5l1.582-6.135a.5.5 0 0 1 .963 0L14.063 8.5A2 2 0 0 0 15.5 9.937l6.135 1.581a.5.5 0 0 1 0 .964L15.5 14.063a2 2 0 0 0-1.437 1.437l-1.582 6.135a.5.5 0 0 1-.963 0z"/></svg>
+          </div>
+          <div>
+            <p class="eyebrow-label">Doctor Account Setup</p>
+            <h1 id="doctorOnboardingTitle">Set your password</h1>
+            <p class="auth-subtitle" id="doctorOnboardingSubtitle">Create a password to activate your doctor account.</p>
+          </div>
+        </div>
+
+        <!-- Step 1: set password -->
+        <form class="auth-form" id="doctorSetPasswordForm">
+          <label>New password<input id="doctorNewPassword" type="password" autocomplete="new-password" minlength="8" required /></label>
+          <label>Confirm password<input id="doctorConfirmPassword" type="password" autocomplete="new-password" required /></label>
+          <p class="form-hint">Use uppercase, lowercase, number, and special character.</p>
+          <button type="submit">Set password &amp; continue</button>
+        </form>
+
+        <!-- Step 2: MFA enrollment -->
+        <div class="auth-form hidden" id="doctorMfaEnrollStep">
+          <p class="form-hint">Scan this QR code with your authenticator app (Google Authenticator, Authy, etc.), or enter the code manually.</p>
+          <div id="doctorMfaQrContainer" class="doctor-qr-container" aria-hidden="true"></div>
+          <p class="doctor-manual-code" id="doctorMfaProvisioningUri"></p>
+          <form id="doctorMfaEnrollForm">
+            <label>Authenticator code<input id="doctorMfaEnrollCode" inputmode="numeric" autocomplete="one-time-code" maxlength="6" required /></label>
+            <button type="submit">Verify &amp; enable MFA</button>
+          </form>
+          <p class="auth-error" id="doctorMfaEnrollMessage"></p>
+        </div>
+
+        <!-- Step 3: recovery codes -->
+        <div class="auth-form hidden" id="doctorRecoveryCodesStep">
+          <p class="form-hint">Save these recovery codes now — each is single-use, and they can never be shown again.</p>
+          <ol id="doctorRecoveryCodesList" class="doctor-recovery-codes"></ol>
+          <button class="secondary" id="doctorRecoveryDownloadBtn" type="button">Download as .txt</button>
+          <label class="admin-checkline">
+            <input id="doctorRecoveryAckCheckbox" type="checkbox" />
+            <span>I've saved my recovery codes</span>
+          </label>
+          <button id="doctorRecoveryContinueBtn" type="button" disabled>Continue to login</button>
+        </div>
+
+        <p class="auth-error" id="doctorOnboardingMessage" role="alert"></p>
+      </div>
+    </section>
+
+    <!-- ═══════════════════════════════════════ DOCTOR DASHBOARD ═══════════════════════════════════════ -->
+    <section class="hidden" id="doctorDashboardView" aria-label="Doctor workspace">
+      <div class="admin-shell">
+        <aside class="admin-sidebar" aria-label="Doctor navigation">
+          <div class="admin-sidebar-brand">
+            <div class="eyebrow-label text-primary">Doctor workspace</div>
+            <h1 class="page-title">Doctor Dashboard</h1>
+            <p class="page-subtitle">Your appointments and patients.</p>
+          </div>
+
+          <nav class="admin-nav">
+            <button class="admin-nav-item is-active" data-doctor-view="overview" type="button" aria-current="page">
+              <span class="nav-icon" aria-hidden="true">
+                <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="3" y="3" width="7" height="7" rx="1"/><rect x="14" y="3" width="7" height="7" rx="1"/><rect x="14" y="14" width="7" height="7" rx="1"/><rect x="3" y="14" width="7" height="7" rx="1"/></svg>
+              </span>
+              <span class="nav-label">Overview</span>
+            </button>
+            <button class="admin-nav-item" data-doctor-view="upcoming" type="button">
+              <span class="nav-icon" aria-hidden="true">
+                <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M8 2v4M16 2v4M3 10h18M5 4h14a2 2 0 0 1 2 2v14a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V6a2 2 0 0 1 2-2z"/></svg>
+              </span>
+              <span class="nav-label">Upcoming</span>
+            </button>
+            <button class="admin-nav-item" data-doctor-view="past" type="button">
+              <span class="nav-icon" aria-hidden="true">
+                <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="9"/><path d="M12 7v5l3 3"/></svg>
+              </span>
+              <span class="nav-label">Past</span>
+            </button>
+            <button class="admin-nav-item" data-doctor-view="patients" type="button">
+              <span class="nav-icon" aria-hidden="true">
+                <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M17 21v-2a4 4 0 0 0-4-4H5a4 4 0 0 0-4 4v2"/><circle cx="9" cy="7" r="4"/><path d="M23 21v-2a4 4 0 0 0-3-3.87M16 3.13a4 4 0 0 1 0 7.75"/></svg>
+              </span>
+              <span class="nav-label">Patients</span>
+            </button>
+          </nav>
+
+          <div class="admin-sidebar-footer">
+            <button class="secondary admin-icon-button" id="doctorLogoutBtn" type="button">
+              <span class="admin-icon" aria-hidden="true">
+                <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M9 21H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h4"/><polyline points="16 17 21 12 16 7"/><line x1="21" y1="12" x2="9" y2="12"/></svg>
+              </span>
+              <span class="admin-action-label">Logout</span>
+            </button>
+          </div>
+        </aside>
+
+        <main class="admin-content">
+          <p class="auth-error hidden" id="doctorRecoveryLowNotice" role="status"></p>
+
+          <section class="admin-view-pane" id="doctorOverviewPane">
+            <header class="admin-content-header">
+              <div>
+                <div class="eyebrow-label text-primary">Overview</div>
+                <h2 class="page-title">Today at a glance</h2>
+              </div>
+            </header>
+            <div class="admin-stats">
+              <article class="admin-stat-card">
+                <div class="admin-stat-label">Today's appointments</div>
+                <strong class="admin-stat-value" id="doctorStatToday">0</strong>
+              </article>
+            </div>
+            <div class="doctor-profile-grid">
+              <div class="admin-field"><span>Name</span><strong id="doctorProfileName">—</strong></div>
+              <div class="admin-field"><span>Department</span><strong id="doctorProfileDepartment">—</strong></div>
+              <div class="admin-field"><span>Experience</span><strong id="doctorProfileExperience">—</strong></div>
+              <div class="admin-field"><span>MFA status</span><strong id="doctorProfileMfaStatus">—</strong></div>
+            </div>
+          </section>
+
+          <section class="admin-view-pane hidden" id="doctorUpcomingPane">
+            <div class="admin-list-header">
+              <div>
+                <div class="eyebrow-label">Schedule</div>
+                <h2 class="panel-title">Upcoming appointments</h2>
+              </div>
+              <span class="panel-note" id="doctorUpcomingCount">0 appointments</span>
+            </div>
+            <div class="admin-inline-list" id="doctorUpcomingList"></div>
+          </section>
+
+          <section class="admin-view-pane hidden" id="doctorPastPane">
+            <div class="admin-list-header">
+              <div>
+                <div class="eyebrow-label">Schedule</div>
+                <h2 class="panel-title">Past appointments</h2>
+              </div>
+              <span class="panel-note" id="doctorPastCount">0 appointments</span>
+            </div>
+            <div class="admin-inline-list" id="doctorPastList"></div>
+          </section>
+
+          <section class="admin-view-pane hidden" id="doctorPatientsPane">
+            <div class="admin-list-header">
+              <div>
+                <div class="eyebrow-label">Patients</div>
+                <h2 class="panel-title">Your patients</h2>
+              </div>
+              <span class="panel-note" id="doctorPatientsCount">0 patients</span>
+            </div>
+            <input class="doctor-patient-search-input" id="doctorPatientSearchInput" type="search"
+                   placeholder="Search patients by name, email, or phone..." />
+            <div class="admin-inline-list" id="doctorPatientsList"></div>
+          </section>
+
+          <section class="admin-view-pane hidden" id="doctorPatientDetailPane">
+            <div class="admin-list-header">
+              <div>
+                <div class="eyebrow-label">Patient</div>
+                <h2 class="panel-title" id="doctorPatientDetailName">Patient</h2>
+              </div>
+              <button class="secondary compact" id="doctorPatientDetailBackBtn" type="button">Back to patients</button>
+            </div>
+            <div class="doctor-profile-grid" id="doctorPatientDetailFields"></div>
+            <h3>Visit history with you</h3>
+            <div class="admin-inline-list" id="doctorPatientDetailVisits"></div>
+          </section>
+
+          <section class="admin-view-pane hidden" id="doctorAppointmentDetailPane">
+            <div class="admin-list-header">
+              <div>
+                <div class="eyebrow-label">Appointment</div>
+                <h2 class="panel-title">Appointment detail</h2>
+              </div>
+              <button class="secondary compact" id="doctorAppointmentDetailBackBtn" type="button">Back</button>
+            </div>
+            <div class="doctor-profile-grid" id="doctorAppointmentDetailFields"></div>
+
+            <div class="admin-list-header">
+              <div>
+                <div class="eyebrow-label">Consult</div>
+                <h2 class="panel-title">Recording &amp; transcript</h2>
+              </div>
+              <span class="panel-note hidden" id="doctorConsultIdLabel"></span>
+              <span class="panel-note hidden" id="doctorConsultDurationLabel"></span>
+              <span class="admin-status-pill" id="doctorConsultStatusBadge">No consult yet</span>
+            </div>
+
+            <p class="auth-error" id="doctorConsultMessage"></p>
+
+            <div class="form-actions" id="doctorConsultStartRow">
+              <button class="secondary" id="doctorConsultStartBtn" type="button">Start Consult</button>
+            </div>
+
+            <div class="hidden" id="doctorConsultConsentBlock">
+              <label class="admin-checkline">
+                <input id="doctorConsultConsentCheckbox" type="checkbox" />
+                <span>Patient has given verbal consent to record this consult.</span>
+              </label>
+              <div class="form-actions">
+                <button id="doctorConsultConsentConfirmBtn" type="button" disabled>Confirm consent</button>
+              </div>
+            </div>
+
+            <div class="form-actions hidden" id="doctorConsultRecordRow">
+              <button id="doctorConsultBeginRecordingBtn" type="button">Begin recording</button>
+            </div>
+
+            <div class="form-actions hidden" id="doctorConsultStopRow">
+              <div class="consult-live-indicator" id="doctorConsultLiveIndicator">
+                <span class="consult-live-dot" aria-hidden="true"></span>
+                <span id="doctorConsultLiveTimer">0:00</span>
+                <div class="consult-level-meter" aria-hidden="true">
+                  <div class="consult-level-fill" id="doctorConsultLevelFill"></div>
+                </div>
+              </div>
+              <button class="secondary" id="doctorConsultStopRecordingBtn" type="button">Stop recording</button>
+            </div>
+
+            <div class="hidden" id="doctorConsultOrphanedRow">
+              <p class="panel-note">This consult shows as recording, but this browser tab isn't holding an active connection to it — likely from a reload or a lost connection. Ending it finalizes whatever audio was already captured; discarding removes it entirely. Reconnecting to a live recording isn't possible.</p>
+              <div class="form-actions">
+                <button class="secondary" id="doctorConsultOrphanedEndBtn" type="button">End this recording</button>
+              </div>
+            </div>
+
+            <p class="panel-note hidden" id="doctorConsultProcessingNote">Transcribing consult&hellip;</p>
+
+            <div class="hidden" id="doctorConsultTranscriptBlock">
+              <p class="panel-note">Transcript ready.</p>
+              <p class="auth-error hidden" id="doctorConsultFallbackNotice"></p>
+              <div class="admin-list-header">
+                <p class="panel-note">Click a speaker label on any line to relabel it.</p>
+                <button class="secondary compact" id="doctorConsultSwapSpeakersBtn" type="button">These look swapped</button>
+              </div>
+              <div class="admin-inline-list" id="doctorConsultTranscriptList"></div>
+            </div>
+
+            <div class="hidden" id="doctorConsultNoteBlock">
+              <div class="admin-list-header">
+                <div>
+                  <div class="eyebrow-label">Clinical note</div>
+                  <h3 class="panel-title">SOAP note</h3>
+                </div>
+                <span class="admin-status-pill hidden" id="doctorNoteStatusBadge"></span>
+              </div>
+
+              <p class="auth-error hidden" id="doctorNoteMessage"></p>
+              <p class="panel-note hidden" id="doctorNoteFallbackNotice"></p>
+
+              <div class="form-actions" id="doctorNoteGenerateRow">
+                <button id="doctorNoteGenerateBtn" type="button">Generate Clinical Note</button>
+              </div>
+              <div class="hidden" id="doctorNoteGenerateConfirm">
+                <p class="panel-note">This replaces the existing note with a freshly generated one. Any unsaved edits will be lost.</p>
+                <div class="form-actions">
+                  <button type="button" id="doctorNoteGenerateConfirmBtn">Yes, regenerate</button>
+                  <button class="secondary" type="button" id="doctorNoteGenerateCancelBtn">Cancel</button>
+                </div>
+              </div>
+
+              <div class="hidden" id="doctorNoteDraftBlock">
+                <div id="doctorNoteFieldsContainer"></div>
+                <div class="form-actions">
+                  <button class="secondary compact" type="button" id="doctorNoteSaveBtn">Save changes</button>
+                  <button type="button" id="doctorNoteSignBtn">Sign note</button>
+                </div>
+                <div class="hidden" id="doctorNoteSignConfirm">
+                  <p class="panel-note">Signing is permanent — the note becomes read-only and can no longer be edited. This cannot be undone.</p>
+                  <div class="form-actions">
+                    <button type="button" id="doctorNoteSignConfirmBtn">Yes, sign</button>
+                    <button class="secondary" type="button" id="doctorNoteSignCancelBtn">Cancel</button>
+                  </div>
+                </div>
+              </div>
+
+              <div class="hidden" id="doctorNoteSignedBlock">
+                <div class="admin-list-header">
+                  <p class="panel-note">Signed note</p>
+                  <button class="secondary compact" id="doctorNoteCopyBtn" type="button">Copy note</button>
+                </div>
+                <div id="doctorNoteSignedFieldsContainer"></div>
+                <h3 class="panel-title">Addenda</h3>
+                <div class="admin-inline-list" id="doctorNoteAddendaList"></div>
+                <div class="form-actions" id="doctorNoteAddendumRow">
+                  <button class="secondary compact" type="button" id="doctorNoteAddAddendumBtn">Add addendum</button>
+                </div>
+                <div class="hidden" id="doctorNoteAddendumForm">
+                  <textarea class="clinical-note-textarea" id="doctorNoteAddendumText" rows="3" placeholder="Add a follow-up note..."></textarea>
+                  <div class="form-actions">
+                    <button type="button" id="doctorNoteAddendumSaveBtn">Save addendum</button>
+                    <button class="secondary" type="button" id="doctorNoteAddendumCancelBtn">Cancel</button>
+                  </div>
+                </div>
+              </div>
+            </div>
+
+            <div class="hidden" id="doctorConsultDiscardRow">
+              <div class="form-actions">
+                <button class="secondary" id="doctorConsultDiscardBtn" type="button">Discard consult</button>
+              </div>
+              <div class="hidden" id="doctorConsultDiscardConfirm">
+                <p class="panel-note">This permanently deletes the recording and transcript. This cannot be undone.</p>
+                <div class="form-actions">
+                  <button class="secondary" id="doctorConsultDiscardConfirmBtn" type="button">Yes, discard</button>
+                  <button class="secondary" id="doctorConsultDiscardCancelBtn" type="button">Cancel</button>
+                </div>
+              </div>
+            </div>
+          </section>
+        </main>
       </div>
     </section>
 
@@ -185,6 +501,10 @@
                   <h1 class="chat-title">Hospital Assistant</h1>
                   <p class="chat-subtitle" id="topbarCopy">Describe symptoms, book care, or continue the booking flow.</p>
                 </div>
+                <button class="btn-ghost" id="endChatBtn" type="button" title="End this conversation">
+                  <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M18 6 6 18"/><path d="M6 6l12 12"/></svg>
+                  End chat
+                </button>
                 <button class="btn-ghost" id="resetBtn" type="button" title="Start a new conversation">
                   <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M9.937 15.5A2 2 0 0 0 8.5 14.063l-6.135-1.582a.5.5 0 0 1 0-.962L8.5 9.936A2 2 0 0 0 9.937 8.5l1.582-6.135a.5.5 0 0 1 .963 0L14.063 8.5A2 2 0 0 0 15.5 9.937l6.135 1.581a.5.5 0 0 1 0 .964L15.5 14.063a2 2 0 0 0-1.437 1.437l-1.582 6.135a.5.5 0 0 1-.963 0z"/></svg>
                   New chat
@@ -214,12 +534,18 @@
                 <div class="composer-shell">
                   <div class="attach-pills" id="attachPills"></div>
                     <div class="voice-transcript hidden" id="voiceTranscriptPreview" aria-live="polite"></div>
-                    <div class="voice-status hidden" id="voiceStatusPreview" aria-live="polite">
-                      <span class="voice-status-dot" aria-hidden="true"></span>
-                      <span class="voice-status-text"></span>
-                      <span class="voice-wave" aria-hidden="true">
-                        <span></span><span></span><span></span><span></span>
-                      </span>
+                    <div class="voice-status-row">
+                      <div class="voice-status hidden" id="voiceStatusPreview" aria-live="polite">
+                        <span class="voice-status-dot" aria-hidden="true"></span>
+                        <span class="voice-status-text"></span>
+                        <span class="voice-wave" aria-hidden="true">
+                          <span></span><span></span><span></span><span></span>
+                        </span>
+                      </div>
+                      <button type="button" class="voice-discard-btn hidden" id="voiceDiscardBtn" title="Discard recording" aria-label="Discard recording">
+                        <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M3 6h18"/><path d="M8 6V4a2 2 0 0 1 2-2h4a2 2 0 0 1 2 2v2"/><path d="M19 6l-1 14a2 2 0 0 1-2 2H8a2 2 0 0 1-2-2L5 6"/><path d="M10 11v6"/><path d="M14 11v6"/></svg>
+                        Discard
+                      </button>
                     </div>
                   <div class="composer-row">
                     <label class="attach-label" for="documentUpload" title="Attach a medical document (PDF, JPG, PNG)">
@@ -498,6 +824,12 @@
                     </span>
                     <span class="nav-label">Inventory</span>
                   </button>
+                  <button class="admin-nav-item" data-admin-view="audit" type="button">
+                    <span class="nav-icon" aria-hidden="true">
+                      <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M9 12l2 2 4-4"/><circle cx="12" cy="12" r="9"/></svg>
+                    </span>
+                    <span class="nav-label">Audit Log</span>
+                  </button>
                 </nav>
 
                 <div class="admin-sidebar-footer">
@@ -750,6 +1082,43 @@
                     </section>
                   </div>
                 </section>
+
+                <section class="admin-view-pane hidden" id="adminAuditPane">
+                  <div class="admin-list-header">
+                    <div>
+                      <div class="eyebrow-label">Doctor auth</div>
+                      <h2 class="panel-title">Audit log</h2>
+                    </div>
+                    <span class="panel-note" id="adminAuditResultCount">0 entries</span>
+                  </div>
+                  <section class="panel admin-filter-panel" aria-label="Audit log filters">
+                    <div class="admin-filter-grid">
+                      <label class="admin-field" for="adminAuditDoctorFilter">
+                        <span>Doctor</span>
+                        <select id="adminAuditDoctorFilter">
+                          <option value="">All doctors</option>
+                        </select>
+                      </label>
+                      <label class="admin-field" for="adminAuditStartDate">
+                        <span>Start date</span>
+                        <input id="adminAuditStartDate" type="date" />
+                      </label>
+                      <label class="admin-field" for="adminAuditEndDate">
+                        <span>End date</span>
+                        <input id="adminAuditEndDate" type="date" />
+                      </label>
+                    </div>
+                    <div class="form-actions">
+                      <button class="secondary" id="adminAuditFilterBtn" type="button">Filter</button>
+                    </div>
+                  </section>
+                  <div class="admin-inline-list" id="adminAuditLogList"></div>
+                  <div class="admin-pagination" aria-label="Audit log pagination">
+                    <button class="secondary compact" id="adminAuditPrevPageBtn" type="button">Previous</button>
+                    <span class="panel-note" id="adminAuditPageIndicator">Page 1 of 1</span>
+                    <button class="secondary compact" id="adminAuditNextPageBtn" type="button">Next</button>
+                  </div>
+                </section>
               </main>
             </div>
             <div class="admin-toast hidden" id="adminToast" role="status" aria-live="polite"></div>
@@ -760,6 +1129,18 @@
       </div><!-- .app-main -->
     </section><!-- .workspace -->
 
+    <!-- End chat confirmation modal -->
+    <div class="closed-modal hidden" id="endChatConfirmModal" role="dialog" aria-modal="true" aria-labelledby="endChatConfirmTitle">
+      <section class="closed-dialog">
+        <h2 id="endChatConfirmTitle">End this chat?</h2>
+        <p>This will close the current conversation. You can always start a new chat afterwards.</p>
+        <div class="confirm-dialog-actions">
+          <button id="endChatCancelBtn" type="button" class="secondary">Cancel</button>
+          <button id="endChatConfirmBtn" type="button">End chat</button>
+        </div>
+      </section>
+    </div>
+
     <!-- Chat closed modal -->
     <div class="closed-modal hidden" id="chatClosedModal" role="dialog" aria-modal="true" aria-labelledby="chatClosedTitle">
       <section class="closed-dialog">
@@ -769,6 +1150,7 @@
       </section>
     </div>
 
+    <script src="/static/vendor/qrcode.js"></script>
     <script src="/static/app.js"></script>
     <script>
       // ── Page navigation ─────────────────────────────────────────────────────

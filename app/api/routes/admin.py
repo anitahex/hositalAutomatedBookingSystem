@@ -3,7 +3,7 @@ from __future__ import annotations
 from datetime import date, datetime, time, timedelta
 
 from fastapi import APIRouter, Depends, HTTPException, Query
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, EmailStr, Field
 
 from app.api.dependencies import current_admin
 from app.db.connection import connect_db
@@ -20,7 +20,12 @@ from app.services.admin_management import (
     update_doctor,
 )
 from app.services.appointments import ensure_booking_schema
-from app.services.doctor_auth import issue_invite
+from app.services.doctor_auth import (
+    DoctorInviteEmailConfigError,
+    issue_invite,
+    list_doctor_auth_audit_log,
+    unlock_doctor_account,
+)
 
 
 router = APIRouter()
@@ -61,7 +66,7 @@ class ToggleRequest(BaseModel):
 
 
 class DoctorInviteRequest(BaseModel):
-    email: str
+    email: EmailStr
 
 
 class DoctorResetInviteRequest(DoctorInviteRequest):
@@ -212,6 +217,10 @@ def _send_doctor_invite(doctor_id: str, email: str, *, reset: bool = False):
         raise HTTPException(status_code=409, detail=str(exc))
     except ValueError as exc:
         raise HTTPException(status_code=404, detail=str(exc))
+    except DoctorInviteEmailConfigError as exc:
+        # A narrow, deliberately-safe-to-display config error (missing env var name only)
+        # — distinct from a bare RuntimeError so we never risk echoing something unintended.
+        raise HTTPException(status_code=503, detail=str(exc))
     except RuntimeError as exc:
         raise HTTPException(status_code=503, detail="Doctor invite email delivery is not configured.")
     return {"status": "reset_invite_sent" if reset else "invite_sent"}
@@ -232,6 +241,29 @@ def admin_reset_doctor_invite(doctor_id: str, request: DoctorResetInviteRequest,
     if not request.confirm_reset:
         raise HTTPException(status_code=400, detail="confirm_reset must be true to reset an active doctor account.")
     return _send_doctor_invite(doctor_id, request.email, reset=True)
+
+
+@router.post("/doctors/{doctor_id}/unlock")
+def admin_unlock_doctor(doctor_id: str, admin: dict = Depends(current_admin)):
+    try:
+        unlock_doctor_account(doctor_id, actor_email=admin["email"])
+    except ValueError as exc:
+        raise HTTPException(status_code=404, detail=str(exc))
+    return {"status": "unlocked"}
+
+
+@router.get("/doctor-auth-audit-log")
+def admin_doctor_auth_audit_log(
+    admin: dict = Depends(current_admin),
+    doctor_id: str | None = Query(default=None),
+    start_date: date | None = Query(default=None),
+    end_date: date | None = Query(default=None),
+    page: int = Query(default=1, ge=1),
+    page_size: int = Query(default=50, ge=1, le=200),
+):
+    return list_doctor_auth_audit_log(
+        doctor_id=doctor_id, start_date=start_date, end_date=end_date, page=page, page_size=page_size,
+    )
 
 
 @router.get("/slots")

@@ -29,6 +29,7 @@ const analyzedDocsList = document.querySelector("#analyzedDocsList");
 const voiceTranscriptPreview = document.querySelector("#voiceTranscriptPreview");
 const voiceStatusPreview = document.querySelector("#voiceStatusPreview");
 const voiceStatusText = voiceStatusPreview?.querySelector(".voice-status-text") || null;
+const voiceDiscardBtn = document.querySelector("#voiceDiscardBtn");
 const tokenInput = document.querySelector("#tokenInput");
 const tokenOutput = document.querySelector("#tokenOutput");
 const tokenTotal = document.querySelector("#tokenTotal");
@@ -92,6 +93,16 @@ const adminOverviewPane = document.querySelector("#adminOverviewPane");
 const adminAppointmentsPane = document.querySelector("#adminAppointmentsPane");
 const adminManagePane = document.querySelector("#adminManagePane");
 const adminInventoryPane = document.querySelector("#adminInventoryPane");
+const adminAuditPane = document.querySelector("#adminAuditPane");
+const adminAuditDoctorFilter = document.querySelector("#adminAuditDoctorFilter");
+const adminAuditStartDate = document.querySelector("#adminAuditStartDate");
+const adminAuditEndDate = document.querySelector("#adminAuditEndDate");
+const adminAuditFilterBtn = document.querySelector("#adminAuditFilterBtn");
+const adminAuditLogList = document.querySelector("#adminAuditLogList");
+const adminAuditResultCount = document.querySelector("#adminAuditResultCount");
+const adminAuditPrevPageBtn = document.querySelector("#adminAuditPrevPageBtn");
+const adminAuditNextPageBtn = document.querySelector("#adminAuditNextPageBtn");
+const adminAuditPageIndicator = document.querySelector("#adminAuditPageIndicator");
 const adminStatusButtons = Array.from(document.querySelectorAll("[data-admin-status]"));
 const adminRefreshLabel = adminRefreshBtn?.querySelector(".admin-action-label") || null;
 const adminToast = document.querySelector("#adminToast");
@@ -103,16 +114,121 @@ const profilePanelBody = document.querySelector("#profilePanelBody");
 const closeProfilePanelBtn = document.querySelector("#closeProfilePanelBtn");
 const chatClosedModal = document.querySelector("#chatClosedModal");
 const startNewChatBtn = document.querySelector("#startNewChatBtn");
+const endChatBtn = document.querySelector("#endChatBtn");
+const endChatConfirmModal = document.querySelector("#endChatConfirmModal");
+const endChatCancelBtn = document.querySelector("#endChatCancelBtn");
+const endChatConfirmBtn = document.querySelector("#endChatConfirmBtn");
 
 const showLoginBtn = document.querySelector("#showLoginBtn");
 const showSignupBtn = document.querySelector("#showSignupBtn");
 const showAdminBtn = document.querySelector("#showAdminBtn");
 const authTabs = document.querySelector(".auth-tabs");
+const authView = document.querySelector("#authView");
 const loginForm = document.querySelector("#loginForm");
 const signupForm = document.querySelector("#signupForm");
 const adminLoginForm = document.querySelector("#adminLoginForm");
 const doctorMfaForm = document.querySelector("#doctorMfaForm");
+const doctorMfaFormHint = document.querySelector("#doctorMfaFormHint");
+const doctorMfaCode = document.querySelector("#doctorMfaCode");
+const doctorMfaRecoveryToggle = document.querySelector("#doctorMfaRecoveryToggle");
 const adminBackBtn = document.querySelector("#adminBackBtn");
+const doctorOnboardingView = document.querySelector("#doctorOnboardingView");
+const doctorOnboardingMessage = document.querySelector("#doctorOnboardingMessage");
+const doctorSetPasswordForm = document.querySelector("#doctorSetPasswordForm");
+const doctorNewPassword = document.querySelector("#doctorNewPassword");
+const doctorConfirmPassword = document.querySelector("#doctorConfirmPassword");
+const doctorMfaEnrollStep = document.querySelector("#doctorMfaEnrollStep");
+const doctorMfaQrContainer = document.querySelector("#doctorMfaQrContainer");
+const doctorMfaProvisioningUri = document.querySelector("#doctorMfaProvisioningUri");
+const doctorMfaEnrollForm = document.querySelector("#doctorMfaEnrollForm");
+const doctorMfaEnrollCode = document.querySelector("#doctorMfaEnrollCode");
+const doctorMfaEnrollMessage = document.querySelector("#doctorMfaEnrollMessage");
+const doctorRecoveryCodesStep = document.querySelector("#doctorRecoveryCodesStep");
+const doctorRecoveryCodesList = document.querySelector("#doctorRecoveryCodesList");
+const doctorRecoveryDownloadBtn = document.querySelector("#doctorRecoveryDownloadBtn");
+const doctorRecoveryAckCheckbox = document.querySelector("#doctorRecoveryAckCheckbox");
+const doctorRecoveryContinueBtn = document.querySelector("#doctorRecoveryContinueBtn");
+const doctorDashboardView = document.querySelector("#doctorDashboardView");
+const doctorProfileName = document.querySelector("#doctorProfileName");
+const doctorProfileDepartment = document.querySelector("#doctorProfileDepartment");
+const doctorProfileExperience = document.querySelector("#doctorProfileExperience");
+const doctorProfileMfaStatus = document.querySelector("#doctorProfileMfaStatus");
+const doctorRecoveryLowNotice = document.querySelector("#doctorRecoveryLowNotice");
+const doctorLogoutBtn = document.querySelector("#doctorLogoutBtn");
+const doctorViewButtons = document.querySelectorAll("[data-doctor-view]");
+const doctorStatToday = document.querySelector("#doctorStatToday");
+const doctorOverviewPane = document.querySelector("#doctorOverviewPane");
+const doctorUpcomingPane = document.querySelector("#doctorUpcomingPane");
+const doctorPastPane = document.querySelector("#doctorPastPane");
+const doctorPatientsPane = document.querySelector("#doctorPatientsPane");
+const doctorPatientDetailPane = document.querySelector("#doctorPatientDetailPane");
+const doctorAppointmentDetailPane = document.querySelector("#doctorAppointmentDetailPane");
+const doctorUpcomingList = document.querySelector("#doctorUpcomingList");
+const doctorPastList = document.querySelector("#doctorPastList");
+const doctorPatientsList = document.querySelector("#doctorPatientsList");
+const doctorPatientSearchInput = document.querySelector("#doctorPatientSearchInput");
+const doctorUpcomingCount = document.querySelector("#doctorUpcomingCount");
+const doctorPastCount = document.querySelector("#doctorPastCount");
+const doctorPatientsCount = document.querySelector("#doctorPatientsCount");
+const doctorPatientDetailName = document.querySelector("#doctorPatientDetailName");
+const doctorPatientDetailFields = document.querySelector("#doctorPatientDetailFields");
+const doctorPatientDetailVisits = document.querySelector("#doctorPatientDetailVisits");
+const doctorPatientDetailBackBtn = document.querySelector("#doctorPatientDetailBackBtn");
+const doctorAppointmentDetailFields = document.querySelector("#doctorAppointmentDetailFields");
+const doctorAppointmentDetailBackBtn = document.querySelector("#doctorAppointmentDetailBackBtn");
+const doctorConsultStatusBadge = document.querySelector("#doctorConsultStatusBadge");
+const doctorConsultIdLabel = document.querySelector("#doctorConsultIdLabel");
+const doctorConsultDurationLabel = document.querySelector("#doctorConsultDurationLabel");
+const doctorConsultMessage = document.querySelector("#doctorConsultMessage");
+const doctorConsultStartRow = document.querySelector("#doctorConsultStartRow");
+const doctorConsultStartBtn = document.querySelector("#doctorConsultStartBtn");
+const doctorConsultConsentBlock = document.querySelector("#doctorConsultConsentBlock");
+const doctorConsultConsentCheckbox = document.querySelector("#doctorConsultConsentCheckbox");
+const doctorConsultConsentConfirmBtn = document.querySelector("#doctorConsultConsentConfirmBtn");
+const doctorConsultRecordRow = document.querySelector("#doctorConsultRecordRow");
+const doctorConsultBeginRecordingBtn = document.querySelector("#doctorConsultBeginRecordingBtn");
+const doctorConsultStopRow = document.querySelector("#doctorConsultStopRow");
+const doctorConsultStopRecordingBtn = document.querySelector("#doctorConsultStopRecordingBtn");
+const doctorConsultLiveTimer = document.querySelector("#doctorConsultLiveTimer");
+const doctorConsultLevelFill = document.querySelector("#doctorConsultLevelFill");
+const doctorConsultOrphanedRow = document.querySelector("#doctorConsultOrphanedRow");
+const doctorConsultOrphanedEndBtn = document.querySelector("#doctorConsultOrphanedEndBtn");
+const doctorConsultProcessingNote = document.querySelector("#doctorConsultProcessingNote");
+const doctorConsultTranscriptBlock = document.querySelector("#doctorConsultTranscriptBlock");
+const doctorConsultTranscriptList = document.querySelector("#doctorConsultTranscriptList");
+const doctorConsultSwapSpeakersBtn = document.querySelector("#doctorConsultSwapSpeakersBtn");
+const doctorConsultFallbackNotice = document.querySelector("#doctorConsultFallbackNotice");
+const doctorConsultNoteBlock = document.querySelector("#doctorConsultNoteBlock");
+const doctorNoteStatusBadge = document.querySelector("#doctorNoteStatusBadge");
+const doctorNoteMessage = document.querySelector("#doctorNoteMessage");
+const doctorNoteFallbackNotice = document.querySelector("#doctorNoteFallbackNotice");
+const doctorNoteGenerateRow = document.querySelector("#doctorNoteGenerateRow");
+const doctorNoteGenerateBtn = document.querySelector("#doctorNoteGenerateBtn");
+const doctorNoteGenerateConfirm = document.querySelector("#doctorNoteGenerateConfirm");
+const doctorNoteGenerateConfirmBtn = document.querySelector("#doctorNoteGenerateConfirmBtn");
+const doctorNoteGenerateCancelBtn = document.querySelector("#doctorNoteGenerateCancelBtn");
+const doctorNoteDraftBlock = document.querySelector("#doctorNoteDraftBlock");
+const doctorNoteFieldsContainer = document.querySelector("#doctorNoteFieldsContainer");
+const doctorNoteSaveBtn = document.querySelector("#doctorNoteSaveBtn");
+const doctorNoteSignBtn = document.querySelector("#doctorNoteSignBtn");
+const doctorNoteSignConfirm = document.querySelector("#doctorNoteSignConfirm");
+const doctorNoteSignConfirmBtn = document.querySelector("#doctorNoteSignConfirmBtn");
+const doctorNoteSignCancelBtn = document.querySelector("#doctorNoteSignCancelBtn");
+const doctorNoteSignedBlock = document.querySelector("#doctorNoteSignedBlock");
+const doctorNoteCopyBtn = document.querySelector("#doctorNoteCopyBtn");
+const doctorNoteSignedFieldsContainer = document.querySelector("#doctorNoteSignedFieldsContainer");
+const doctorNoteAddendaList = document.querySelector("#doctorNoteAddendaList");
+const doctorNoteAddendumRow = document.querySelector("#doctorNoteAddendumRow");
+const doctorNoteAddAddendumBtn = document.querySelector("#doctorNoteAddAddendumBtn");
+const doctorNoteAddendumForm = document.querySelector("#doctorNoteAddendumForm");
+const doctorNoteAddendumText = document.querySelector("#doctorNoteAddendumText");
+const doctorNoteAddendumSaveBtn = document.querySelector("#doctorNoteAddendumSaveBtn");
+const doctorNoteAddendumCancelBtn = document.querySelector("#doctorNoteAddendumCancelBtn");
+const doctorConsultDiscardRow = document.querySelector("#doctorConsultDiscardRow");
+const doctorConsultDiscardBtn = document.querySelector("#doctorConsultDiscardBtn");
+const doctorConsultDiscardConfirm = document.querySelector("#doctorConsultDiscardConfirm");
+const doctorConsultDiscardConfirmBtn = document.querySelector("#doctorConsultDiscardConfirmBtn");
+const doctorConsultDiscardCancelBtn = document.querySelector("#doctorConsultDiscardCancelBtn");
 const pageAssistant = document.querySelector("#pageAssistant");
 const pageDashboard = document.querySelector("#pageDashboard");
 const pageAppointments = document.querySelector("#pageAppointments");
@@ -125,13 +241,40 @@ const signupBackBtn = document.querySelector("#signupBackBtn");
 const authMessage = document.querySelector("#authMessage");
 const adminAuthMessage = document.querySelector("#adminAuthMessage");
 let doctorMfaToken = null;
+let doctorMfaUsingRecoveryCode = false;
+let pendingInviteToken = null;
+let doctorMfaEnrollmentToken = null;
+let doctorRecoveryCodesInMemory = null;
+let doctorLowRecoveryNoticePending = false;
+let doctorCurrentView = "overview";
+let doctorUpcomingAppointments = [];
+let doctorPastAppointments = [];
+let doctorPatientsCache = [];
+let doctorPatientSearchTerm = "";
+let doctorDetailReturnView = "upcoming";
+let doctorDetailAppointment = null;
+let doctorActiveConsult = null;
+let doctorConsultPollTimer = null;
+let doctorRecordingTimerInterval = null;
+let doctorRecordingStartedAtMs = null;
+let doctorConsultSegmentsById = {};
+let doctorCurrentNote = null;
+let consultAudioContext = null;
+let consultMicStream = null;
+let consultWorkletNode = null;
+let consultSocket = null;
+let consultPendingFrames = [];
 
 let state = null;
 let currentUser = JSON.parse(localStorage.getItem("currentUser") || "null");
 let accessToken = localStorage.getItem("accessToken");
 let currentAdmin = JSON.parse(localStorage.getItem("currentAdmin") || "null");
 let adminAccessToken = localStorage.getItem("adminAccessToken");
+let doctorAccessToken = localStorage.getItem("doctorAccessToken");
 let patientId = currentUser?.patient_id || null;
+let adminAuditPage = 1;
+const adminAuditPageSize = 20;
+let adminAuditTotal = 0;
 let sidebarOpen = localStorage.getItem("sidebarOpen");
 sidebarOpen = sidebarOpen === null ? true : sidebarOpen === "true";
 let bookingStudioState = {
@@ -165,10 +308,10 @@ let voiceAudioContext = null;
 let voiceSocket = null;
 let voiceFinalTranscript = "";
 let voiceLiveTranscript = "";
+let voiceCommittedTranscript = "";
 let voiceListening = false;
 let voicePendingFrames = [];
 let voiceStopping = false;
-let voiceCommitTimer = null;
 let voiceWorkletNode = null;
 let recordsArchive = {
   documents: [],
@@ -476,16 +619,17 @@ function showWorkspacePage(page) {
 
 function preferredAdminView() {
   const saved = localStorage.getItem("adminView");
-  return ["overview", "appointments", "manage", "inventory"].includes(saved) ? saved : "overview";
+  return ["overview", "appointments", "manage", "inventory", "audit"].includes(saved) ? saved : "overview";
 }
 
 function showAdminView(view) {
-  const nextView = ["overview", "appointments", "manage", "inventory"].includes(view) ? view : "overview";
+  const nextView = ["overview", "appointments", "manage", "inventory", "audit"].includes(view) ? view : "overview";
   const panes = {
     overview: adminOverviewPane,
     appointments: adminAppointmentsPane,
     manage: adminManagePane,
     inventory: adminInventoryPane,
+    audit: adminAuditPane,
   };
 
   Object.entries(panes).forEach(([key, element]) => {
@@ -503,6 +647,11 @@ function showAdminView(view) {
   }
   if (nextView === "appointments") {
     loadAdminAppointments();
+  }
+  if (nextView === "audit") {
+    if (!adminManagementLoaded) loadAdminManagement();
+    renderAdminAuditDoctorOptions();
+    loadAdminAuditLog(1);
   }
 }
 
@@ -695,12 +844,16 @@ function clearAuthenticated() {
   adminHolidays = [];
   adminDepartments = [];
   adminDoctorEditingId = "";
+  doctorAccessToken = null;
   localStorage.removeItem("currentUser");
   localStorage.removeItem("accessToken");
   localStorage.removeItem("currentAdmin");
   localStorage.removeItem("adminAccessToken");
+  localStorage.removeItem("doctorAccessToken");
   document.body.classList.remove("authenticated");
   document.body.classList.remove("admin-authenticated");
+  document.body.classList.remove("doctor-authenticated");
+  doctorDashboardView?.classList.add("hidden");
   showWorkspacePage("assistant");
   setPatientSummary(null);
   updateWorkflowPanel(null);
@@ -714,6 +867,1345 @@ function clearAuthenticated() {
     "Please login or sign up to continue.",
     { intro: true, noAnimation: true }
   );
+}
+
+function doctorAuthHeaders() {
+  return { Authorization: `Bearer ${doctorAccessToken}` };
+}
+
+async function doctorAuthedJson(url, options = {}) {
+  const timeoutMs = options.timeoutMs ?? 15000;
+  const controller = new AbortController();
+  const timeoutId = window.setTimeout(() => controller.abort(), timeoutMs);
+
+  try {
+    const response = await fetch(url, {
+      ...options,
+      signal: controller.signal,
+      headers: {
+        ...doctorAuthHeaders(),
+        ...(options.headers || {}),
+      },
+    });
+    const data = await response.json().catch(() => ({}));
+    if (!response.ok) {
+      if (response.status === 401) {
+        clearDoctorAuthenticated();
+        showAuthMode("login");
+      }
+      const requestError = new Error(data.detail || `Request failed with ${response.status}`);
+      requestError.status = response.status;
+      throw requestError;
+    }
+    return data;
+  } catch (error) {
+    if (error?.name === "AbortError") {
+      throw new Error("Request timed out. Please try again.");
+    }
+    throw error;
+  } finally {
+    window.clearTimeout(timeoutId);
+  }
+}
+
+function setDoctorAuthenticated(token) {
+  doctorAccessToken = token;
+  currentUser = null;
+  accessToken = null;
+  currentAdmin = null;
+  adminAccessToken = null;
+  patientId = null;
+  localStorage.setItem("doctorAccessToken", token);
+  localStorage.removeItem("currentUser");
+  localStorage.removeItem("accessToken");
+  localStorage.removeItem("currentAdmin");
+  localStorage.removeItem("adminAccessToken");
+  document.body.classList.add("doctor-authenticated");
+  document.body.classList.remove("authenticated");
+  document.body.classList.remove("admin-authenticated");
+  doctorOnboardingView?.classList.add("hidden");
+  doctorDashboardView?.classList.remove("hidden");
+  showDoctorView("overview");
+  loadDoctorDashboard();
+}
+
+function clearDoctorAuthenticated() {
+  stopConsultRecording();
+  stopConsultStatusPolling();
+  doctorAccessToken = null;
+  localStorage.removeItem("doctorAccessToken");
+  document.body.classList.remove("doctor-authenticated");
+  doctorDashboardView?.classList.add("hidden");
+  doctorUpcomingAppointments = [];
+  doctorPastAppointments = [];
+  doctorPatientsCache = [];
+}
+
+async function loadDoctorDashboard() {
+  try {
+    const data = await doctorAuthedJson("/doctor/me");
+    renderDoctorDashboard(data.doctor);
+  } catch (error) {
+    // A 401 is already handled inside doctorAuthedJson (logs the doctor out);
+    // any other failure just leaves the dashboard fields at their placeholders.
+  }
+  loadDoctorAppointments("upcoming");
+}
+
+function showDoctorView(view) {
+  const validViews = ["overview", "upcoming", "past", "patients"];
+  const nextView = validViews.includes(view) ? view : "overview";
+  doctorCurrentView = nextView;
+
+  // Any navigation away from the appointment detail pane must release the mic/socket —
+  // this is the sidebar-nav path, distinct from (and previously missed by) the
+  // dedicated "Back" button and showDoctorAppointmentDetail's own cleanup calls. Both
+  // functions are safe no-ops when nothing is actually recording.
+  stopConsultRecording();
+  stopConsultStatusPolling();
+
+  const panes = {
+    overview: doctorOverviewPane,
+    upcoming: doctorUpcomingPane,
+    past: doctorPastPane,
+    patients: doctorPatientsPane,
+  };
+  Object.entries(panes).forEach(([key, element]) => {
+    if (!element) return;
+    element.classList.toggle("hidden", key !== nextView);
+  });
+  doctorPatientDetailPane?.classList.add("hidden");
+  doctorAppointmentDetailPane?.classList.add("hidden");
+
+  doctorViewButtons.forEach((button) => {
+    const isActive = button.dataset.doctorView === nextView;
+    button.classList.toggle("is-active", isActive);
+    // is-active alone is a purely visual cue — aria-current gives screen reader users
+    // the same "which section am I in" signal sighted users get from the highlight.
+    if (isActive) {
+      button.setAttribute("aria-current", "page");
+    } else {
+      button.removeAttribute("aria-current");
+    }
+  });
+
+  if (nextView === "upcoming" && !doctorUpcomingAppointments.length) loadDoctorAppointments("upcoming");
+  if (nextView === "past" && !doctorPastAppointments.length) loadDoctorAppointments("past");
+  if (nextView === "patients" && !doctorPatientsCache.length) loadDoctorPatientsList();
+}
+
+function _istToday() {
+  return new Intl.DateTimeFormat("en-CA", { timeZone: "Asia/Kolkata" }).format(new Date());
+}
+
+function updateDoctorTodayStat(upcomingAppointments) {
+  if (!doctorStatToday) return;
+  const today = _istToday();
+  const count = upcomingAppointments.filter((appt) => String(appt.start_time || "").slice(0, 10) === today).length;
+  doctorStatToday.textContent = String(count);
+}
+
+async function loadDoctorAppointments(scope) {
+  const listEl = scope === "upcoming" ? doctorUpcomingList : doctorPastList;
+  const countEl = scope === "upcoming" ? doctorUpcomingCount : doctorPastCount;
+  if (countEl) countEl.textContent = "Loading...";
+  try {
+    const data = await doctorAuthedJson(`/doctor/appointments?scope=${scope}`);
+    const appointments = Array.isArray(data.appointments) ? data.appointments : [];
+    if (scope === "upcoming") {
+      doctorUpcomingAppointments = appointments;
+      updateDoctorTodayStat(appointments);
+    } else {
+      doctorPastAppointments = appointments;
+    }
+    renderDoctorAppointmentsList(listEl, appointments, scope);
+    if (countEl) countEl.textContent = `${appointments.length} appointment${appointments.length === 1 ? "" : "s"}`;
+  } catch (error) {
+    if (countEl) countEl.textContent = "Unable to load.";
+  }
+}
+
+function renderDoctorAppointmentsList(listEl, appointments, scope) {
+  if (!listEl) return;
+  listEl.replaceChildren();
+
+  if (!appointments.length) {
+    const note = document.createElement("p");
+    note.className = "panel-note";
+    note.textContent = scope === "upcoming" ? "No upcoming appointments." : "No past appointments.";
+    listEl.appendChild(note);
+    return;
+  }
+
+  appointments.forEach((appt) => {
+    const card = document.createElement("article");
+    card.className = "admin-inline-card doctor-clickable-card";
+
+    const head = document.createElement("div");
+    head.className = "admin-inline-card-head";
+
+    const titleWrap = document.createElement("div");
+    const title = document.createElement("div");
+    title.className = "admin-inline-title";
+    title.textContent = appt.patient_name || "Unknown patient";
+    const meta = document.createElement("div");
+    meta.className = "admin-inline-meta";
+    meta.textContent = `${appt.department || "Department"} · ${formatDateTime(appt.start_time)}`;
+    titleWrap.append(title, meta);
+
+    const statusValue = adminStatusLabel(appt);
+    const badge = document.createElement("span");
+    badge.className = `admin-status-pill ${statusValue ? `is-${statusValue}` : ""}`;
+    badge.textContent = statusValue || appt.status || "";
+
+    head.append(titleWrap, badge);
+    const durationBadge = buildDurationBadge(appt);
+    if (durationBadge) head.appendChild(durationBadge);
+    card.appendChild(head);
+    card.addEventListener("click", () => showDoctorAppointmentDetail(appt, scope));
+    listEl.appendChild(card);
+  });
+}
+
+// Static text only — "Recording…" while in progress, the fixed final duration once
+// ended. No live-ticking here; only the detail page (where the doctor is actually
+// watching it record) gets a live timer, via renderConsultState/tickRecordingTimer.
+function buildDurationBadge(appt) {
+  if (appt.consult_status === "recording") {
+    const badge = document.createElement("span");
+    badge.className = "admin-status-pill is-upcoming";
+    badge.textContent = "Recording…";
+    return badge;
+  }
+  if (appt.consult_started_at && appt.consult_ended_at) {
+    const seconds = (new Date(appt.consult_ended_at) - new Date(appt.consult_started_at)) / 1000;
+    const badge = document.createElement("span");
+    badge.className = "admin-status-pill";
+    badge.textContent = formatDuration(seconds);
+    return badge;
+  }
+  return null;
+}
+
+// Renders a lightly-markdown-formatted clinical note (headings, **bold**, "- " bullets)
+// as real DOM elements — never via innerHTML/raw HTML string concatenation. Every piece
+// of text passes through document.createTextNode or element.textContent, both of which
+// the browser always treats as literal text, never as markup, no matter what characters
+// it contains. This note is partly derived from patient-supplied input, so this must
+// never become an XSS path regardless of what the LLM echoes back or what a patient
+// originally typed.
+function renderClinicalNote(container, rawText) {
+  container.replaceChildren();
+  if (!rawText || rawText === "-") {
+    container.textContent = rawText || "-";
+    return;
+  }
+
+  // Normalize both real and LITERAL escaped newlines to real newlines. The LLM that
+  // generates these summaries (app/agents/checkup_report.py) occasionally emits a
+  // literal two-character "\n" (backslash + n) in its raw text output instead of an
+  // actual newline control character — a generation-time quirk, not a display bug, but
+  // a doctor should never see a literal backslash-n either way, so both representations
+  // are normalized identically here.
+  const normalized = String(rawText)
+    .replace(/\\r\\n/g, "\n")
+    .replace(/\\n/g, "\n")
+    .replace(/\\r/g, "\n")
+    .replace(/\r\n/g, "\n")
+    .replace(/\r/g, "\n");
+
+  normalized.split("\n").forEach((rawLine) => {
+    const line = rawLine.trim();
+    if (!line) return; // collapse blank lines rather than rendering empty paragraphs
+
+    const headingMatch = /^(#{1,6})\s+(.*)$/.exec(line);
+    const bulletMatch = /^[-*]\s+(.*)$/.exec(line);
+    const text = headingMatch ? headingMatch[2] : bulletMatch ? bulletMatch[1] : line;
+
+    const lineEl = document.createElement(headingMatch ? "h4" : "p");
+    lineEl.className = "clinical-note-line";
+    if (headingMatch) lineEl.classList.add("clinical-note-heading");
+    if (bulletMatch) lineEl.classList.add("clinical-note-bullet");
+
+    appendInlineMarkdown(lineEl, text);
+    container.appendChild(lineEl);
+  });
+}
+
+// Renders **bold** spans as real <strong> elements. Text outside **...** and the bold
+// text itself are both inserted via createTextNode/textContent only.
+function appendInlineMarkdown(parent, text) {
+  const boldPattern = /\*\*(.+?)\*\*/g;
+  let lastIndex = 0;
+  let match;
+  while ((match = boldPattern.exec(text)) !== null) {
+    if (match.index > lastIndex) {
+      parent.appendChild(document.createTextNode(text.slice(lastIndex, match.index)));
+    }
+    const strong = document.createElement("strong");
+    strong.textContent = match[1];
+    parent.appendChild(strong);
+    lastIndex = boldPattern.lastIndex;
+  }
+  if (lastIndex < text.length) {
+    parent.appendChild(document.createTextNode(text.slice(lastIndex)));
+  }
+}
+
+function showDoctorAppointmentDetail(appt, scope) {
+  doctorDetailReturnView = scope;
+  doctorDetailAppointment = appt;
+  stopConsultRecording();
+  stopConsultStatusPolling();
+  doctorActiveConsult = appt.consult_id
+    ? {
+        id: appt.consult_id, status: appt.consult_status,
+        started_at: appt.consult_started_at, ended_at: appt.consult_ended_at,
+      }
+    : null;
+  doctorRecordingStartedAtMs = null;
+  stopRecordingTimer();
+  setDoctorConsultMessage("");
+
+  if (doctorAppointmentDetailFields) {
+    doctorAppointmentDetailFields.replaceChildren();
+    const fields = [
+      ["Patient", appt.patient_name || "Unknown patient"],
+      ["Department", appt.department || "-"],
+      ["Time", formatDateTime(appt.start_time)],
+      ["Status", appt.status || "-"],
+    ];
+    fields.forEach(([label, value]) => {
+      const field = document.createElement("div");
+      field.className = "admin-field";
+      const span = document.createElement("span");
+      span.textContent = label;
+      const strong = document.createElement("strong");
+      strong.textContent = value;
+      field.append(span, strong);
+      doctorAppointmentDetailFields.appendChild(field);
+    });
+
+    // The note (often an LLM-generated pre-appointment clinical summary — see
+    // app/agents/checkup_report.py) can be long, multi-line, lightly-markdown-formatted
+    // text, partly derived from patient-supplied input — rendered via renderClinicalNote,
+    // never innerHTML, so it can never become an XSS path regardless of its content.
+    const noteField = document.createElement("div");
+    noteField.className = "admin-field";
+    const noteLabel = document.createElement("span");
+    noteLabel.textContent = "Note";
+    const noteBody = document.createElement("div");
+    noteBody.className = "clinical-note-body";
+    renderClinicalNote(noteBody, appt.booking_note);
+    noteField.append(noteLabel, noteBody);
+    doctorAppointmentDetailFields.appendChild(noteField);
+  }
+
+  [doctorOverviewPane, doctorUpcomingPane, doctorPastPane, doctorPatientsPane, doctorPatientDetailPane].forEach((pane) =>
+    pane?.classList.add("hidden")
+  );
+  doctorAppointmentDetailPane?.classList.remove("hidden");
+
+  renderConsultState();
+  if (doctorActiveConsult && (doctorActiveConsult.status === "ended" || doctorActiveConsult.status === "transcribing")) {
+    startConsultStatusPolling();
+  }
+}
+
+// ── Consult recording (Part 2/3 wiring) ──────────────────────────────────────
+
+const DOCTOR_CONSULT_STATUS_LABELS = {
+  not_started: "Not started",
+  consented: "Consented",
+  recording: "Recording",
+  ended: "Ended",
+  transcribing: "Transcribing",
+  transcript_ready: "Transcript ready",
+};
+
+function setDoctorConsultMessage(text) {
+  if (doctorConsultMessage) doctorConsultMessage.textContent = text || "";
+}
+
+function renderConsultState() {
+  // A 'discarded' consult is treated exactly like no consult at all — the backend
+  // itself allows a fresh Start to supersede it, so the UI offers that too.
+  const status = doctorActiveConsult && doctorActiveConsult.status !== "discarded" ? doctorActiveConsult.status : null;
+
+  // doctorDetailAppointment is the SAME object reference sitting in the cached
+  // doctorUpcomingAppointments/doctorPastAppointments array (see
+  // showDoctorAppointmentDetail, which sets both from the same click-handler closure) —
+  // mutating it here keeps that cached list's entry in sync with every consult
+  // lifecycle transition (start/consent/begin-recording/end/discard, all of which call
+  // this function), so re-clicking the same card later (without an intervening
+  // GET /doctor/appointments refetch) never resurrects stale pre-transition state. Uses
+  // the already-normalized `status` (not raw doctorActiveConsult.status) so a discarded
+  // consult mirrors exactly what a real refetch would show: nothing, since
+  // list_latest_consult_status_by_booking excludes discarded rows entirely.
+  if (doctorDetailAppointment) {
+    doctorDetailAppointment.consult_id = status ? doctorActiveConsult.id : null;
+    doctorDetailAppointment.consult_status = status;
+    doctorDetailAppointment.consult_started_at = status ? doctorActiveConsult.started_at : null;
+    doctorDetailAppointment.consult_ended_at = status ? doctorActiveConsult.ended_at : null;
+  }
+
+  if (doctorConsultStatusBadge) {
+    doctorConsultStatusBadge.textContent = status ? (DOCTOR_CONSULT_STATUS_LABELS[status] || status) : "No consult yet";
+    const modifier = status === "consented" || status === "recording" ? "is-upcoming" : status === "transcript_ready" ? "is-completed" : "";
+    doctorConsultStatusBadge.className = `admin-status-pill ${modifier}`.trim();
+  }
+
+  if (doctorConsultIdLabel) {
+    // Uses doctorActiveConsult directly (not the discarded-normalized `status` above) —
+    // the id remains a meaningful cross-reference even for a discarded consult.
+    doctorConsultIdLabel.textContent = doctorActiveConsult ? `Consult ID: ${doctorActiveConsult.id}` : "";
+    doctorConsultIdLabel.classList.toggle("hidden", !doctorActiveConsult);
+  }
+
+  // status === "recording" splits into two distinct UIs: this tab is the one actually
+  // holding the live mic/socket (consultSocket is set, e.g. right after clicking Begin
+  // Recording), vs. a recording that shows as in-progress but this tab has no live
+  // connection to it — e.g. after a reload, or opening the same appointment in a
+  // different tab. The latter must never offer a "Stop Recording" button, since there
+  // is nothing live in this tab to stop, and reconnecting to a live Deepgram stream
+  // isn't something this design supports.
+  const isLiveLocalRecording = status === "recording" && !!consultSocket;
+  const isOrphanedRecording = status === "recording" && !consultSocket;
+
+  doctorConsultStartRow?.classList.toggle("hidden", !!status);
+  doctorConsultConsentBlock?.classList.toggle("hidden", status !== "not_started");
+  doctorConsultRecordRow?.classList.toggle("hidden", status !== "consented");
+  doctorConsultStopRow?.classList.toggle("hidden", !isLiveLocalRecording);
+  doctorConsultOrphanedRow?.classList.toggle("hidden", !isOrphanedRecording);
+  doctorConsultProcessingNote?.classList.toggle("hidden", status !== "ended" && status !== "transcribing");
+  doctorConsultTranscriptBlock?.classList.toggle("hidden", status !== "transcript_ready");
+  doctorConsultNoteBlock?.classList.toggle("hidden", status !== "transcript_ready");
+  doctorConsultDiscardRow?.classList.toggle("hidden", !status);
+  doctorConsultDiscardConfirm?.classList.add("hidden");
+
+  if (doctorConsultConsentCheckbox) doctorConsultConsentCheckbox.checked = false;
+  if (doctorConsultConsentConfirmBtn) doctorConsultConsentConfirmBtn.disabled = true;
+
+  if (isLiveLocalRecording || isOrphanedRecording) {
+    doctorConsultDurationLabel?.classList.remove("hidden");
+    // An orphaned recording (reload mid-recording, or opened in a fresh tab) has no
+    // client-captured start instant — recover it from the server's started_at instead.
+    // Guarded so this only fires once per orphaned-recording sighting, not on every
+    // render (e.g. every 4s status-poll tick).
+    if (isOrphanedRecording && doctorRecordingStartedAtMs === null && doctorActiveConsult?.started_at) {
+      doctorRecordingStartedAtMs = new Date(doctorActiveConsult.started_at).getTime();
+      startRecordingTimer();
+    }
+  } else {
+    stopRecordingTimer();
+    if (doctorActiveConsult?.started_at && doctorActiveConsult?.ended_at) {
+      const seconds = (new Date(doctorActiveConsult.ended_at) - new Date(doctorActiveConsult.started_at)) / 1000;
+      if (doctorConsultDurationLabel) {
+        doctorConsultDurationLabel.textContent = `Duration: ${formatDuration(seconds)}`;
+        doctorConsultDurationLabel.classList.remove("hidden");
+      }
+    } else if (doctorConsultDurationLabel) {
+      doctorConsultDurationLabel.textContent = "";
+      doctorConsultDurationLabel.classList.add("hidden");
+    }
+  }
+
+  if (status === "transcript_ready") {
+    loadConsultTranscript();
+    loadSoapNote();
+  }
+}
+
+function formatDuration(totalSeconds) {
+  const seconds = Math.max(0, Math.round(totalSeconds));
+  const minutes = Math.floor(seconds / 60);
+  const remainingSeconds = seconds % 60;
+  return minutes > 0 ? `${minutes}m ${remainingSeconds}s` : `${remainingSeconds}s`;
+}
+
+function tickRecordingTimer() {
+  if (doctorRecordingStartedAtMs === null) return;
+  const text = formatDuration((Date.now() - doctorRecordingStartedAtMs) / 1000);
+  if (doctorConsultDurationLabel) doctorConsultDurationLabel.textContent = `Duration: ${text}`;
+  if (doctorConsultLiveTimer) doctorConsultLiveTimer.textContent = text;
+}
+
+function startRecordingTimer() {
+  stopRecordingTimer();
+  tickRecordingTimer();
+  doctorRecordingTimerInterval = window.setInterval(tickRecordingTimer, 1000);
+}
+
+function stopRecordingTimer() {
+  if (doctorRecordingTimerInterval) {
+    window.clearInterval(doctorRecordingTimerInterval);
+    doctorRecordingTimerInterval = null;
+  }
+}
+
+function stopConsultStatusPolling() {
+  if (doctorConsultPollTimer) {
+    window.clearInterval(doctorConsultPollTimer);
+    doctorConsultPollTimer = null;
+  }
+}
+
+function startConsultStatusPolling() {
+  stopConsultStatusPolling();
+  doctorConsultPollTimer = window.setInterval(async () => {
+    if (!doctorActiveConsult) {
+      stopConsultStatusPolling();
+      return;
+    }
+    try {
+      const transcript = await doctorAuthedJson(`/doctor/consult/${doctorActiveConsult.id}/transcript`);
+      if (transcript.status !== doctorActiveConsult.status) {
+        doctorActiveConsult = { ...doctorActiveConsult, status: transcript.status };
+        renderConsultState();
+      }
+      if (transcript.status === "transcript_ready" || transcript.status === "discarded") {
+        stopConsultStatusPolling();
+      }
+    } catch (error) {
+      stopConsultStatusPolling();
+    }
+  }, 4000);
+}
+
+async function loadConsultTranscript() {
+  if (!doctorActiveConsult) return;
+  try {
+    const transcript = await doctorAuthedJson(`/doctor/consult/${doctorActiveConsult.id}/transcript`);
+    renderConsultFallbackNotice(transcript.transcript_source, transcript.transcript_fallback_error);
+    renderConsultTranscript(transcript.segments || []);
+  } catch (error) {
+    setDoctorConsultMessage(error.message);
+  }
+}
+
+function renderConsultFallbackNotice(transcriptSource, fallbackError) {
+  if (!doctorConsultFallbackNotice) return;
+  if (transcriptSource === "live_fallback") {
+    doctorConsultFallbackNotice.textContent =
+      `Automated re-transcription failed, so this is the raw live capture instead of the higher-accuracy version` +
+      (fallbackError ? ` (${fallbackError})` : "") + ".";
+    doctorConsultFallbackNotice.classList.remove("hidden");
+  } else {
+    doctorConsultFallbackNotice.classList.add("hidden");
+    doctorConsultFallbackNotice.textContent = "";
+  }
+}
+
+function renderConsultTranscript(segments) {
+  if (!doctorConsultTranscriptList) return;
+  doctorConsultTranscriptList.replaceChildren();
+
+  doctorConsultSegmentsById = {};
+  segments.forEach((segment) => {
+    if (segment.id) doctorConsultSegmentsById[segment.id] = segment;
+  });
+
+  if (!segments.length) {
+    const note = document.createElement("p");
+    note.className = "panel-note";
+    note.textContent = "No transcript segments.";
+    doctorConsultTranscriptList.appendChild(note);
+    return;
+  }
+
+  segments.forEach((segment) => {
+    const card = document.createElement("article");
+    card.className = "admin-inline-card";
+    const head = document.createElement("div");
+    head.className = "admin-inline-card-head";
+    const titleWrap = document.createElement("div");
+
+    // Speaker label is itself the correction control — click to cycle
+    // doctor -> patient -> unknown -> doctor. Per-segment fix for diarization drift
+    // mid-conversation; "These look swapped" (above the list) is the cheaper bulk fix
+    // for the whole mapping being backwards.
+    const title = document.createElement("button");
+    title.type = "button";
+    title.className = "admin-inline-title clinical-note-speaker-btn";
+    title.title = "Click to relabel this segment's speaker";
+    title.textContent = speakerLabel(segment.speaker);
+    if (segment.id) {
+      title.addEventListener("click", () => cycleSegmentSpeaker(segment.id, segment.speaker));
+    } else {
+      title.disabled = true;
+    }
+
+    const meta = document.createElement("div");
+    meta.className = "admin-inline-meta";
+    meta.textContent = segment.text;
+    titleWrap.append(title, meta);
+    head.appendChild(titleWrap);
+    card.appendChild(head);
+    doctorConsultTranscriptList.appendChild(card);
+  });
+}
+
+function speakerLabel(speaker) {
+  return speaker === "doctor" ? "Doctor" : speaker === "patient" ? "Patient" : "Unknown speaker";
+}
+
+async function swapConsultSpeakers() {
+  if (!doctorActiveConsult) return;
+  setDoctorConsultMessage("");
+  try {
+    await doctorAuthedJson(`/doctor/consult/${doctorActiveConsult.id}/transcript/swap-speakers`, { method: "POST" });
+    await loadConsultTranscript();
+  } catch (error) {
+    setDoctorConsultMessage(error.message);
+  }
+}
+
+const SEGMENT_SPEAKER_CYCLE = ["doctor", "patient", "unknown"];
+
+async function cycleSegmentSpeaker(segmentId, currentSpeaker) {
+  if (!doctorActiveConsult) return;
+  const currentIndex = SEGMENT_SPEAKER_CYCLE.indexOf(currentSpeaker);
+  const nextSpeaker = SEGMENT_SPEAKER_CYCLE[(currentIndex + 1) % SEGMENT_SPEAKER_CYCLE.length];
+  setDoctorConsultMessage("");
+  try {
+    await doctorAuthedJson(`/doctor/consult/${doctorActiveConsult.id}/transcript/segments/${segmentId}`, {
+      method: "PATCH",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ speaker: nextSpeaker }),
+    });
+    await loadConsultTranscript();
+  } catch (error) {
+    setDoctorConsultMessage(error.message);
+  }
+}
+
+// ── SOAP clinical note (Part 3) ──────────────────────────────────────────────
+
+const SOAP_FIELDS = ["subjective", "objective", "assessment", "plan"];
+const SOAP_FIELD_LABELS = { subjective: "Subjective", objective: "Objective", assessment: "Assessment", plan: "Plan" };
+const NOTE_STATUS_LABELS = { draft: "Draft", stale: "Stale — regenerate", signed: "Signed" };
+
+function setDoctorNoteMessage(text) {
+  if (!doctorNoteMessage) return;
+  doctorNoteMessage.textContent = text || "";
+  doctorNoteMessage.classList.toggle("hidden", !text);
+}
+
+function renderNoteFallbackNotice(sourceTranscriptType) {
+  if (!doctorNoteFallbackNotice) return;
+  if (sourceTranscriptType === "live_fallback") {
+    doctorNoteFallbackNotice.textContent =
+      "This note was generated from a live-only transcript — automated re-transcription failed for this consult, so the underlying transcript is lower-confidence and was never proofread by the batch pass.";
+    doctorNoteFallbackNotice.classList.remove("hidden");
+  } else {
+    doctorNoteFallbackNotice.classList.add("hidden");
+    doctorNoteFallbackNotice.textContent = "";
+  }
+}
+
+function citationExcerpt(citationIds) {
+  if (!Array.isArray(citationIds) || !citationIds.length) return "No citation for this field.";
+  const lines = citationIds
+    .map((id) => {
+      const segment = doctorConsultSegmentsById[id];
+      return segment ? `${speakerLabel(segment.speaker)}: "${segment.text}"` : null;
+    })
+    .filter(Boolean);
+  return lines.length ? lines.join("\n") : "No citation for this field.";
+}
+
+// Shared by the editable draft form and the read-only signed view — citations and
+// confidence flags are just as relevant once signed, so both render them identically;
+// only whether the value is a <textarea> or plain text differs.
+function buildNoteFieldRow(fieldKey, note, { readOnly }) {
+  const wrap = document.createElement("div");
+  wrap.className = "clinical-note-field";
+
+  const head = document.createElement("div");
+  head.className = "admin-inline-card-head";
+  const label = document.createElement("span");
+  label.className = "admin-inline-title";
+  label.textContent = SOAP_FIELD_LABELS[fieldKey];
+  head.appendChild(label);
+
+  if (note.confidence_flags && note.confidence_flags[fieldKey]) {
+    const flag = document.createElement("span");
+    flag.className = "clinical-note-flag";
+    flag.textContent = "Needs review";
+    head.appendChild(flag);
+  }
+  wrap.appendChild(head);
+
+  const fieldText = note[fieldKey] || "";
+  if (readOnly) {
+    const value = document.createElement("p");
+    value.className = fieldText ? "clinical-note-value" : "clinical-note-value clinical-note-value--empty";
+    // Distinct from a real (possibly short) entry — a signed note's empty field is a
+    // fact about the visit, not a loading/error state, and can no longer be filled in
+    // except via an addendum.
+    value.textContent = fieldText || "Not addressed in this conversation.";
+    wrap.appendChild(value);
+  } else {
+    const value = document.createElement("textarea");
+    value.className = "clinical-note-textarea";
+    value.rows = 3;
+    value.dataset.field = fieldKey;
+    value.value = fieldText;
+    if (!fieldText) {
+      // A genuinely empty field (nothing in the transcript to extract) must never look
+      // like a loading/error state — the placeholder makes clear this is a prompt to
+      // fill in, not saved content, and disappears the instant the doctor types
+      // anything (e.g. an exam finding, diagnosis, or plan they gave/decided but never
+      // said aloud during the recorded conversation).
+      value.placeholder = "Not addressed in this conversation — add manually.";
+    }
+    wrap.appendChild(value);
+  }
+
+  const citations = (note.field_citations && note.field_citations[fieldKey]) || [];
+  const citeBtn = document.createElement("button");
+  citeBtn.type = "button";
+  citeBtn.className = "secondary compact clinical-note-citation-btn";
+  citeBtn.textContent = `Show citation${citations.length ? ` (${citations.length})` : ""}`;
+  citeBtn.disabled = !citations.length;
+
+  const citeBox = document.createElement("div");
+  citeBox.className = "panel-note clinical-note-citation-box hidden";
+  citeBox.textContent = citationExcerpt(citations);
+
+  citeBtn.addEventListener("click", () => citeBox.classList.toggle("hidden"));
+
+  wrap.append(citeBtn, citeBox);
+  return wrap;
+}
+
+function renderNoteDraft(note) {
+  if (!doctorNoteFieldsContainer) return;
+  doctorNoteFieldsContainer.replaceChildren();
+  SOAP_FIELDS.forEach((field) => {
+    doctorNoteFieldsContainer.appendChild(buildNoteFieldRow(field, note, { readOnly: false }));
+  });
+  if (doctorNoteSignBtn) doctorNoteSignBtn.disabled = note.status === "stale";
+}
+
+function renderNoteSigned(note) {
+  if (doctorNoteSignedFieldsContainer) {
+    doctorNoteSignedFieldsContainer.replaceChildren();
+    SOAP_FIELDS.forEach((field) => {
+      doctorNoteSignedFieldsContainer.appendChild(buildNoteFieldRow(field, note, { readOnly: true }));
+    });
+  }
+
+  if (!doctorNoteAddendaList) return;
+  doctorNoteAddendaList.replaceChildren();
+  const addenda = note.addenda || [];
+  if (!addenda.length) {
+    const empty = document.createElement("p");
+    empty.className = "panel-note";
+    empty.textContent = "No addenda yet.";
+    doctorNoteAddendaList.appendChild(empty);
+    return;
+  }
+  addenda.forEach((addendum) => {
+    const card = document.createElement("article");
+    card.className = "admin-inline-card";
+    const content = document.createElement("div");
+    content.className = "admin-inline-meta";
+    content.textContent = addendum.content;
+    const when = document.createElement("p");
+    when.className = "panel-note";
+    when.textContent = addendum.created_at ? new Date(addendum.created_at).toLocaleString() : "";
+    card.append(content, when);
+    doctorNoteAddendaList.appendChild(card);
+  });
+}
+
+function renderSoapNote() {
+  const note = doctorCurrentNote;
+  const isSigned = !!note && note.status === "signed";
+
+  doctorNoteGenerateRow?.classList.toggle("hidden", isSigned);
+  doctorNoteGenerateConfirm?.classList.add("hidden");
+  if (doctorNoteGenerateBtn) {
+    doctorNoteGenerateBtn.textContent = note ? "Regenerate Clinical Note" : "Generate Clinical Note";
+  }
+
+  if (!note) {
+    doctorNoteStatusBadge?.classList.add("hidden");
+    doctorNoteDraftBlock?.classList.add("hidden");
+    doctorNoteSignedBlock?.classList.add("hidden");
+    doctorNoteFallbackNotice?.classList.add("hidden");
+    return;
+  }
+
+  if (doctorNoteStatusBadge) {
+    doctorNoteStatusBadge.textContent = NOTE_STATUS_LABELS[note.status] || note.status;
+    const modifier = note.status === "signed" ? "is-completed" : note.status === "stale" ? "is-upcoming" : "";
+    doctorNoteStatusBadge.className = `admin-status-pill ${modifier}`.trim();
+    doctorNoteStatusBadge.classList.remove("hidden");
+  }
+
+  renderNoteFallbackNotice(note.source_transcript_type);
+
+  doctorNoteDraftBlock?.classList.toggle("hidden", isSigned);
+  doctorNoteSignedBlock?.classList.toggle("hidden", !isSigned);
+  doctorNoteSignConfirm?.classList.add("hidden");
+  doctorNoteAddendumForm?.classList.add("hidden");
+
+  if (isSigned) {
+    renderNoteSigned(note);
+  } else {
+    renderNoteDraft(note);
+  }
+}
+
+async function loadSoapNote() {
+  if (!doctorActiveConsult) return;
+  try {
+    doctorCurrentNote = await doctorAuthedJson(`/doctor/consult/${doctorActiveConsult.id}/soap`);
+  } catch (error) {
+    // A 404 just means no note has been generated yet — not a real error to surface.
+    doctorCurrentNote = null;
+    if (error.status && error.status !== 404) setDoctorNoteMessage(error.message);
+  }
+  renderSoapNote();
+}
+
+async function generateSoapNote() {
+  if (!doctorActiveConsult) return;
+  setDoctorNoteMessage("");
+  try {
+    doctorCurrentNote = await doctorAuthedJson(`/doctor/consult/${doctorActiveConsult.id}/soap/generate`, { method: "POST" });
+    renderSoapNote();
+  } catch (error) {
+    setDoctorNoteMessage(error.message);
+  }
+}
+
+function collectNoteFieldValues() {
+  const values = {};
+  doctorNoteFieldsContainer?.querySelectorAll("textarea[data-field]").forEach((el) => {
+    values[el.dataset.field] = el.value;
+  });
+  return values;
+}
+
+async function saveSoapNote() {
+  if (!doctorActiveConsult) return;
+  setDoctorNoteMessage("");
+  try {
+    doctorCurrentNote = await doctorAuthedJson(`/doctor/consult/${doctorActiveConsult.id}/soap`, {
+      method: "PATCH",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(collectNoteFieldValues()),
+    });
+    renderSoapNote();
+  } catch (error) {
+    setDoctorNoteMessage(error.message);
+  }
+}
+
+async function confirmSignSoapNote() {
+  if (!doctorActiveConsult) return;
+  setDoctorNoteMessage("");
+  try {
+    doctorCurrentNote = await doctorAuthedJson(`/doctor/consult/${doctorActiveConsult.id}/soap/sign`, { method: "POST" });
+    renderSoapNote();
+  } catch (error) {
+    setDoctorNoteMessage(error.message);
+  }
+}
+
+async function saveNoteAddendum() {
+  if (!doctorActiveConsult || !doctorNoteAddendumText) return;
+  const content = doctorNoteAddendumText.value.trim();
+  if (!content) return;
+  setDoctorNoteMessage("");
+  try {
+    doctorCurrentNote = await doctorAuthedJson(`/doctor/consult/${doctorActiveConsult.id}/soap/addendum`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ content }),
+    });
+    doctorNoteAddendumText.value = "";
+    renderSoapNote();
+  } catch (error) {
+    setDoctorNoteMessage(error.message);
+  }
+}
+
+function buildNotePlainText(note) {
+  const lines = SOAP_FIELDS.map(
+    (field) => `${SOAP_FIELD_LABELS[field]}:\n${note[field] || "Not addressed in this conversation."}`
+  );
+  const addenda = note.addenda || [];
+  if (addenda.length) {
+    lines.push("Addenda:");
+    addenda.forEach((addendum) => {
+      const when = addendum.created_at ? new Date(addendum.created_at).toLocaleString() : "";
+      lines.push(`- [${when}] ${addendum.content}`);
+    });
+  }
+  return lines.join("\n\n");
+}
+
+async function copyTextWithFallback(text) {
+  if (navigator.clipboard) {
+    await navigator.clipboard.writeText(text);
+    return;
+  }
+  // Legacy fallback — this app's nginx config serves plain HTTP with no TLS, and
+  // navigator.clipboard requires a secure context (HTTPS, or specifically localhost).
+  const textarea = document.createElement("textarea");
+  textarea.value = text;
+  textarea.style.position = "fixed";
+  textarea.style.left = "-9999px";
+  document.body.appendChild(textarea);
+  textarea.focus();
+  textarea.select();
+  try {
+    if (!document.execCommand("copy")) throw new Error("execCommand('copy') was rejected.");
+  } finally {
+    document.body.removeChild(textarea);
+  }
+}
+
+async function copySignedNoteToClipboard() {
+  if (!doctorCurrentNote || !doctorNoteCopyBtn) return;
+  const text = buildNotePlainText(doctorCurrentNote);
+  try {
+    await copyTextWithFallback(text);
+    const original = doctorNoteCopyBtn.textContent;
+    doctorNoteCopyBtn.textContent = "Copied!";
+    window.setTimeout(() => { doctorNoteCopyBtn.textContent = original; }, 1500);
+  } catch (error) {
+    setDoctorNoteMessage("Couldn't copy to clipboard — your browser may be blocking clipboard access on this connection.");
+  }
+}
+
+async function startConsultForCurrentAppointment() {
+  if (!doctorDetailAppointment) return;
+  setDoctorConsultMessage("");
+  try {
+    const consult = await doctorAuthedJson("/doctor/consult/start", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ booking_id: doctorDetailAppointment.booking_id }),
+    });
+    doctorActiveConsult = consult;
+    renderConsultState();
+  } catch (error) {
+    setDoctorConsultMessage(error.message);
+  }
+}
+
+async function confirmConsultConsent() {
+  if (!doctorActiveConsult) return;
+  setDoctorConsultMessage("");
+  try {
+    const consult = await doctorAuthedJson(`/doctor/consult/${doctorActiveConsult.id}/consent`, { method: "POST" });
+    doctorActiveConsult = consult;
+    renderConsultState();
+  } catch (error) {
+    setDoctorConsultMessage(error.message);
+  }
+}
+
+function buildConsultAudioWsUrl(consultationId, sampleRate) {
+  return `${location.origin.replace(/^http/, "ws")}/doctor/consult/${encodeURIComponent(consultationId)}/audio?token=${encodeURIComponent(doctorAccessToken || "")}&sample_rate=${encodeURIComponent(sampleRate)}`;
+}
+
+function appendConsultPcm16Frame(float32Frame) {
+  const pcm = new Int16Array(float32Frame.length);
+  for (let i = 0; i < float32Frame.length; i++) {
+    const sample = Math.max(-1, Math.min(1, float32Frame[i]));
+    pcm[i] = sample < 0 ? sample * 0x8000 : sample * 0x7fff;
+  }
+  if (consultSocket && consultSocket.readyState === WebSocket.OPEN) {
+    consultSocket.send(pcm.buffer);
+  } else {
+    // ~128 samples/frame (a Web Audio render quantum) means 12 frames is only ~32ms
+    // at 48kHz — far less than a real WS handshake (TLS + auth) takes, so audio
+    // spoken while the socket is still connecting was getting silently dropped.
+    // 750 frames covers a couple of seconds even at 48kHz, comfortably more at
+    // lower sample rates, while still bounding memory if the socket never opens.
+    consultPendingFrames.push(pcm.buffer);
+    if (consultPendingFrames.length > 750) consultPendingFrames.shift();
+  }
+}
+
+async function startConsultRecording(consultationId) {
+  consultMicStream = await navigator.mediaDevices.getUserMedia({ audio: true });
+  consultAudioContext = new (window.AudioContext || window.webkitAudioContext)();
+  if (consultAudioContext.state === "suspended") await consultAudioContext.resume();
+  const sampleRate = consultAudioContext.sampleRate || 16000;
+
+  consultSocket = new WebSocket(buildConsultAudioWsUrl(consultationId, sampleRate));
+  consultSocket.binaryType = "arraybuffer";
+  consultSocket.addEventListener("open", () => {
+    consultPendingFrames.forEach((buf) => consultSocket.send(buf));
+    consultPendingFrames = [];
+  });
+  consultSocket.addEventListener("error", () => {
+    setDoctorConsultMessage("Recording connection error.");
+  });
+
+  await consultAudioContext.audioWorklet.addModule("/static/voice-worklet.js");
+  consultWorkletNode = new AudioWorkletNode(consultAudioContext, "voice-capture-processor");
+  const source = consultAudioContext.createMediaStreamSource(consultMicStream);
+  source.connect(consultWorkletNode);
+  let consultLevelFrameCounter = 0;
+  consultWorkletNode.port.onmessage = (event) => {
+    appendConsultPcm16Frame(event.data);
+    // A worklet frame arrives roughly every ~3ms — updating the DOM that often would be
+    // wasteful and imperceptible; throttle the visible level meter to ~every 5th frame.
+    if (++consultLevelFrameCounter % 5 === 0) updateConsultLevelMeter(event.data);
+  };
+}
+
+function updateConsultLevelMeter(float32Frame) {
+  if (!doctorConsultLevelFill) return;
+  let sumSquares = 0;
+  for (let i = 0; i < float32Frame.length; i++) sumSquares += float32Frame[i] * float32Frame[i];
+  const rms = Math.sqrt(sumSquares / float32Frame.length);
+  const pct = Math.min(100, rms * 400); // tunable — not a calibrated meter, just visual feedback
+  doctorConsultLevelFill.style.width = `${pct}%`;
+}
+
+function stopConsultRecording() {
+  if (consultSocket) {
+    if (consultSocket.readyState === WebSocket.OPEN) {
+      try {
+        consultSocket.send(new Uint8Array());
+      } catch (error) {
+        // ignore — socket may already be closing
+      }
+    }
+    try {
+      consultSocket.close();
+    } catch (error) {
+      // ignore
+    }
+    consultSocket = null;
+  }
+  consultPendingFrames = [];
+  if (consultMicStream) {
+    consultMicStream.getTracks().forEach((track) => track.stop());
+    consultMicStream = null;
+  }
+  if (consultWorkletNode) {
+    try {
+      consultWorkletNode.disconnect();
+    } catch (error) {
+      // ignore
+    }
+    consultWorkletNode = null;
+  }
+  if (consultAudioContext) {
+    try {
+      consultAudioContext.close();
+    } catch (error) {
+      // ignore
+    }
+    consultAudioContext = null;
+  }
+  if (doctorConsultLevelFill) doctorConsultLevelFill.style.width = "0%";
+}
+
+async function beginConsultRecordingClick() {
+  if (!doctorActiveConsult) return;
+  setDoctorConsultMessage("");
+  try {
+    await startConsultRecording(doctorActiveConsult.id);
+    playConsultTone("start");
+    doctorRecordingStartedAtMs = Date.now();
+    startRecordingTimer();
+    doctorActiveConsult = { ...doctorActiveConsult, status: "recording" };
+    renderConsultState();
+  } catch (error) {
+    setDoctorConsultMessage(error.message || "Could not access the microphone.");
+  }
+}
+
+async function stopConsultRecordingClick() {
+  // Also the handler for the orphaned-recording "End this recording" button — both
+  // paths get the same audible end-of-recording confirmation.
+  playConsultTone("end");
+  stopConsultRecording();
+  stopRecordingTimer();
+  if (!doctorActiveConsult) return;
+  setDoctorConsultMessage("");
+  try {
+    const consult = await doctorAuthedJson(`/doctor/consult/${doctorActiveConsult.id}/end`, { method: "POST" });
+    doctorActiveConsult = consult;
+    renderConsultState();
+    if (consult.status === "ended" || consult.status === "transcribing") {
+      startConsultStatusPolling();
+    }
+  } catch (error) {
+    setDoctorConsultMessage(error.message);
+  }
+}
+
+function playConsultTone(kind) {
+  try {
+    const ctx = new (window.AudioContext || window.webkitAudioContext)();
+    const osc = ctx.createOscillator();
+    const gain = ctx.createGain();
+    osc.connect(gain);
+    gain.connect(ctx.destination);
+    const now = ctx.currentTime;
+    const [f1, f2] = kind === "start" ? [440, 880] : [880, 440];
+    osc.frequency.setValueAtTime(f1, now);
+    osc.frequency.linearRampToValueAtTime(f2, now + 0.12);
+    gain.gain.setValueAtTime(0.0001, now);
+    gain.gain.exponentialRampToValueAtTime(0.2, now + 0.02);
+    gain.gain.exponentialRampToValueAtTime(0.0001, now + 0.22);
+    osc.start(now);
+    osc.stop(now + 0.25);
+    osc.onended = () => ctx.close();
+  } catch (error) {
+    // Sound is a nice-to-have — never let it block the recording start/stop flow.
+  }
+}
+
+async function confirmDiscardConsult() {
+  if (!doctorActiveConsult) return;
+  setDoctorConsultMessage("");
+  stopConsultRecording();
+  stopConsultStatusPolling();
+  try {
+    const consult = await doctorAuthedJson(`/doctor/consult/${doctorActiveConsult.id}/discard`, { method: "POST" });
+    doctorActiveConsult = consult;
+    renderConsultState();
+  } catch (error) {
+    setDoctorConsultMessage(error.message);
+  }
+}
+
+async function loadDoctorPatientsList() {
+  if (doctorPatientsCount) doctorPatientsCount.textContent = "Loading...";
+  try {
+    const data = await doctorAuthedJson("/doctor/patients");
+    doctorPatientsCache = Array.isArray(data.patients) ? data.patients : [];
+    renderDoctorPatientsList();
+    if (doctorPatientsCount) {
+      doctorPatientsCount.textContent = `${doctorPatientsCache.length} patient${doctorPatientsCache.length === 1 ? "" : "s"}`;
+    }
+  } catch (error) {
+    if (doctorPatientsCount) doctorPatientsCount.textContent = "Unable to load.";
+  }
+}
+
+function renderDoctorPatientsList() {
+  if (!doctorPatientsList) return;
+  doctorPatientsList.replaceChildren();
+
+  const term = doctorPatientSearchTerm.trim().toLowerCase();
+  const filtered = term
+    ? doctorPatientsCache.filter((p) =>
+        [p.patient_name, p.email, p.mobile_number].some((v) => v && String(v).toLowerCase().includes(term))
+      )
+    : doctorPatientsCache;
+
+  if (!filtered.length) {
+    const note = document.createElement("p");
+    note.className = "panel-note";
+    note.textContent = doctorPatientsCache.length ? "No patients match your search." : "No patients yet.";
+    doctorPatientsList.appendChild(note);
+    return;
+  }
+
+  filtered.forEach((patient) => {
+    const card = document.createElement("article");
+    card.className = "admin-inline-card doctor-clickable-card";
+
+    const head = document.createElement("div");
+    head.className = "admin-inline-card-head";
+    const titleWrap = document.createElement("div");
+    const title = document.createElement("div");
+    title.className = "admin-inline-title";
+    title.textContent = patient.patient_name || "Unknown patient";
+    const meta = document.createElement("div");
+    meta.className = "admin-inline-meta";
+    meta.textContent = `${patient.visit_count || 0} visit${patient.visit_count === 1 ? "" : "s"} · Last: ${formatDateTime(patient.last_visit)}`;
+    titleWrap.append(title, meta);
+    head.appendChild(titleWrap);
+    card.appendChild(head);
+    card.addEventListener("click", () => loadDoctorPatientDetail(patient.patient_id));
+    doctorPatientsList.appendChild(card);
+  });
+}
+
+async function loadDoctorPatientDetail(patientId) {
+  try {
+    const detail = await doctorAuthedJson(`/doctor/patients/${encodeURIComponent(patientId)}`);
+    renderDoctorPatientDetail(detail);
+  } catch (error) {
+    if (doctorPatientsCount) doctorPatientsCount.textContent = error.message || "Unable to load patient.";
+  }
+}
+
+function renderDoctorPatientDetail(detail) {
+  if (!detail) return;
+  if (doctorPatientDetailName) doctorPatientDetailName.textContent = detail.name || "Patient";
+
+  if (doctorPatientDetailFields) {
+    doctorPatientDetailFields.replaceChildren();
+    const fields = [
+      ["Age", detail.age != null ? String(detail.age) : "-"],
+      ["Mobile", detail.mobile_number || "-"],
+      ["Email", detail.email || "-"],
+      ["Blood group", detail.blood_group || "-"],
+      ["Health issues", detail.health_issues || "-"],
+    ];
+    fields.forEach(([label, value]) => {
+      const field = document.createElement("div");
+      field.className = "admin-field";
+      const span = document.createElement("span");
+      span.textContent = label;
+      const strong = document.createElement("strong");
+      strong.textContent = value;
+      field.append(span, strong);
+      doctorPatientDetailFields.appendChild(field);
+    });
+  }
+
+  if (doctorPatientDetailVisits) {
+    doctorPatientDetailVisits.replaceChildren();
+    const visits = Array.isArray(detail.visits) ? detail.visits : [];
+    if (!visits.length) {
+      const note = document.createElement("p");
+      note.className = "panel-note";
+      note.textContent = "No visits on record.";
+      doctorPatientDetailVisits.appendChild(note);
+    } else {
+      visits.forEach((visit) => {
+        const card = document.createElement("article");
+        card.className = "admin-inline-card";
+        const head = document.createElement("div");
+        head.className = "admin-inline-card-head";
+        const titleWrap = document.createElement("div");
+        const title = document.createElement("div");
+        title.className = "admin-inline-title";
+        title.textContent = formatDateTime(visit.start_time);
+        const meta = document.createElement("div");
+        meta.className = "admin-inline-meta";
+        meta.textContent = `${visit.department || "Department"} · No clinical note yet`;
+        titleWrap.append(title, meta);
+        const badge = document.createElement("span");
+        badge.className = `admin-status-pill is-${visit.status || "completed"}`;
+        badge.textContent = visit.status || "";
+        head.append(titleWrap, badge);
+        card.appendChild(head);
+        doctorPatientDetailVisits.appendChild(card);
+      });
+    }
+  }
+
+  [doctorOverviewPane, doctorUpcomingPane, doctorPastPane, doctorPatientsPane, doctorAppointmentDetailPane].forEach((pane) =>
+    pane?.classList.add("hidden")
+  );
+  doctorPatientDetailPane?.classList.remove("hidden");
+}
+
+function renderDoctorDashboard(doctor) {
+  if (!doctor) return;
+  if (doctorProfileName) doctorProfileName.textContent = doctor.name || "-";
+  if (doctorProfileDepartment) doctorProfileDepartment.textContent = doctor.department || "-";
+  if (doctorProfileExperience) {
+    doctorProfileExperience.textContent = doctor.experience_years != null ? `${doctor.experience_years} years` : "-";
+  }
+  if (doctorProfileMfaStatus) doctorProfileMfaStatus.textContent = doctor.mfa_enabled ? "Enabled" : "Not enabled";
+  if (doctorLowRecoveryNoticePending && doctorRecoveryLowNotice) {
+    doctorRecoveryLowNotice.textContent =
+      "You signed in with a recovery code. Consider re-enrolling MFA soon if you're running low on codes. (Tap to dismiss.)";
+    doctorRecoveryLowNotice.classList.remove("hidden");
+    doctorLowRecoveryNoticePending = false;
+  }
+}
+
+function setDoctorOnboardingMessage(text) {
+  if (doctorOnboardingMessage) doctorOnboardingMessage.textContent = text || "";
+}
+
+function showDoctorOnboardingStep(step) {
+  doctorSetPasswordForm?.classList.toggle("hidden", step !== "password");
+  doctorMfaEnrollStep?.classList.toggle("hidden", step !== "enroll");
+  doctorRecoveryCodesStep?.classList.toggle("hidden", step !== "recovery");
+}
+
+function doctorEnrollmentErrorMessage(error) {
+  const message = error?.message || "";
+  if (message.includes("MFA authentication token")) {
+    return "Your enrollment link has expired. Please contact your admin for a new link.";
+  }
+  return message || "Something went wrong. Please try again.";
+}
+
+function initDoctorInviteRouting() {
+  if (window.location.pathname !== "/doctor/set-password") return false;
+  const token = new URLSearchParams(window.location.search).get("token");
+  authView?.classList.add("hidden");
+  doctorOnboardingView?.classList.remove("hidden");
+  showDoctorOnboardingStep("password");
+  if (!token) {
+    setDoctorOnboardingMessage(
+      "This invite link is missing required details. Please ask your admin to resend your invite."
+    );
+    doctorSetPasswordForm?.classList.add("hidden");
+    return true;
+  }
+  pendingInviteToken = token;
+  return true;
+}
+
+async function startDoctorMfaEnrollment() {
+  setDoctorOnboardingMessage("");
+  try {
+    const data = await postJson("/doctor/auth/mfa/enroll", {}, doctorMfaEnrollmentToken);
+    if (doctorMfaProvisioningUri) doctorMfaProvisioningUri.textContent = data.provisioning_uri;
+    if (doctorMfaQrContainer) {
+      doctorMfaQrContainer.innerHTML = "";
+      try {
+        const qr = qrcode(0, "M");
+        qr.addData(data.provisioning_uri);
+        qr.make();
+        doctorMfaQrContainer.innerHTML = qr.createSvgTag(4);
+      } catch (qrError) {
+        // Manual code text above still lets the doctor complete enrollment.
+      }
+    }
+  } catch (error) {
+    setDoctorOnboardingMessage(doctorEnrollmentErrorMessage(error));
+  }
+}
+
+function renderRecoveryCodes(codes) {
+  doctorRecoveryCodesInMemory = codes;
+  if (doctorRecoveryCodesList) {
+    doctorRecoveryCodesList.replaceChildren();
+    codes.forEach((code) => {
+      const li = document.createElement("li");
+      li.textContent = code;
+      doctorRecoveryCodesList.appendChild(li);
+    });
+  }
+  if (doctorRecoveryAckCheckbox) doctorRecoveryAckCheckbox.checked = false;
+  if (doctorRecoveryContinueBtn) doctorRecoveryContinueBtn.disabled = true;
+}
+
+function downloadRecoveryCodesAsText(codes) {
+  const content = ["Hospital Portal — MFA recovery codes", "Each code is single-use.", "", ...codes].join("\n");
+  const blob = new Blob([content], { type: "text/plain" });
+  const url = URL.createObjectURL(blob);
+  const anchor = document.createElement("a");
+  anchor.href = url;
+  anchor.download = "hospital-portal-recovery-codes.txt";
+  document.body.appendChild(anchor);
+  anchor.click();
+  anchor.remove();
+  URL.revokeObjectURL(url);
 }
 
 async function refreshActiveAppointments() {
@@ -1764,6 +3256,19 @@ function formatClinicalSummary(value) {
   }
 }
 
+function stripMarkdownForPreview(value) {
+  if (!value) return "";
+  return value
+    .replace(/^#{1,6}\s+/gm, "")
+    .replace(/\*\*(.+?)\*\*/g, "$1")
+    .replace(/\*(.+?)\*/g, "$1")
+    .replace(/^[-•]\s+/gm, "")
+    .replace(/^---+$/gm, "")
+    .replace(/\s*\n\s*/g, " ")
+    .replace(/\s{2,}/g, " ")
+    .trim();
+}
+
 function adminAppointmentState(appointment) {
   const status = String(appointment?.status || "").toLowerCase();
   if (status === "cancelled" || status === "completed") {
@@ -1849,7 +3354,8 @@ function renderAdminAppointmentCard(appointment) {
 
   const summary = document.createElement("span");
   summary.className = "admin-appointment-summary";
-  summary.textContent = formatClinicalSummary(appointment.clinical_summary) || "No clinical summary submitted.";
+  summary.textContent =
+    stripMarkdownForPreview(formatClinicalSummary(appointment.clinical_summary)) || "No clinical summary submitted.";
 
   titleWrap.append(patientName, summary);
 
@@ -1891,15 +3397,22 @@ function renderAdminAppointments() {
   if (!adminAppointmentsList) return;
 
   const selectedDoctorId = adminDoctorFilter?.value || "";
-  const visibleAppointments = (adminAppointments || [])
-    .filter((appointment) => !selectedDoctorId || appointment.doctor_id === selectedDoctorId)
-    .sort((left, right) => new Date(left.time || left.appointment_time || 0) - new Date(right.time || right.appointment_time || 0));
+  const visibleAppointments = (adminAppointments || []).filter(
+    (appointment) => !selectedDoctorId || appointment.doctor_id === selectedDoctorId
+  );
 
   updateAdminStats(visibleAppointments);
 
   const filtered = adminSelectedStatus === "all"
     ? visibleAppointments
     : visibleAppointments.filter((appointment) => adminAppointmentState(appointment) === adminSelectedStatus);
+  // Past appointments show most recent first; upcoming/all stay soonest-first.
+  const sortDirection = adminSelectedStatus === "past" ? -1 : 1;
+  filtered.sort(
+    (left, right) =>
+      sortDirection *
+      (new Date(left.time || left.appointment_time || 0) - new Date(right.time || right.appointment_time || 0))
+  );
   const totalPages = Math.max(1, Math.ceil(filtered.length / adminAppointmentsPageSize));
   adminAppointmentsPage = Math.min(Math.max(1, adminAppointmentsPage), totalPages);
   const startIndex = (adminAppointmentsPage - 1) * adminAppointmentsPageSize;
@@ -2187,7 +3700,7 @@ function renderAdminDoctorsPanel() {
     badge.className = `admin-status-pill ${doctor.is_active ? "is-upcoming" : "is-cancelled"}`;
     badge.textContent = doctor.is_active ? "active" : "inactive";
 
-    head.append(titleWrap, badge);
+    head.append(titleWrap, badge, renderDoctorLoginBadge(doctor));
     card.appendChild(head);
 
     const counts = document.createElement("div");
@@ -2240,7 +3753,288 @@ function renderAdminDoctorsPanel() {
 
     actions.append(editBtn, toggleBtn);
     card.appendChild(actions);
+    card.appendChild(renderDoctorAccountActions(doctor));
     adminDoctorsList.appendChild(card);
+  });
+}
+
+const DOCTOR_LOGIN_STATUS_LABELS = {
+  not_invited: "Login: No account",
+  invited: "Login: Invited",
+  active: "Login: Active",
+  mfa_enrolled: "Login: MFA Enrolled",
+  locked: "Login: Locked",
+};
+
+const DOCTOR_LOGIN_STATUS_PILL_CLASS = {
+  not_invited: "",
+  invited: "",
+  active: "is-upcoming",
+  mfa_enrolled: "is-upcoming",
+  locked: "is-cancelled",
+};
+
+function renderDoctorLoginBadge(doctor) {
+  const badge = document.createElement("span");
+  const status = doctor.login_status || "not_invited";
+  const modifier = DOCTOR_LOGIN_STATUS_PILL_CLASS[status] || "";
+  badge.className = `admin-status-pill ${modifier}`.trim();
+  badge.textContent = DOCTOR_LOGIN_STATUS_LABELS[status] || "Login: Unknown";
+  return badge;
+}
+
+async function sendDoctorInvite(doctorId, email, path) {
+  return adminAuthedJson(`/admin/doctors/${doctorId}/${path}`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ email }),
+  });
+}
+
+async function sendDoctorPasswordReset(doctorId, email) {
+  return adminAuthedJson(`/admin/doctors/${doctorId}/reset-invite`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ email, confirm_reset: true }),
+  });
+}
+
+async function unlockDoctorAccount(doctorId) {
+  return adminAuthedJson(`/admin/doctors/${doctorId}/unlock`, { method: "POST" });
+}
+
+function renderDoctorResetConfirm(doctor, resetBtn) {
+  const confirmWrap = document.createElement("div");
+  confirmWrap.className = "admin-inline-confirm";
+
+  const hint = document.createElement("p");
+  hint.className = "panel-note";
+  hint.textContent = `Type ${doctor.account_email || "the doctor's email"} to confirm.`;
+
+  const input = document.createElement("input");
+  input.type = "email";
+  input.placeholder = doctor.account_email || "Confirm email";
+  input.className = "admin-inline-email-input";
+
+  const actionsRow = document.createElement("div");
+  actionsRow.className = "admin-inline-actions";
+
+  const confirmBtn = document.createElement("button");
+  confirmBtn.type = "button";
+  confirmBtn.className = "compact";
+  confirmBtn.textContent = "Confirm & Send";
+  confirmBtn.disabled = true;
+
+  const cancelBtn = document.createElement("button");
+  cancelBtn.type = "button";
+  cancelBtn.className = "secondary compact";
+  cancelBtn.textContent = "Cancel";
+
+  input.addEventListener("input", () => {
+    const typed = input.value.trim().toLowerCase();
+    const expected = (doctor.account_email || "").trim().toLowerCase();
+    confirmBtn.disabled = !typed || typed !== expected;
+  });
+
+  confirmBtn.addEventListener("click", async () => {
+    try {
+      await sendDoctorPasswordReset(doctor.doctor_id, doctor.account_email);
+      showAdminToast("Password reset invite sent.");
+      await loadAdminManagement(true);
+    } catch (error) {
+      showAdminToast(error.message, "error", 2500);
+    }
+  });
+
+  cancelBtn.addEventListener("click", () => {
+    confirmWrap.remove();
+    if (resetBtn) resetBtn.disabled = false;
+  });
+
+  actionsRow.append(confirmBtn, cancelBtn);
+  confirmWrap.append(hint, input, actionsRow);
+  return confirmWrap;
+}
+
+function renderDoctorAccountActions(doctor) {
+  const wrap = document.createElement("div");
+  wrap.className = "admin-inline-actions";
+
+  if (doctor.invite_action === "invite") {
+    const emailInput = document.createElement("input");
+    emailInput.type = "email";
+    emailInput.placeholder = "Doctor's email";
+    emailInput.className = "admin-inline-email-input";
+
+    const sendBtn = document.createElement("button");
+    sendBtn.type = "button";
+    sendBtn.className = "secondary compact";
+    sendBtn.textContent = "Send Invite";
+    sendBtn.addEventListener("click", async () => {
+      const email = emailInput.value.trim();
+      if (!email) {
+        showAdminToast("Enter the doctor's email first.", "error", 2500);
+        return;
+      }
+      try {
+        await sendDoctorInvite(doctor.doctor_id, email, "invite");
+        showAdminToast("Invite sent.");
+        await loadAdminManagement(true);
+      } catch (error) {
+        showAdminToast(error.message, "error", 2500);
+      }
+    });
+
+    wrap.append(emailInput, sendBtn);
+    return wrap;
+  }
+
+  if (doctor.invite_action === "resend") {
+    const resendBtn = document.createElement("button");
+    resendBtn.type = "button";
+    resendBtn.className = "secondary compact";
+    resendBtn.textContent = "Resend Invite";
+    resendBtn.addEventListener("click", async () => {
+      try {
+        await sendDoctorInvite(doctor.doctor_id, doctor.account_email, "resend-invite");
+        showAdminToast("Invite resent.");
+        await loadAdminManagement(true);
+      } catch (error) {
+        showAdminToast(error.message, "error", 2500);
+      }
+    });
+    wrap.appendChild(resendBtn);
+  }
+
+  if (doctor.invite_action === "reset") {
+    const resetBtn = document.createElement("button");
+    resetBtn.type = "button";
+    resetBtn.className = "secondary compact";
+    resetBtn.textContent = "Send Password Reset";
+    resetBtn.addEventListener("click", () => {
+      wrap.appendChild(renderDoctorResetConfirm(doctor, resetBtn));
+      resetBtn.disabled = true;
+    });
+    wrap.appendChild(resetBtn);
+  }
+
+  if (doctor.login_status === "locked") {
+    const unlockBtn = document.createElement("button");
+    unlockBtn.type = "button";
+    unlockBtn.className = "secondary compact";
+    unlockBtn.textContent = "Unlock";
+    unlockBtn.addEventListener("click", async () => {
+      try {
+        await unlockDoctorAccount(doctor.doctor_id);
+        showAdminToast("Account unlocked.");
+        await loadAdminManagement(true);
+      } catch (error) {
+        showAdminToast(error.message, "error", 2500);
+      }
+    });
+    wrap.appendChild(unlockBtn);
+  }
+
+  return wrap;
+}
+
+function renderAdminAuditDoctorOptions() {
+  if (!adminAuditDoctorFilter) return;
+  const currentValue = adminAuditDoctorFilter.value || "";
+  const doctors = new Map();
+  (adminDoctors || []).forEach((doctor) => {
+    if (!doctor || !doctor.doctor_id) return;
+    doctors.set(doctor.doctor_id, doctor.name || "Doctor");
+  });
+  const options = Array.from(doctors.entries()).sort((a, b) => a[1].localeCompare(b[1]));
+  adminAuditDoctorFilter.replaceChildren();
+
+  const allOption = document.createElement("option");
+  allOption.value = "";
+  allOption.textContent = "All doctors";
+  adminAuditDoctorFilter.appendChild(allOption);
+
+  options.forEach(([doctorId, doctorName]) => {
+    const option = document.createElement("option");
+    option.value = doctorId;
+    option.textContent = doctorName;
+    adminAuditDoctorFilter.appendChild(option);
+  });
+
+  adminAuditDoctorFilter.value = options.some(([doctorId]) => doctorId === currentValue) ? currentValue : "";
+}
+
+async function loadAdminAuditLog(page = 1) {
+  adminAuditPage = page;
+  const params = new URLSearchParams({ page: String(page), page_size: String(adminAuditPageSize) });
+  const doctorId = adminAuditDoctorFilter?.value || "";
+  if (doctorId) params.set("doctor_id", doctorId);
+  if (adminAuditStartDate?.value) params.set("start_date", adminAuditStartDate.value);
+  if (adminAuditEndDate?.value) params.set("end_date", adminAuditEndDate.value);
+
+  try {
+    const data = await adminAuthedJson(`/admin/doctor-auth-audit-log?${params.toString()}`);
+    adminAuditTotal = data.total || 0;
+    renderAdminAuditLogRows(data.entries || []);
+    if (adminAuditResultCount) adminAuditResultCount.textContent = `${adminAuditTotal} entries`;
+    const totalPages = Math.max(1, Math.ceil(adminAuditTotal / adminAuditPageSize));
+    if (adminAuditPageIndicator) adminAuditPageIndicator.textContent = `Page ${page} of ${totalPages}`;
+    if (adminAuditPrevPageBtn) adminAuditPrevPageBtn.disabled = page <= 1;
+    if (adminAuditNextPageBtn) adminAuditNextPageBtn.disabled = page >= totalPages;
+  } catch (error) {
+    if (adminAuditLogList) {
+      adminAuditLogList.replaceChildren();
+      const note = document.createElement("p");
+      note.className = "panel-note";
+      note.textContent = error.message;
+      adminAuditLogList.appendChild(note);
+    }
+  }
+}
+
+function renderAdminAuditLogRows(entries) {
+  if (!adminAuditLogList) return;
+  adminAuditLogList.replaceChildren();
+
+  if (!entries.length) {
+    const note = document.createElement("p");
+    note.className = "panel-note";
+    note.textContent = "No audit entries found.";
+    adminAuditLogList.appendChild(note);
+    return;
+  }
+
+  entries.forEach((entry) => {
+    const card = document.createElement("article");
+    card.className = "admin-inline-card";
+
+    const head = document.createElement("div");
+    head.className = "admin-inline-card-head";
+
+    const titleWrap = document.createElement("div");
+    const title = document.createElement("div");
+    title.className = "admin-inline-title";
+    title.textContent = entry.action_type;
+    const meta = document.createElement("div");
+    meta.className = "admin-inline-meta";
+    meta.textContent = entry.attempted_email || "-";
+    titleWrap.append(title, meta);
+
+    const time = document.createElement("span");
+    time.className = "admin-inline-meta";
+    time.textContent = formatDateTime(entry.created_at);
+
+    head.append(titleWrap, time);
+    card.appendChild(head);
+
+    if (entry.metadata && Object.keys(entry.metadata).length) {
+      const metaLine = document.createElement("div");
+      metaLine.className = "admin-inline-meta";
+      metaLine.textContent = JSON.stringify(entry.metadata);
+      card.appendChild(metaLine);
+    }
+
+    adminAuditLogList.appendChild(card);
   });
 }
 
@@ -2892,10 +4686,6 @@ function setVoiceState(listening, label) {
 async function stopVoiceCapture() {
   if (voiceStopping) return;
   voiceStopping = true;
-  if (voiceCommitTimer) {
-    window.clearTimeout(voiceCommitTimer);
-    voiceCommitTimer = null;
-  }
   if (voiceRecorder && voiceRecorder.state !== "inactive") {
     try {
       if (typeof voiceRecorder.stop === "function") {
@@ -2956,6 +4746,33 @@ async function stopVoiceCapture() {
       : "Recording stopped.";
     voiceStatusPreview.classList.remove("hidden");
   }
+  if (voiceDiscardBtn) {
+    voiceDiscardBtn.classList.toggle("hidden", !transcriptToKeep);
+  }
+}
+
+async function discardVoiceDraft() {
+  if (voiceListening) {
+    await stopVoiceCapture();
+  }
+  voiceFinalTranscript = "";
+  voiceLiveTranscript = "";
+  voiceCommittedTranscript = "";
+  if (input) {
+    input.value = "";
+    autoResizeComposer();
+  }
+  if (voiceTranscriptPreview) {
+    voiceTranscriptPreview.textContent = "";
+    voiceTranscriptPreview.classList.add("hidden");
+  }
+  if (voiceStatusPreview) {
+    voiceStatusPreview.textContent = "";
+    voiceStatusPreview.classList.add("hidden");
+  }
+  if (voiceDiscardBtn) {
+    voiceDiscardBtn.classList.add("hidden");
+  }
 }
 
 function appendPcm16Frame(buffer) {
@@ -3003,9 +4820,13 @@ async function startVoiceCapture() {
   try {
     voiceFinalTranscript = "";
     voiceLiveTranscript = "";
+    voiceCommittedTranscript = "";
     if (voiceTranscriptPreview) {
       voiceTranscriptPreview.textContent = "";
       voiceTranscriptPreview.classList.add("hidden");
+    }
+    if (voiceDiscardBtn) {
+      voiceDiscardBtn.classList.add("hidden");
     }
     if (voiceStatusPreview) {
       voiceStatusPreview.classList.remove("hidden");
@@ -3052,22 +4873,25 @@ async function startVoiceCapture() {
       const alt = payload?.channel?.alternatives?.[0];
       const transcript = (alt?.transcript || "").trim();
       if (!transcript) return;
+      // Deepgram finalizes and restarts a new "utterance" after every pause, so each
+      // message's transcript only covers the current utterance. Keep a running buffer
+      // of everything already finalized and layer the current utterance on top of it,
+      // instead of overwriting the box with just the latest utterance's text.
+      let combined;
       if (payload?.is_final) {
-        voiceFinalTranscript = transcript;
-        voiceLiveTranscript = transcript;
-        if (input) {
-          input.value = voiceFinalTranscript;
-          autoResizeComposer();
-        }
+        voiceCommittedTranscript = [voiceCommittedTranscript, transcript].filter(Boolean).join(" ").trim();
+        combined = voiceCommittedTranscript;
       } else {
-        voiceLiveTranscript = transcript;
-        if (input) {
-          input.value = transcript;
-          autoResizeComposer();
-        }
+        combined = [voiceCommittedTranscript, transcript].filter(Boolean).join(" ").trim();
+      }
+      voiceFinalTranscript = voiceCommittedTranscript;
+      voiceLiveTranscript = combined;
+      if (input) {
+        input.value = combined;
+        autoResizeComposer();
       }
       if (voiceTranscriptPreview) {
-        voiceTranscriptPreview.textContent = transcript;
+        voiceTranscriptPreview.textContent = combined;
         voiceTranscriptPreview.classList.remove("hidden");
       }
       if (voiceStatusPreview) {
@@ -3723,6 +5547,23 @@ form.addEventListener("submit", async (event) => {
     addUserMessage(message);
   }
 
+  // Clear any leftover voice-draft preview — previously only reset if still
+  // actively recording at send time, so a transcript that was already stopped
+  // before Send (the common case) kept showing stale "Transcript ready" text.
+  voiceFinalTranscript = "";
+  voiceLiveTranscript = "";
+  if (voiceTranscriptPreview) {
+    voiceTranscriptPreview.textContent = "";
+    voiceTranscriptPreview.classList.add("hidden");
+  }
+  if (voiceStatusPreview) {
+    voiceStatusPreview.textContent = "";
+    voiceStatusPreview.classList.add("hidden");
+  }
+  if (voiceDiscardBtn) {
+    voiceDiscardBtn.classList.add("hidden");
+  }
+
   await sendMessage(effectiveMessage);
 });
 
@@ -3733,6 +5574,12 @@ if (voiceBtn) {
       return;
     }
     void startVoiceCapture();
+  });
+}
+
+if (voiceDiscardBtn) {
+  voiceDiscardBtn.addEventListener("click", () => {
+    void discardVoiceDraft();
   });
 }
 
@@ -3751,6 +5598,27 @@ messages.addEventListener("scroll", () => {
 resetBtn.addEventListener("click", () => {
   resetChat();
 });
+
+if (endChatBtn && endChatConfirmModal && endChatCancelBtn && endChatConfirmBtn) {
+  endChatBtn.addEventListener("click", () => {
+    if (state?.chat_closed) {
+      showChatClosed();
+      return;
+    }
+    endChatConfirmModal.classList.remove("hidden");
+    endChatConfirmBtn.focus();
+  });
+
+  endChatCancelBtn.addEventListener("click", () => {
+    endChatConfirmModal.classList.add("hidden");
+  });
+
+  endChatConfirmBtn.addEventListener("click", () => {
+    endChatConfirmModal.classList.add("hidden");
+    input.value = "End the chat";
+    form.requestSubmit();
+  });
+}
 
 if (bookAppointmentBtn) {
   bookAppointmentBtn.addEventListener("click", () => {
@@ -3827,6 +5695,16 @@ if (adminRefreshBtn) {
     void refreshAdminPanel();
   });
 }
+
+if (adminAuditFilterBtn) adminAuditFilterBtn.addEventListener("click", () => loadAdminAuditLog(1));
+
+if (adminAuditPrevPageBtn) adminAuditPrevPageBtn.addEventListener("click", () => {
+  if (adminAuditPage > 1) loadAdminAuditLog(adminAuditPage - 1);
+});
+
+if (adminAuditNextPageBtn) adminAuditNextPageBtn.addEventListener("click", () => {
+  loadAdminAuditLog(adminAuditPage + 1);
+});
 
 adminViewButtons.forEach((button) => {
   button.addEventListener("click", () => {
@@ -4027,10 +5905,193 @@ loginForm.addEventListener("submit", async (event) => {
 if (doctorMfaForm) doctorMfaForm.addEventListener("submit", async (event) => {
   event.preventDefault(); setAuthMessage("");
   try {
-    const data = await postJson("/doctor/auth/mfa/challenge", { code: document.querySelector("#doctorMfaCode").value }, doctorMfaToken);
-    localStorage.setItem("doctorAccessToken", data.access_token);
-    document.querySelector("#authView").innerHTML = '<div class="auth-card"><h1>Doctor Dashboard</h1><p class="auth-subtitle">Coming soon</p></div>';
+    const data = await postJson("/doctor/auth/mfa/challenge", { code: doctorMfaCode.value }, doctorMfaToken);
+    if (data.recovery_code_used) doctorLowRecoveryNoticePending = true;
+    setDoctorAuthenticated(data.access_token);
   } catch (error) { setAuthMessage("Invalid email or password."); }
+});
+
+if (doctorMfaRecoveryToggle) doctorMfaRecoveryToggle.addEventListener("click", () => {
+  doctorMfaUsingRecoveryCode = !doctorMfaUsingRecoveryCode;
+  if (doctorMfaUsingRecoveryCode) {
+    if (doctorMfaFormHint) doctorMfaFormHint.textContent = "Enter one of your recovery codes.";
+    if (doctorMfaCode) doctorMfaCode.setAttribute("inputmode", "text");
+    doctorMfaRecoveryToggle.textContent = "Use authenticator code instead";
+  } else {
+    if (doctorMfaFormHint) doctorMfaFormHint.textContent = "Enter the 6-digit code from your authenticator app.";
+    if (doctorMfaCode) doctorMfaCode.setAttribute("inputmode", "numeric");
+    doctorMfaRecoveryToggle.textContent = "Use a recovery code instead";
+  }
+  if (doctorMfaCode) {
+    doctorMfaCode.value = "";
+    doctorMfaCode.focus();
+  }
+});
+
+if (doctorRecoveryLowNotice) doctorRecoveryLowNotice.addEventListener("click", () => {
+  doctorRecoveryLowNotice.classList.add("hidden");
+});
+
+if (doctorLogoutBtn) doctorLogoutBtn.addEventListener("click", () => {
+  clearDoctorAuthenticated();
+  showAuthMode("login");
+});
+
+doctorViewButtons.forEach((button) => {
+  button.addEventListener("click", () => showDoctorView(button.dataset.doctorView));
+});
+
+if (doctorPatientDetailBackBtn) doctorPatientDetailBackBtn.addEventListener("click", () => {
+  showDoctorView("patients");
+});
+
+if (doctorPatientSearchInput) doctorPatientSearchInput.addEventListener("input", () => {
+  doctorPatientSearchTerm = doctorPatientSearchInput.value;
+  renderDoctorPatientsList();
+});
+
+if (doctorAppointmentDetailBackBtn) doctorAppointmentDetailBackBtn.addEventListener("click", () => {
+  stopConsultRecording();
+  stopConsultStatusPolling();
+  showDoctorView(doctorDetailReturnView);
+});
+
+if (doctorConsultStartBtn) doctorConsultStartBtn.addEventListener("click", startConsultForCurrentAppointment);
+
+if (doctorConsultConsentCheckbox) doctorConsultConsentCheckbox.addEventListener("change", () => {
+  if (doctorConsultConsentConfirmBtn) doctorConsultConsentConfirmBtn.disabled = !doctorConsultConsentCheckbox.checked;
+});
+
+if (doctorConsultConsentConfirmBtn) doctorConsultConsentConfirmBtn.addEventListener("click", confirmConsultConsent);
+
+if (doctorConsultBeginRecordingBtn) doctorConsultBeginRecordingBtn.addEventListener("click", beginConsultRecordingClick);
+
+if (doctorConsultStopRecordingBtn) doctorConsultStopRecordingBtn.addEventListener("click", stopConsultRecordingClick);
+
+if (doctorConsultSwapSpeakersBtn) doctorConsultSwapSpeakersBtn.addEventListener("click", swapConsultSpeakers);
+
+if (doctorConsultOrphanedEndBtn) doctorConsultOrphanedEndBtn.addEventListener("click", stopConsultRecordingClick);
+
+if (doctorNoteGenerateBtn) doctorNoteGenerateBtn.addEventListener("click", () => {
+  // Only ask for confirmation when regenerating over an existing note — nothing to
+  // lose on the very first generate, so that one runs immediately.
+  if (doctorCurrentNote) {
+    doctorNoteGenerateConfirm?.classList.remove("hidden");
+  } else {
+    generateSoapNote();
+  }
+});
+
+if (doctorNoteGenerateConfirmBtn) doctorNoteGenerateConfirmBtn.addEventListener("click", () => {
+  doctorNoteGenerateConfirm?.classList.add("hidden");
+  generateSoapNote();
+});
+
+if (doctorNoteGenerateCancelBtn) doctorNoteGenerateCancelBtn.addEventListener("click", () => {
+  doctorNoteGenerateConfirm?.classList.add("hidden");
+});
+
+if (doctorNoteSaveBtn) doctorNoteSaveBtn.addEventListener("click", saveSoapNote);
+
+if (doctorNoteSignBtn) doctorNoteSignBtn.addEventListener("click", () => {
+  doctorNoteSignConfirm?.classList.remove("hidden");
+});
+
+if (doctorNoteSignConfirmBtn) doctorNoteSignConfirmBtn.addEventListener("click", () => {
+  doctorNoteSignConfirm?.classList.add("hidden");
+  confirmSignSoapNote();
+});
+
+if (doctorNoteSignCancelBtn) doctorNoteSignCancelBtn.addEventListener("click", () => {
+  doctorNoteSignConfirm?.classList.add("hidden");
+});
+
+if (doctorNoteAddAddendumBtn) doctorNoteAddAddendumBtn.addEventListener("click", () => {
+  doctorNoteAddendumForm?.classList.remove("hidden");
+});
+
+if (doctorNoteAddendumSaveBtn) doctorNoteAddendumSaveBtn.addEventListener("click", saveNoteAddendum);
+
+if (doctorNoteAddendumCancelBtn) doctorNoteAddendumCancelBtn.addEventListener("click", () => {
+  doctorNoteAddendumForm?.classList.add("hidden");
+  if (doctorNoteAddendumText) doctorNoteAddendumText.value = "";
+});
+
+if (doctorNoteCopyBtn) doctorNoteCopyBtn.addEventListener("click", copySignedNoteToClipboard);
+
+if (doctorConsultDiscardBtn) doctorConsultDiscardBtn.addEventListener("click", () => {
+  doctorConsultDiscardConfirm?.classList.remove("hidden");
+});
+
+if (doctorConsultDiscardCancelBtn) doctorConsultDiscardCancelBtn.addEventListener("click", () => {
+  doctorConsultDiscardConfirm?.classList.add("hidden");
+});
+
+if (doctorConsultDiscardConfirmBtn) doctorConsultDiscardConfirmBtn.addEventListener("click", confirmDiscardConsult);
+
+if (doctorSetPasswordForm) doctorSetPasswordForm.addEventListener("submit", async (event) => {
+  event.preventDefault();
+  setDoctorOnboardingMessage("");
+  const password = doctorNewPassword.value;
+  const confirmPassword = doctorConfirmPassword.value;
+  if (!passwordPattern.test(password)) {
+    setDoctorOnboardingMessage(
+      "Password must include uppercase, lowercase, number, special character, and be at least 8 characters."
+    );
+    return;
+  }
+  if (password !== confirmPassword) {
+    setDoctorOnboardingMessage("Passwords do not match.");
+    return;
+  }
+  try {
+    const data = await postJson("/doctor/auth/complete-invite", { token: pendingInviteToken, password });
+    if (data.status === "password_reset") {
+      pendingInviteToken = null;
+      history.replaceState(null, "", "/");
+      doctorOnboardingView?.classList.add("hidden");
+      authView?.classList.remove("hidden");
+      showAuthMode("login");
+      setAuthMessage("Password updated. Please log in.");
+      return;
+    }
+    doctorMfaEnrollmentToken = data.mfa_enrollment_token;
+    showDoctorOnboardingStep("enroll");
+    await startDoctorMfaEnrollment();
+  } catch (error) {
+    setDoctorOnboardingMessage(error.message);
+  }
+});
+
+if (doctorMfaEnrollForm) doctorMfaEnrollForm.addEventListener("submit", async (event) => {
+  event.preventDefault();
+  if (doctorMfaEnrollMessage) doctorMfaEnrollMessage.textContent = "";
+  try {
+    const data = await postJson("/doctor/auth/mfa/verify", { code: doctorMfaEnrollCode.value }, doctorMfaEnrollmentToken);
+    showDoctorOnboardingStep("recovery");
+    renderRecoveryCodes(data.recovery_codes || []);
+  } catch (error) {
+    if (doctorMfaEnrollMessage) doctorMfaEnrollMessage.textContent = doctorEnrollmentErrorMessage(error);
+  }
+});
+
+if (doctorRecoveryAckCheckbox) doctorRecoveryAckCheckbox.addEventListener("change", () => {
+  if (doctorRecoveryContinueBtn) doctorRecoveryContinueBtn.disabled = !doctorRecoveryAckCheckbox.checked;
+});
+
+if (doctorRecoveryDownloadBtn) doctorRecoveryDownloadBtn.addEventListener("click", () => {
+  downloadRecoveryCodesAsText(doctorRecoveryCodesInMemory || []);
+});
+
+if (doctorRecoveryContinueBtn) doctorRecoveryContinueBtn.addEventListener("click", () => {
+  doctorRecoveryCodesInMemory = null;
+  doctorRecoveryCodesList?.replaceChildren();
+  doctorMfaEnrollmentToken = null;
+  history.replaceState(null, "", "/");
+  doctorOnboardingView?.classList.add("hidden");
+  authView?.classList.remove("hidden");
+  showAuthMode("login");
+  setAuthMessage("MFA enabled. Please log in to continue.");
 });
 
 signupForm.addEventListener("submit", async (event) => {
@@ -4168,6 +6229,16 @@ async function bootstrapSession() {
       return;
     }
 
+    if (doctorAccessToken) {
+      const data = await doctorAuthedJson("/doctor/me");
+      document.body.classList.add("doctor-authenticated");
+      doctorDashboardView?.classList.remove("hidden");
+      showDoctorView("overview");
+      renderDoctorDashboard(data.doctor);
+      loadDoctorAppointments("upcoming");
+      return;
+    }
+
     clearAuthenticated();
     showAuthMode("login");
   } catch (error) {
@@ -4177,7 +6248,9 @@ async function bootstrapSession() {
   }
 }
 
-bootstrapSession();
+if (!initDoctorInviteRouting()) {
+  bootstrapSession();
+}
 setSidebarOpen(sidebarOpen);
 
 document.querySelectorAll("[data-nav]").forEach((button) => {

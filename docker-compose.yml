@@ -1,9 +1,11 @@
 services:
   postgres:
     image: postgres:15-alpine
+    env_file:
+      - .env
     environment:
       POSTGRES_USER: postgres
-      POSTGRES_PASSWORD: password
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD}
       POSTGRES_DB: hospital_db
     volumes:
       - postgres_data:/var/lib/postgresql/data
@@ -12,7 +14,7 @@ services:
       interval: 5s
       timeout: 5s
       retries: 15
-00
+
   qdrant:
     image: qdrant/qdrant:latest
     volumes:
@@ -25,7 +27,7 @@ services:
     env_file:
       - .env
     environment:
-      DATABASE_URL: postgresql://postgres:password@postgres:5432/hospital_db
+      DATABASE_URL: postgresql://postgres:${POSTGRES_PASSWORD}@postgres:5432/hospital_db
       QDRANT_MODE: remote
       QDRANT_URL: http://qdrant:6333
       CHECKPOINT_DB_PATH: /app/data/checkpoints.sqlite

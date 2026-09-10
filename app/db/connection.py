@@ -38,7 +38,19 @@ def _get_pool() -> ThreadedConnectionPool:
 
 @contextmanager
 def connect_db():
-    """Borrow a PostgreSQL connection and return it to the pool after use."""
+    """Borrow a PostgreSQL connection and return it to the pool after use.
+
+    DANGER — do not call this (directly or via a function that calls it) from *inside*
+    an already-open `with connect_db() as conn:` block on the same thread.
+    `ThreadedConnectionPool.getconn()` (called here with no explicit key) keys checked-out
+    connections by the current thread id, so a nested call on the same thread returns the
+    SAME physical connection as the outer one. That nested call's own exit then commits
+    and returns the connection to the pool while the outer block still believes it owns
+    an open transaction — this has already happened once (see TECH_DEBT.md item 5) and
+    left a connection stuck 'idle in transaction', deadlocking every later
+    `CREATE INDEX IF NOT EXISTS` in an `ensure_*_schema()` call. If you need to check
+    something mid-transaction, query it with the cursor you already have — never open a
+    second `connect_db()`."""
     pool = _get_pool()
     conn = pool.getconn()
     try:

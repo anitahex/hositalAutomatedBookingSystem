@@ -59,18 +59,27 @@ def _clean_json(raw_output: str) -> str:
     return raw_output.replace("```json", "").replace("```", "").strip()
 
 
+_DATE_OPTION_COUNT = BOOKING_WINDOW_DAYS + 1  # "today" plus up to 7 days ahead
+
+
 def _date_options() -> list[dict[str, str]]:
+    """The hospital is closed on Sundays, so they're skipped from the picker —
+    the window is extended as needed to still offer _DATE_OPTION_COUNT choices."""
     today = date.today()
     options = []
-    for offset in range(BOOKING_WINDOW_DAYS + 1):
+    offset = 0
+    max_offset = _DATE_OPTION_COUNT * 3  # safety cap; well beyond the ~1-in-7 Sunday rate
+    while len(options) < _DATE_OPTION_COUNT and offset <= max_offset:
         day = today + timedelta(days=offset)
-        if offset == 0:
-            label = f"Today ({day.isoformat()})"
-        elif offset == 1:
-            label = f"Tomorrow ({day.isoformat()})"
-        else:
-            label = day.strftime("%a %d %b (%Y-%m-%d)")
-        options.append({"label": label, "value": day.isoformat()})
+        if day.weekday() != 6:  # Sunday
+            if offset == 0:
+                label = f"Today ({day.isoformat()})"
+            elif offset == 1:
+                label = f"Tomorrow ({day.isoformat()})"
+            else:
+                label = day.strftime("%a %d %b (%Y-%m-%d)")
+            options.append({"label": label, "value": day.isoformat()})
+        offset += 1
     return options
 
 
@@ -82,8 +91,13 @@ def _valid_requested_date(value: str | None) -> bool:
     except ValueError:
         return False
 
+    if requested.weekday() == 6:  # Sunday — closed
+        return False
+
     today = date.today()
-    return today <= requested <= today + timedelta(days=BOOKING_WINDOW_DAYS)
+    options = _date_options()
+    max_date = date.fromisoformat(options[-1]["value"]) if options else today + timedelta(days=BOOKING_WINDOW_DAYS)
+    return today <= requested <= max_date
 
 
 def _date_selection_response(prefix: str | None = None):
@@ -114,6 +128,150 @@ def _choose_date_option(user_input: str, options: list[dict]) -> str | None:
         value = str(option.get("value", "")).lower()
         if text == value or text in label:
             return option["value"]
+
+    return None
+
+
+# ── Free-text date extraction (e.g. "can i book for 11 september ?") ─────────
+# Hand-rolled regexes in the same style as extract_local_intake_info
+# (app/agents/intake_utils.py) rather than a new NLP dependency.
+
+_MONTH_NAMES = {
+    "jan": 1, "january": 1,
+    "feb": 2, "february": 2,
+    "mar": 3, "march": 3,
+    "apr": 4, "april": 4,
+    "may": 5,
+    "jun": 6, "june": 6,
+    "jul": 7, "july": 7,
+    "aug": 8, "august": 8,
+    "sep": 9, "sept": 9, "september": 9,
+    "oct": 10, "october": 10,
+    "nov": 11, "november": 11,
+    "dec": 12, "december": 12,
+}
+_MONTH_PATTERN = "|".join(sorted(_MONTH_NAMES, key=len, reverse=True))
+
+_WEEKDAY_NAMES = {
+    "monday": 0, "tuesday": 1, "wednesday": 2, "thursday": 3,
+    "friday": 4, "saturday": 5, "sunday": 6,
+}
+
+_DAY_MONTH_YEAR_RE = re.compile(
+    rf"\b(\d{{1,2}})(?:st|nd|rd|th)?\s+(?:of\s+)?({_MONTH_PATTERN})\.?(?:\s+(\d{{4}}))?\b",
+    re.IGNORECASE,
+)
+_MONTH_DAY_YEAR_RE = re.compile(
+    rf"\b({_MONTH_PATTERN})\.?\s+(\d{{1,2}})(?:st|nd|rd|th)?,?(?:\s+(\d{{4}}))?\b",
+    re.IGNORECASE,
+)
+_ISO_DATE_RE = re.compile(r"\b(\d{4})-(\d{1,2})-(\d{1,2})\b")
+_NUMERIC_DATE_RE = re.compile(r"\b(\d{1,2})[/-](\d{1,2})[/-](\d{4})\b")
+_RELATIVE_OFFSET_RE = re.compile(r"\bin\s+(\d{1,2})\s+days?\b|\b(\d{1,2})\s+days?\s+(?:from now|later)\b")
+_WEEKDAY_RE = re.compile(rf"\b(?:(?:next|this|coming)\s+)?({'|'.join(_WEEKDAY_NAMES)})\b", re.IGNORECASE)
+_ORDINAL_ONLY_RE = re.compile(r"\b(?:on\s+)?(?:the\s+)?(\d{1,2})(?:st|nd|rd|th)\b", re.IGNORECASE)
+
+
+def _resolve_month_day(day: int, month: int, year: int | None) -> str | None:
+    today = date.today()
+    candidate_year = year if year is not None else today.year
+    try:
+        candidate = date(candidate_year, month, day)
+    except ValueError:
+        return None
+    if year is None and candidate < today:
+        try:
+            candidate = date(candidate_year + 1, month, day)
+        except ValueError:
+            return None
+    return candidate.isoformat()
+
+
+def _resolve_ordinal_day_this_or_next_month(day: int) -> str | None:
+    today = date.today()
+    month, year = today.month, today.year
+    try:
+        candidate = date(year, month, day)
+    except ValueError:
+        candidate = None
+    if candidate is None or candidate < today:
+        month += 1
+        if month > 12:
+            month, year = 1, year + 1
+        try:
+            candidate = date(year, month, day)
+        except ValueError:
+            return None
+    return candidate.isoformat()
+
+
+def _extract_requested_date_from_text(text: str) -> str | None:
+    """Best-effort extraction of an explicit date the patient typed in free text
+    (e.g. mid-booking "can i book for 11 september ?"). Deliberately conservative —
+    returns None rather than guessing for genuinely ambiguous phrasing like a bare
+    numeric date with no year."""
+    if not text:
+        return None
+    lowered = text.lower()
+    today = date.today()
+
+    iso_match = _ISO_DATE_RE.search(lowered)
+    if iso_match:
+        year, month, day = (int(g) for g in iso_match.groups())
+        try:
+            return date(year, month, day).isoformat()
+        except ValueError:
+            pass
+
+    numeric_match = _NUMERIC_DATE_RE.search(lowered)
+    if numeric_match:
+        # DD/MM/YYYY convention (this system is IST/India-oriented, not US-locale).
+        day, month, year = (int(g) for g in numeric_match.groups())
+        try:
+            return date(year, month, day).isoformat()
+        except ValueError:
+            pass
+
+    day_month_match = _DAY_MONTH_YEAR_RE.search(lowered)
+    if day_month_match:
+        day = int(day_month_match.group(1))
+        month = _MONTH_NAMES[day_month_match.group(2)]
+        year_group = day_month_match.group(3)
+        resolved = _resolve_month_day(day, month, int(year_group) if year_group else None)
+        if resolved:
+            return resolved
+
+    month_day_match = _MONTH_DAY_YEAR_RE.search(lowered)
+    if month_day_match:
+        month = _MONTH_NAMES[month_day_match.group(1)]
+        day = int(month_day_match.group(2))
+        year_group = month_day_match.group(3)
+        resolved = _resolve_month_day(day, month, int(year_group) if year_group else None)
+        if resolved:
+            return resolved
+
+    if re.search(r"\bday after tomorrow\b", lowered):
+        return (today + timedelta(days=2)).isoformat()
+    if re.search(r"\btomorrow\b", lowered):
+        return (today + timedelta(days=1)).isoformat()
+    if re.search(r"\btoday\b", lowered):
+        return today.isoformat()
+
+    offset_match = _RELATIVE_OFFSET_RE.search(lowered)
+    if offset_match:
+        n = int(offset_match.group(1) or offset_match.group(2))
+        return (today + timedelta(days=n)).isoformat()
+
+    weekday_match = _WEEKDAY_RE.search(lowered)
+    if weekday_match:
+        target = _WEEKDAY_NAMES[weekday_match.group(1).lower()]
+        days_ahead = (target - today.weekday()) % 7
+        days_ahead = days_ahead or 7
+        return (today + timedelta(days=days_ahead)).isoformat()
+
+    ordinal_match = _ORDINAL_ONLY_RE.search(lowered)
+    if ordinal_match:
+        return _resolve_ordinal_day_this_or_next_month(int(ordinal_match.group(1)))
 
     return None
 
@@ -260,6 +418,31 @@ def _looks_like_reschedule_request(text: str) -> bool:
             "shift appointment",
             "book another date",
             "another date",
+        )
+    )
+
+
+def _looks_like_date_change_request(text: str) -> bool:
+    """Patient wants to pick a different date for the appointment they're currently
+    booking (not yet confirmed) — distinct from _looks_like_reschedule_request, which
+    is for changing an already-booked appointment. Phrase set is deliberately disjoint
+    from that one to avoid the two being confused mid-booking."""
+    lowered = " ".join((text or "").lower().split())
+    return any(
+        phrase in lowered
+        for phrase in (
+            "pick a date",
+            "pick a different date",
+            "choose a date",
+            "choose a different date",
+            "select a date",
+            "different day",
+            "another day",
+            "specific date",
+            "show me other days",
+            "other days",
+            "see other dates",
+            "other dates",
         )
     )
 
@@ -670,7 +853,7 @@ def ask_reschedule_slot(state: GraphState):
         return {
             "awaiting": "reschedule_date_selection",
             "reschedule_date_options": state.get("reschedule_date_options") or _date_options(),
-            "final_response": "Appointments can be changed only from today up to 7 days ahead.",
+            "final_response": "Appointments can be changed only within the next few available days (we're closed on Sundays).",
         }
 
     slots = reschedule_options_for_booking(
@@ -795,10 +978,29 @@ def classify_booking_menu_reply(state: GraphState, menu_type: str) -> BookingMen
             reason="Patient declined booking from the displayed menu.",
         )
 
+    # Deterministic fast-path for a bare digit — this is the overwhelmingly common
+    # reply to a numbered menu, and skipping the LLM avoids relying on it to
+    # correctly echo back a number it was shown (see compact_option_summary limit
+    # fix below for why that classification could otherwise be unreliable).
+    stripped_input = (state.get("user_input") or "").strip()
+    if stripped_input.isdigit():
+        options = (
+            state.get("doctor_options") if menu_type.startswith("doctor_selection") else state.get("slot_options")
+        ) or []
+        index = int(stripped_input) - 1
+        if 0 <= index < len(options):
+            return BookingMenuDecision(
+                action="select_option",
+                selected_value=stripped_input,
+                reason="Deterministic numeric match against displayed options.",
+            )
+
+    doctor_options = state.get("doctor_options") or []
+    slot_options = state.get("slot_options") or []
     dynamic_user_prompt = f"""Current state: {compact_state_summary(state)}
 Current menu: {menu_type}
-Doctor options: {compact_option_summary(state.get('doctor_options'), 'doctor_name', ['department', 'experience_years', 'next_available_time'])}
-Slot options: {compact_option_summary(state.get('slot_options'), 'start_time', ['end_time'])}
+Doctor options: {compact_option_summary(doctor_options, 'doctor_name', ['department', 'experience_years', 'next_available_time'], limit=len(doctor_options))}
+Slot options: {compact_option_summary(slot_options, 'start_time', ['end_time'], limit=len(slot_options))}
 Booked context: {compact_booking_summary(state.get('upcoming_bookings') or state.get('confirmed_bookings'))}
 Collected facts: {compact_fact_summary(state.get('collected_data') or state.get('collected_info'))}
 Latest reply: {state.get('user_input', '')}"""
@@ -907,7 +1109,7 @@ def ask_preferred_doctor(state: GraphState):
 
     if requested_date and not _valid_requested_date(requested_date):
         return _date_selection_response(
-            "Appointments can be booked only from today up to 7 days ahead."
+            "Appointments can be booked only within the next few available days (we're closed on Sundays)."
         )
 
     if requested_doctor_name and requested_date:
@@ -1348,7 +1550,7 @@ def _appointment_booker_node(state: GraphState):
             state = {**state, "requested_date": selected_date}
         if not state.get("requested_date") or not _valid_requested_date(state.get("requested_date")):
             return _date_selection_response(
-                "Appointments can be booked only from today up to 7 days ahead."
+                "Appointments can be booked only within the next few available days (we're closed on Sundays)."
             )
         return ask_preferred_doctor(state)
 
@@ -1356,6 +1558,25 @@ def _appointment_booker_node(state: GraphState):
         return capture_symptom_follow_up(state)
 
     if awaiting in {"doctor_selection", "doctor_selection_retry_1", "doctor_selection_retry_2", "slot_selection", "slot_selection_retry_1", "slot_selection_retry_2"}:
+        extracted_date = _extract_requested_date_from_text(state.get("user_input", ""))
+        if extracted_date:
+            if not _valid_requested_date(extracted_date):
+                return _date_selection_response(
+                    "Appointments can be booked only within the next few available days (we're closed on Sundays)."
+                )
+            # A doctor is already fixed once we're picking a slot — keep that same
+            # doctor and just re-fetch their slots for the new date, rather than
+            # restarting doctor search. choose_option() matches by doctor_id too,
+            # so this works regardless of how many doctors remain in doctor_options.
+            if awaiting.startswith("slot_selection") and state.get("selected_doctor_id"):
+                return ask_preferred_slot(
+                    {**state, "requested_date": extracted_date, "user_input": state["selected_doctor_id"]}
+                )
+            return ask_preferred_doctor({**state, "requested_date": extracted_date})
+
+        if _looks_like_date_change_request(state.get("user_input", "")):
+            return _date_selection_response("Sure — here are the available dates:")
+
         decision = classify_booking_menu_reply(state, awaiting)
 
         if decision and decision.action == "request_remedy":
@@ -1548,10 +1769,10 @@ def _appointment_booker_node(state: GraphState):
     if not awaiting and not state.get("target_department") and not state.get("requested_department") and not state.get("requested_doctor_name") and not state.get("candidate_departments"):
         return {"awaiting": None, "booking_active": False}
 
-    if awaiting == "doctor_selection":
+    if awaiting in {"doctor_selection", "doctor_selection_retry_1", "doctor_selection_retry_2"}:
         return ask_preferred_slot(state)
 
-    if awaiting == "slot_selection":
+    if awaiting in {"slot_selection", "slot_selection_retry_1", "slot_selection_retry_2"}:
         return book_preferred_slot(state)
 
     collected = state.get("collected_info") or {}

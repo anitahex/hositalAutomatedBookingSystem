@@ -20,6 +20,14 @@ class ConversationDecision(BaseModel):
         default="continue_intake",
         description="Whether the patient wants to keep answering intake questions or switch to booking.",
     )
+    reply_addresses_question: bool = Field(
+        default=True,
+        description=(
+            "True if the patient's latest message actually answers or adds relevant clinical "
+            "detail to the question they were just asked. False if it is a greeting, filler "
+            "word, off-topic remark, or otherwise does not respond to what was asked."
+        ),
+    )
     has_enough_info: bool = Field(
         description=(
             "True only when you know: symptoms, approximate duration, cause/trigger "
@@ -144,6 +152,29 @@ class CombinedSupervisorDecision(BaseModel):
     )
 
 
+class GeneralQaDecision(BaseModel):
+    in_scope: bool = Field(
+        description=(
+            "True ONLY if the message is about the patient's own symptoms/health, or about "
+            "using this hospital app's appointment features (departments, doctors, booking, "
+            "rescheduling, cancelling). False for everything else — general knowledge, other "
+            "people/organizations, travel, weather, technology, entertainment, and hospital "
+            "administrative/policy questions (visiting hours, insurance, location, parking) "
+            "are all out of scope too."
+        )
+    )
+    answer: str = Field(
+        default="",
+        description=(
+            "The real answer, ONLY when in_scope is true. Leave empty when in_scope is false — "
+            "do not explain, summarize, or engage with the off-topic subject even briefly. "
+            "For a message that is ambiguous but could plausibly be about the patient's own "
+            "health (e.g. 'what is the temperature today' could mean body temperature), set "
+            "in_scope=true and put a short clarifying question here instead of a flat refusal."
+        ),
+    )
+
+
 class DocumentAnalysisDecision(BaseModel):
     document_type: Optional[str] = Field(
         default=None,
@@ -179,6 +210,39 @@ class DocumentRetrievalAnswer(BaseModel):
     clarification_prompt: Optional[str] = Field(
         default=None,
         description="Clarifying question to ask the user when needs_clarification is True.",
+    )
+
+
+class SOAPFieldExtraction(BaseModel):
+    text: str = Field(
+        description="The clinical note text for this field, written in professional clinical language."
+    )
+    citations: list[str] = Field(
+        default_factory=list,
+        description=(
+            "transcript_segments id(s) (the bracketed [id] tokens in the transcript) that "
+            "support this field's text. Every field with non-empty text must cite at least "
+            "one segment id it was derived from."
+        ),
+    )
+    confident: bool = Field(
+        default=True,
+        description="False if the model was not confident this field is accurate or complete.",
+    )
+
+
+class SOAPNoteExtraction(BaseModel):
+    subjective: SOAPFieldExtraction = Field(
+        description="Patient-reported symptoms, history, and complaints, in their own words/context."
+    )
+    objective: SOAPFieldExtraction = Field(
+        description="Observable/measurable findings the doctor stated during the consult."
+    )
+    assessment: SOAPFieldExtraction = Field(
+        description="The doctor's clinical assessment or diagnosis discussed in the consult."
+    )
+    plan: SOAPFieldExtraction = Field(
+        description="The treatment/follow-up plan the doctor discussed."
     )
 
 

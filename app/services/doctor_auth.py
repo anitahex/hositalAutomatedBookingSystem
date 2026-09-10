@@ -7,7 +7,7 @@ import secrets
 import smtplib
 import time
 from collections import defaultdict, deque
-from datetime import datetime, timedelta, timezone
+from datetime import date, datetime, timedelta, timezone
 from email.message import EmailMessage
 from threading import Lock
 from uuid import UUID
@@ -19,6 +19,14 @@ from app.db.connection import connect_db
 from app.services.passwords import hash_password, verify_password
 from app.services.users import validate_password
 from app.services.account_registry import ensure_registry_schema, reserve_email
+
+
+class DoctorInviteEmailConfigError(RuntimeError):
+    """Raised only for the deliberate, safe-to-display config checks in _send_invite_email.
+
+    Kept distinct from a bare RuntimeError so callers can surface this message to an
+    admin without risking exposure of some other, unanticipated RuntimeError's text.
+    """
 
 
 INVITE_TTL = timedelta(hours=48)
@@ -79,18 +87,24 @@ def _decrypt_totp(value: str) -> str:
         raise ValueError("The enrolled MFA factor is unavailable.") from exc
 
 
-def _send_invite_email(email: str, token: str, *, reset: bool) -> None:
+def _send_invite_email(email: str, token: str, *, reset: bool) -> str | None:
     frontend = os.getenv("DOCTOR_AUTH_FRONTEND_URL", "").rstrip("/")
     if not frontend:
-        raise RuntimeError("DOCTOR_AUTH_FRONTEND_URL must be configured.")
+        raise DoctorInviteEmailConfigError("DOCTOR_AUTH_FRONTEND_URL must be configured.")
     link = f"{frontend}/doctor/set-password?token={token}"
     if os.getenv("DOCTOR_AUTH_EMAIL_NO_SEND", "false").lower() == "true":
-        # Do not emit the link/token, even in development logs.
-        return
+        # Dev/test mode: no email is actually sent, so the link is the only way
+        # to retrieve it. print() (not logging, which can be filtered below the
+        # console's visible level) and flush explicitly so it's never lost to
+        # buffering. Gated behind the same flag that disables real delivery —
+        # this never fires in a configuration where DOCTOR_AUTH_EMAIL_NO_SEND
+        # isn't explicitly set to true, i.e. never when email is actually live.
+        print(f"[doctor-invite:no-send] {'reset' if reset else 'invite'} link for {email}: {link}", flush=True)
+        return link
     host = os.getenv("DOCTOR_AUTH_SMTP_HOST", "").strip()
     sender = os.getenv("DOCTOR_AUTH_EMAIL_FROM", "").strip()
     if not host or not sender:
-        raise RuntimeError("SMTP host and sender are required when doctor email delivery is enabled.")
+        raise DoctorInviteEmailConfigError("SMTP host and sender are required when doctor email delivery is enabled.")
     message = EmailMessage()
     message["Subject"] = "Reset your hospital doctor account password" if reset else "Set up your hospital doctor account"
     message["From"] = sender
@@ -103,6 +117,7 @@ def _send_invite_email(email: str, token: str, *, reset: bool) -> None:
         if os.getenv("DOCTOR_AUTH_SMTP_USERNAME"):
             smtp.login(os.environ["DOCTOR_AUTH_SMTP_USERNAME"], os.getenv("DOCTOR_AUTH_SMTP_PASSWORD", ""))
         smtp.send_message(message)
+    return None
 
 
 def issue_invite(doctor_id: str, email: str, *, reset: bool = False) -> None:
@@ -148,7 +163,7 @@ def issue_invite(doctor_id: str, email: str, *, reset: bool = False) -> None:
                 reserve_email(cur, normalized, "doctor", account_id)
             _audit(cur, "password_reset_invite_sent" if reset else "invite_sent", doctor_id, normalized)
     try:
-        _send_invite_email(normalized, token, reset=reset)
+        dev_preview_link = _send_invite_email(normalized, token, reset=reset)
     except Exception:
         # The token remains valid; the event records that issuance happened without disclosing it.
         with connect_db() as conn:
@@ -156,6 +171,14 @@ def issue_invite(doctor_id: str, email: str, *, reset: bool = False) -> None:
             with conn.cursor() as cur:
                 _audit(cur, "invite_email_delivery_failed", doctor_id, normalized, reset=reset)
         raise
+    if dev_preview_link:
+        # Only set when DOCTOR_AUTH_EMAIL_NO_SEND=true, i.e. no real email was sent —
+        # surface the link via the admin audit log so it can be shared manually until
+        # SMTP is configured. Never populated when real delivery is enabled.
+        with connect_db() as conn:
+            ensure_doctor_auth_schema(conn)
+            with conn.cursor() as cur:
+                _audit(cur, "invite_link_no_send", doctor_id, normalized, link=dev_preview_link)
 
 
 def complete_invite(token: str, password: str) -> dict:
@@ -164,12 +187,12 @@ def complete_invite(token: str, password: str) -> dict:
     with connect_db() as conn:
         ensure_doctor_auth_schema(conn)
         with conn.cursor() as cur:
-            cur.execute("""SELECT id, doctor_id, email, invite_expires_at, invite_consumed_at
+            cur.execute("""SELECT id, doctor_id, email, invite_expires_at, invite_consumed_at, mfa_enabled
                 FROM doctor_accounts WHERE invite_token_hash = %s FOR UPDATE""", (digest,))
             row = cur.fetchone()
             if not row:
                 raise PermissionError("Invite token is invalid or has already been used.")
-            account_id, doctor_id, email, expires_at, consumed_at = row
+            account_id, doctor_id, email, expires_at, consumed_at, mfa_enabled = row
             now = datetime.now()
             if consumed_at:
                 _audit(cur, "invite_completion_rejected_consumed", doctor_id, email)
@@ -181,7 +204,7 @@ def complete_invite(token: str, password: str) -> dict:
                 invite_consumed_at = NOW(), failed_login_attempts = 0, locked_until = NULL, updated_at = NOW()
                 WHERE id = %s""", (hash_password(password), account_id))
             _audit(cur, "invite_completed", doctor_id, email)
-    return {"doctor_id": str(doctor_id), "account_id": str(account_id), "email": email}
+    return {"doctor_id": str(doctor_id), "account_id": str(account_id), "email": email, "mfa_enabled": bool(mfa_enabled)}
 
 
 def start_mfa_enrollment(account_id: str) -> str:
@@ -294,6 +317,83 @@ def get_doctor_profile(doctor_id: str, account_id: str) -> dict | None:
         return None
     return {"doctor_id": str(row[0]), "name": row[1], "department": row[2], "experience_years": row[3],
             "is_active": bool(row[4]), "account_id": str(row[5]), "email": row[6], "mfa_enabled": bool(row[7])}
+
+
+def unlock_doctor_account(doctor_id: str, *, actor_email: str) -> None:
+    with connect_db() as conn:
+        ensure_doctor_auth_schema(conn)
+        with conn.cursor() as cur:
+            cur.execute(
+                "SELECT id, email, failed_login_attempts FROM doctor_accounts WHERE doctor_id = %s FOR UPDATE",
+                (doctor_id,),
+            )
+            row = cur.fetchone()
+            if not row:
+                raise ValueError("Doctor account not found.")
+            account_id, email, failures = row
+            cur.execute(
+                "UPDATE doctor_accounts SET failed_login_attempts = 0, locked_until = NULL, updated_at = NOW() WHERE id = %s",
+                (account_id,),
+            )
+            _audit(
+                cur, "account_unlocked_by_admin", doctor_id, email,
+                admin_email=_email(actor_email), had_failed_attempts=int(failures or 0),
+            )
+        conn.commit()
+
+
+def list_doctor_auth_audit_log(
+    *,
+    doctor_id: str | None = None,
+    start_date: date | None = None,
+    end_date: date | None = None,
+    page: int = 1,
+    page_size: int = 50,
+) -> dict:
+    offset = (page - 1) * page_size
+    clauses: list[str] = []
+    params: list[object] = []
+    if doctor_id:
+        clauses.append("doctor_id = %s")
+        params.append(doctor_id)
+    if start_date:
+        clauses.append("created_at >= %s")
+        params.append(start_date)
+    if end_date:
+        clauses.append("created_at < %s")
+        params.append(end_date + timedelta(days=1))
+    where_sql = f"WHERE {' AND '.join(clauses)}" if clauses else ""
+
+    with connect_db() as conn:
+        ensure_doctor_auth_schema(conn)
+        with conn.cursor() as cur:
+            cur.execute(f"SELECT COUNT(*) FROM doctor_auth_audit_log {where_sql}", params)
+            total = cur.fetchone()[0]
+            cur.execute(
+                f"""SELECT audit_id, doctor_id, attempted_email, action_type, metadata, created_at
+                    FROM doctor_auth_audit_log {where_sql}
+                    ORDER BY created_at DESC
+                    LIMIT %s OFFSET %s""",
+                (*params, page_size, offset),
+            )
+            rows = cur.fetchall()
+
+    return {
+        "entries": [
+            {
+                "audit_id": str(audit_id),
+                "doctor_id": str(row_doctor_id) if row_doctor_id else None,
+                "attempted_email": attempted_email,
+                "action_type": action_type,
+                "metadata": metadata,
+                "created_at": created_at.isoformat() if created_at else None,
+            }
+            for audit_id, row_doctor_id, attempted_email, action_type, metadata, created_at in rows
+        ],
+        "total": int(total),
+        "page": page,
+        "page_size": page_size,
+    }
 
 
 def check_rate_limit(scope: str, ip: str, account_key: str) -> None:

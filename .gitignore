@@ -1,6 +1,32 @@
 .env
+.env.local
+.env.*.local
 venv/
 __pycache__/
 *.pyc
 .pytest_cache/
+.pytest_cache_local/
 qdrant_storage/
+var/
+.claude
+
+# Local runtime data — LangGraph/chat SQLite checkpoints (CHECKPOINT_DB_PATH) and any
+# other local-dev runtime state. This is generated at runtime and can contain real
+# conversation data; it must never be committed.
+data/
+
+# Internal AI-assistant guidance — not part of the shipped application.
+Claude Standards/
+
+# Internal security/tech-debt audit reports — not for a public/shared repo, since they
+# itemize specific (including still-open) vulnerabilities and known weak points.
+FULL_SYSTEM_AUDIT.md
+TECH_DEBT.md
+
+# OS / editor cruft
+.DS_Store
+Thumbs.db
+
+# Test coverage artifacts
+.coverage
+htmlcov/

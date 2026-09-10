@@ -2,20 +2,40 @@ import base64
 import hashlib
 import hmac
 import json
+import logging
 import os
 import time
+import uuid
 
+from app.db.connection import connect_db
 
-JWT_SECRET = os.getenv("JWT_SECRET") or "dev-only-change-me"
+logger = logging.getLogger(__name__)
+
+_DEV_DEFAULT_SECRET = "dev-only-change-me"
+
+JWT_SECRET = os.getenv("JWT_SECRET")
+if not JWT_SECRET:
+    JWT_SECRET = _DEV_DEFAULT_SECRET
+    # Loud, impossible-to-miss warning rather than a silent fallback: this literal
+    # string is public (it's in this source file), so any token signed with it can
+    # be forged by anyone. Previously it was ALSO accepted permanently even when a
+    # real JWT_SECRET was configured (see FULL_SYSTEM_AUDIT.md P0 #1) — that
+    # unconditional acceptance has been removed; this warning now covers the one
+    # remaining real risk, an operator never setting JWT_SECRET at all.
+    logger.warning(
+        "JWT_SECRET is not set — falling back to a PUBLIC, INSECURE default signing "
+        "key ('%s'). Anyone who reads this source can forge valid tokens for any "
+        "role. Set JWT_SECRET to a long random value before deploying.",
+        _DEV_DEFAULT_SECRET,
+    )
+
 JWT_EXP_SECONDS = int(os.getenv("JWT_EXP_SECONDS", str(60 * 60 * 24 * 7)))
-LEGACY_JWT_SECRETS = [
-    secret
-    for secret in {
-        os.getenv("HF_TOKEN"),
-        "dev-only-change-me",
-    }
-    if secret
-]
+
+# For a genuine secret-rotation window only: set JWT_LEGACY_SECRET to the PREVIOUS
+# JWT_SECRET value while rotating, so tokens issued before the rotation still verify
+# until they naturally expire. Unlike the old behavior, nothing is accepted here
+# unless an operator deliberately configured it.
+LEGACY_JWT_SECRETS = [secret for secret in {os.getenv("JWT_LEGACY_SECRET")} if secret]
 
 
 def _b64url_encode(raw: bytes) -> str:
@@ -48,6 +68,11 @@ def create_access_token(
         "role": role,
         "iat": now,
         "exp": now + (expires_in_seconds or JWT_EXP_SECONDS),
+        # Unique per-token id so a specific token can be revoked (see revoke_token/
+        # is_token_revoked below) without needing a blacklist keyed on the raw token
+        # string. Tokens issued before this field existed simply have no jti and can't
+        # be explicitly revoked — they still expire normally.
+        "jti": uuid.uuid4().hex,
     }
     if extra_claims:
         payload.update(extra_claims)
@@ -90,9 +115,58 @@ def create_doctor_mfa_enrollment_token(*, doctor_id: str, account_id: str, email
         subject=doctor_id,
         email=email,
         role="doctor",
-        expires_in_seconds=900,
+        expires_in_seconds=1800,
         extra_claims={"token_kind": "doctor_mfa_enrollment", "aud": "doctor_mfa_enrollment", "doctor_id": doctor_id, "account_id": account_id},
     )
+
+
+def ensure_token_revocation_schema(conn) -> None:
+    with conn.cursor() as cur:
+        cur.execute(
+            """
+            CREATE TABLE IF NOT EXISTS revoked_tokens (
+                jti TEXT PRIMARY KEY,
+                revoked_at TIMESTAMP NOT NULL DEFAULT NOW(),
+                expires_at_epoch BIGINT NOT NULL
+            );
+            CREATE INDEX IF NOT EXISTS idx_revoked_tokens_expiry ON revoked_tokens(expires_at_epoch);
+            """
+        )
+
+
+def revoke_token(jti: str, expires_at_epoch: int) -> None:
+    """Called by POST /auth/logout (works for any role — patient/doctor/admin all
+    verify through verify_access_token below). Also opportunistically deletes rows
+    past their own expiry on every call: once a token's exp has passed it already
+    fails verify_access_token's exp check before ever reaching the revocation lookup,
+    so keeping an expired entry around serves no purpose — this keeps the table
+    self-bounding without a separate scheduled job."""
+    if not jti:
+        return
+    now_epoch = int(time.time())
+    with connect_db() as conn:
+        try:
+            ensure_token_revocation_schema(conn)
+            with conn.cursor() as cur:
+                cur.execute(
+                    "INSERT INTO revoked_tokens (jti, expires_at_epoch) VALUES (%s, %s) ON CONFLICT (jti) DO NOTHING;",
+                    (jti, expires_at_epoch),
+                )
+                cur.execute("DELETE FROM revoked_tokens WHERE expires_at_epoch < %s;", (now_epoch,))
+            conn.commit()
+        except Exception:
+            conn.rollback()
+            raise
+
+
+def _is_token_revoked(jti: str | None) -> bool:
+    if not jti:
+        return False
+    with connect_db() as conn:
+        ensure_token_revocation_schema(conn)
+        with conn.cursor() as cur:
+            cur.execute("SELECT 1 FROM revoked_tokens WHERE jti = %s;", (jti,))
+            return cur.fetchone() is not None
 
 
 def verify_access_token(token: str) -> dict | None:
@@ -119,6 +193,7 @@ def verify_access_token(token: str) -> dict | None:
         return None
 
     candidate_secrets = [JWT_SECRET, *LEGACY_JWT_SECRETS]
+    signature_valid = False
     for secret in candidate_secrets:
         expected_signature = hmac.new(
             secret.encode("utf-8"),
@@ -126,6 +201,13 @@ def verify_access_token(token: str) -> dict | None:
             hashlib.sha256,
         ).digest()
         if hmac.compare_digest(expected_signature, supplied_signature):
-            return payload
+            signature_valid = True
+            break
 
-    return None
+    if not signature_valid:
+        return None
+
+    if _is_token_revoked(payload.get("jti")):
+        return None
+
+    return payload

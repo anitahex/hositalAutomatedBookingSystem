@@ -30,7 +30,7 @@ class BookRequest(BaseModel):
 
 
 @router.get("/departments")
-def departments(limit: int = 20):
+def departments(limit: int = 20, user: dict = Depends(current_user)):
     return {"departments": available_departments(limit=limit)}
 
 
@@ -39,6 +39,7 @@ def doctors(
     department: str,
     date: str | None = None,
     limit: int = 8,
+    user: dict = Depends(current_user),
 ):
     if date:
         doctors = available_doctors_for_department_on_date(department=department, requested_date=date, limit=limit)
@@ -52,6 +53,7 @@ def slots(
     doctor_id: str,
     date: str | None = None,
     limit: int = 8,
+    user: dict = Depends(current_user),
 ):
     if date:
         slots = available_slots_for_doctor_on_date(doctor_id=doctor_id, requested_date=date, limit=limit)
@@ -72,7 +74,7 @@ def book_slot(request: BookRequest, user: dict = Depends(current_user)):
 
 
 @router.get("/available")
-def available_slots(department: str = "General Physician", limit: int = 5):
+def available_slots(department: str = "General Physician", limit: int = 5, user: dict = Depends(current_user)):
     return {"slots": first_available_slots(department=department, limit=limit)}
 
 

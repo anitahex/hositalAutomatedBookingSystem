@@ -69,6 +69,10 @@ def summary_blob_path(user_id: str, document_id: str) -> str:
     return f"summaries/{user_id}/{document_id}.json"
 
 
+def consult_audio_blob_path(doctor_id: str, consultation_id: str) -> str:
+    return f"consult-audio/{doctor_id}/{consultation_id}.pcm"
+
+
 # ---- Blob operations ----
 
 async def _ensure_container(container_client) -> None:
@@ -119,6 +123,26 @@ async def download_blob_json(blob_name: str) -> dict[str, Any]:
             stream = await blob.download_blob()
             raw = await stream.readall()
             return json.loads(raw.decode("utf-8"))
+        except ResourceNotFoundError as exc:
+            raise FileNotFoundError(f"Blob not found: {blob_name}") from exc
+        except Exception as exc:
+            logger.error("blob_storage: download failed for %s: %s", blob_name, exc)
+            raise RuntimeError(f"Failed to download blob {blob_name}: {exc}") from exc
+
+
+async def download_blob(blob_name: str) -> bytes:
+    """
+    Download raw bytes from a blob.
+    Raises FileNotFoundError if the blob does not exist.
+    Raises RuntimeError on other download failures.
+    """
+    async with _get_blob_service_client() as svc:
+        container = svc.get_container_client(AZURE_CONTAINER_NAME)
+        blob = container.get_blob_client(blob_name)
+        try:
+            logger.info("blob_storage: downloading ← %s", blob_name)
+            stream = await blob.download_blob()
+            return await stream.readall()
         except ResourceNotFoundError as exc:
             raise FileNotFoundError(f"Blob not found: {blob_name}") from exc
         except Exception as exc:

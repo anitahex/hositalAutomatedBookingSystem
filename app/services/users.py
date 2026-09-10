@@ -1,4 +1,5 @@
 import re
+from datetime import datetime, timedelta
 from uuid import UUID
 
 from app.db.connection import connect_db
@@ -9,6 +10,12 @@ from app.services.account_registry import ensure_registry_schema, reserve_email
 PASSWORD_PATTERN = re.compile(
     r"^(?=.*[a-z])(?=.*[A-Z])(?=.*\d)(?=.*[^A-Za-z0-9]).{8,}$"
 )
+
+# Intentionally mirrors app/services/doctor_auth.py's LOCKOUT_THRESHOLD/LOCKOUT_DURATION
+# (not imported from there — doctor_auth.py already imports from this module, and
+# importing back would create a circular dependency).
+LOCKOUT_THRESHOLD = 5
+LOCKOUT_DURATION = timedelta(minutes=30)
 
 
 def normalize_mobile_number(value: str | None) -> str:
@@ -34,8 +41,12 @@ def ensure_user_schema(conn):
                 user_id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
                 email TEXT NOT NULL UNIQUE,
                 password_hash TEXT NOT NULL,
+                failed_login_attempts INTEGER NOT NULL DEFAULT 0,
+                locked_until TIMESTAMP,
                 created_at TIMESTAMP NOT NULL DEFAULT NOW()
             );
+            ALTER TABLE users ADD COLUMN IF NOT EXISTS failed_login_attempts INTEGER NOT NULL DEFAULT 0;
+            ALTER TABLE users ADD COLUMN IF NOT EXISTS locked_until TIMESTAMP;
 
             CREATE TABLE IF NOT EXISTS patient_profiles (
                 user_id UUID PRIMARY KEY REFERENCES users(user_id) ON DELETE CASCADE,
@@ -181,26 +192,56 @@ def update_patient_profile(
 
 
 def authenticate_user(email: str, password: str):
+    """Verify patient credentials with the same brute-force lockout convention as
+    doctor/admin login (app/services/doctor_auth.py): a row-locked read, a failure
+    counter, and a temporary lockout after LOCKOUT_THRESHOLD consecutive failures.
+    Returns None (never a distinguishing error) for unknown email, wrong password,
+    or an active lockout — this deliberately avoids revealing account state to an
+    unauthenticated caller, matching authenticate_doctor_password's behavior."""
     email = _normalise_email(email)
     with connect_db() as conn:
-        ensure_user_schema(conn)
-        with conn.cursor() as cur:
-            cur.execute(
-                """
-                SELECT u.user_id, u.password_hash
-                FROM users u
-                WHERE u.email = %s;
-                """,
-                (email,),
-            )
-            row = cur.fetchone()
+        try:
+            ensure_user_schema(conn)
+            with conn.cursor() as cur:
+                cur.execute(
+                    """
+                    SELECT user_id, password_hash, failed_login_attempts, locked_until
+                    FROM users
+                    WHERE email = %s
+                    FOR UPDATE;
+                    """,
+                    (email,),
+                )
+                row = cur.fetchone()
 
-    if not row:
-        return None
+                if not row:
+                    conn.commit()
+                    return None
 
-    user_id, password_hash = row
-    if not verify_password(password, password_hash):
-        return None
+                user_id, password_hash, failures, locked_until = row
+                now = datetime.now()
+                if locked_until and locked_until > now:
+                    conn.commit()
+                    return None
+
+                if not verify_password(password, password_hash):
+                    failures = int(failures or 0) + 1
+                    locked = now + LOCKOUT_DURATION if failures >= LOCKOUT_THRESHOLD else None
+                    cur.execute(
+                        "UPDATE users SET failed_login_attempts = %s, locked_until = %s WHERE user_id = %s;",
+                        (failures, locked, user_id),
+                    )
+                    conn.commit()
+                    return None
+
+                cur.execute(
+                    "UPDATE users SET failed_login_attempts = 0, locked_until = NULL WHERE user_id = %s;",
+                    (user_id,),
+                )
+            conn.commit()
+        except Exception:
+            conn.rollback()
+            raise
 
     return get_user_profile(str(user_id))
 

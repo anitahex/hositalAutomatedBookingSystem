@@ -4,9 +4,18 @@ from datetime import date, datetime, timedelta, timezone
 
 from langchain_core.output_parsers import PydanticOutputParser
 
-from app.agents.schemas import CombinedSupervisorDecision
+from app.agents.schemas import CombinedSupervisorDecision, GeneralQaDecision
 from app.agents.state import GraphState
-from app.agents.intake_utils import compact_booking_summary, compact_fact_summary, compact_state_summary
+from app.agents.intake_utils import (
+    CRISIS_SAFETY_RESPONSE,
+    compact_booking_summary,
+    compact_fact_summary,
+    compact_state_summary,
+    looks_like_crisis_or_harm,
+    looks_like_end_chat as _looks_like_end_chat,
+    looks_like_general_knowledge_question,
+    looks_like_thanks as _looks_like_thanks,
+)
 from app.inference.llm import generate_router_text, generate_text
 from app.services.appointments import CANONICAL_DEPARTMENTS, DEPARTMENT_ALIASES, normalize_department_name, update_booking_note
 from app.services.language import language_prompt_context
@@ -20,6 +29,7 @@ _TEMPORAL_TERMS = frozenset({
 
 
 parser = PydanticOutputParser(pydantic_object=CombinedSupervisorDecision)
+general_qa_parser = PydanticOutputParser(pydantic_object=GeneralQaDecision)
 
 STATIC_SUPERVISOR_PROMPT = """
 You are the Master Supervisor for a hospital AI assistant. You control the flow of conversation.
@@ -39,8 +49,8 @@ Your job is to parse the user's intent and decide which specialist agent handles
 - `remedy_agent`: Use when the user explicitly asks for relief, home care, or we have enough symptom data to suggest care.
 - `appointment_booker`: Use when the user wants to book, check availability, or cancel.
 - `appointment_resolver`: Use when the user wants to cancel or change an appointment and there are multiple upcoming bookings.
-- `document_analyzer`: Use when the user uploaded a document and it relates to the current issue.
-- `general_qa`: Use when the user asks a medical question unrelated to their immediate symptoms, or asks about hospital policies.
+- `document_analyzer`: Use when the user just uploaded a document, OR asks a follow-up question about a document listed under "Analyzed Documents" in the state (e.g. "what does my prescription say", "explain that lab report").
+- `general_qa`: Use when the user asks a medical question unrelated to their immediate symptoms, or anything else that isn't clearly one of the other agents above (general_qa itself decides whether it's actually in scope and redirects if not — its own scope is strictly the patient's symptoms/health or this app's booking features, NOT hospital policies/administrative questions or anything unrelated). Do NOT bring up the patient's own past symptoms or an analyzed document unless their question actually asks about it.
 - `finish`: Use when the user wants to end the chat or says that's all.
 
 Return ONLY valid JSON:
@@ -151,13 +161,39 @@ def _extract_requested_department(text: str | None) -> str | None:
     return None
 
 
-def _state_summary(state: GraphState) -> str:
+def _format_analyzed_documents(state: GraphState) -> str:
+    docs = state.get("analyzed_documents") or []
+    if not docs:
+        return "None"
+    parts = []
+    for doc in docs[-4:]:
+        if not isinstance(doc, dict):
+            continue
+        dtype = doc.get("document_type") or "document"
+        fname = doc.get("file_name") or "file"
+        short_summary = (doc.get("summary") or "")[:80]
+        parts.append(f"{dtype}({fname}): {short_summary}")
+    return " || ".join(parts) if parts else "None"
+
+
+def _state_summary(state: GraphState, *, include_facts: bool = True) -> str:
+    # `include_facts` is False for general_qa: symptoms/facts collected from an
+    # earlier, unrelated part of the conversation (e.g. a misclassified "symptom")
+    # would otherwise get echoed into every off-topic answer for the rest of the
+    # session (see FULL_SYSTEM_AUDIT.md / the traced demo-transcript bug where a
+    # misread "car leaking fuel" resurfaced in unrelated Q&A many turns later).
+    facts_block = (
+        f"Known Facts: [{_format_facts(_current_facts(state))}]"
+        if include_facts
+        else "Known Facts: [Not applicable — answer only the question actually asked]"
+    )
     return (
         f"State: Intent=[{_current_intent(state) or 'None'}] | "
         f"Awaiting=[{state.get('awaiting') or 'None'}] | "
-        f"Known Facts: [{_format_facts(_current_facts(state))}] | "
+        f"{facts_block} | "
         f"Doctors: [{_format_bookings(state.get('upcoming_bookings') or state.get('confirmed_bookings'))}] | "
-        f"File: [{state.get('pending_file_name') or 'None'}]"
+        f"File: [{state.get('pending_file_name') or 'None'}] | "
+        f"Analyzed Documents: [{_format_analyzed_documents(state)}]"
     )
 
 
@@ -245,43 +281,6 @@ def _is_negative(text: str) -> bool:
     )
 
 
-def _looks_like_thanks(text: str) -> bool:
-    lowered = " ".join((text or "").lower().replace("'", "").split())
-    if not lowered:
-        return False
-    return any(
-        phrase in lowered
-        for phrase in (
-            "thank you",
-            "thanks",
-            "thx",
-            "appreciate it",
-        )
-    )
-
-
-def _looks_like_end_chat(text: str) -> bool:
-    lowered = " ".join((text or "").lower().replace("'", "").split())
-    if not lowered:
-        return False
-    return any(
-        phrase in lowered
-        for phrase in (
-            "end the chat",
-            "end chat",
-            "close the chat",
-            "that's all",
-            "thats all",
-            "that is all",
-            "i am done",
-            "bye",
-            "goodbye",
-            "no more",
-            "nothing else",
-        )
-    )
-
-
 def _looks_like_billing_request(text: str) -> bool:
     lowered = " ".join((text or "").lower().replace("'", "").split())
     return any(term in lowered for term in ("billing", "payment", "invoice", "insurance", "bill"))
@@ -358,6 +357,22 @@ def _heuristic_supervisor_route(state: GraphState) -> dict | None:
         return None
 
     lowered = " ".join(user_input.lower().replace("'", "").split())
+
+    # Hard safety gate, checked first: a freeform LLM reaction to self-harm/
+    # intent-to-harm-others language is not reliable, and everything else in this
+    # function (including the `awaiting == "conversation"` fast-path further down)
+    # has no concept of this at all — previously that meant the conversation got
+    # stuck repeating an empathetic follow-up for several turns regardless of what
+    # the patient said next. `awaiting=None` here is deliberate: the very next
+    # message routes fresh instead of being absorbed as an intake answer.
+    if looks_like_crisis_or_harm(lowered):
+        return _route(
+            "finish",
+            awaiting=None,
+            chat_closed=False,
+            final_response=CRISIS_SAFETY_RESPONSE,
+        )
+
     profile_route = _fallback_profile_response(state)
     if profile_route:
         return profile_route
@@ -491,9 +506,16 @@ def _heuristic_supervisor_route(state: GraphState) -> dict | None:
         # Only route away if user explicitly asks for remedy or booking or other actions
         questions_asked = state.get("questions_asked") or []
 
-        # If we haven't asked 5 questions yet, continue conversation
+        # If we haven't asked 5 questions yet, continue conversation — but not for a
+        # message that's clearly an unrelated general-knowledge question (e.g. "who is
+        # the prime minister"); that falls through to the LLM supervisor decision below,
+        # which can route it to general_qa instead of silently treating it as an intake answer.
         if len(questions_asked) < 5:
-            if not _looks_like_end_chat(lowered) and not _looks_like_thanks(lowered):
+            if (
+                not _looks_like_end_chat(lowered)
+                and not _looks_like_thanks(lowered)
+                and not looks_like_general_knowledge_question(lowered)
+            ):
                 return _route("conversation_agent")
 
         # After 5 questions, then check for explicit requests
@@ -1138,21 +1160,44 @@ def continue_current_node(state: GraphState):
     return {"awaiting": None, "conversation_history": history, "messages": history[-10:]}
 
 
+_GENERAL_QA_OUT_OF_SCOPE_RESPONSE = (
+    "I'm only able to help with your symptoms, health concerns, or booking, rescheduling, "
+    "or cancelling an appointment here. Please share what you're experiencing, or let me "
+    "know how I can help with an appointment."
+)
+
+STATIC_GENERAL_QA_PROMPT = """You are a strictly-scoped hospital assistant. Your ONLY job is to decide whether the
+patient's latest message is in scope, and answer it if so.
+
+IN SCOPE:
+- The patient's own symptoms, health, or medical concerns.
+- Using this hospital app's appointment features: departments, doctors, booking, rescheduling, cancelling.
+- A message that is ambiguous but could plausibly be about the patient's own health (e.g. "what is the
+  temperature today" could mean body temperature) — treat this as in scope and ask a short clarifying
+  question rather than guessing or refusing.
+
+OUT OF SCOPE — set in_scope to false, leave "answer" empty, for ANY of these, even if you know the answer:
+- General knowledge, current events, other people/organizations, travel, weather, technology, entertainment.
+- Hospital administrative/policy questions: visiting hours, insurance, location, parking, billing.
+- Anything not about the patient's own health or this app's booking features.
+
+Do NOT explain, summarize, or engage with an out-of-scope subject even briefly — the app will show the
+patient a fixed message when in_scope is false, so leave "answer" completely empty in that case.
+
+Return ONLY valid JSON matching this exact structure (no markdown, no explanation):
+{"in_scope": true|false, "answer": "string, empty if in_scope is false"}"""
+
+
 def general_qa_node(state: GraphState):
     user_text = (state.get("user_input") or "").strip()
     history = list(state.get("messages") or state.get("conversation_history") or [])
 
     dynamic_user_prompt = f"""Current date: {date.today().isoformat()}
-{_state_summary(state)}
-Latest user message: {user_text}
-Answer the user's hospital-related question clearly, safely, and concisely. If the question is medical and urgent, advise appropriate escalation."""
+{_state_summary(state, include_facts=False)}
+Latest user message: {user_text}"""
 
-    response = (
-        generate_text(
-        system_prompt=(
-            "You are a helpful hospital assistant answering general questions, policies, and simple medical explanations. "
-            "Be careful, concise, and do not invent facts."
-        ) + language_prompt_context(state),
+    raw_output = generate_text(
+        system_prompt=STATIC_GENERAL_QA_PROMPT + language_prompt_context(state),
         user_prompt=dynamic_user_prompt,
         node_name="general_qa",
         chat_history=history,
@@ -1162,10 +1207,21 @@ Answer the user's hospital-related question clearly, safely, and concisely. If t
         patient_id=str(state.get("patient_id") or ""),
         chat_session_id=str(state.get("chat_session_id") or ""),
     )
-    ).strip()
 
-    if not response:
-        response = "I can help with general hospital questions. Please tell me what you need."
+    try:
+        decision = general_qa_parser.parse(_clean_json(raw_output))
+    except Exception:
+        decision = None
+
+    # Fail safe: on any parse failure, or when the model itself says this is out of
+    # scope, use ONLY the fixed message below — never the model's raw text. This is
+    # deliberate: a model asked to "explain why it can't help" can still leak real
+    # off-topic content while doing so (observed in testing — an out-of-scope question
+    # about a technical topic produced a rambling half-answer before redirecting).
+    if decision is None or not decision.in_scope or not decision.answer.strip():
+        response = _GENERAL_QA_OUT_OF_SCOPE_RESPONSE
+    else:
+        response = decision.answer.strip()
 
     history.append({"role": "assistant", "text": response})
     return {

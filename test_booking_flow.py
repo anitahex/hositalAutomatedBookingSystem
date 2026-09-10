@@ -202,6 +202,277 @@ def test_booker_books_selected_slot(monkeypatch):
     assert "forward your detailed clinical report" in state["final_response"]
 
 
+def test_classify_booking_menu_reply_bare_digit_skips_llm(monkeypatch):
+    def _boom(**kwargs):
+        raise AssertionError("generate_text should not be called for a bare digit reply")
+
+    monkeypatch.setattr(appointment_booker, "generate_text", _boom)
+
+    slot_options = [
+        {"start_time": f"2026-05-21T{9 + i:02d}:00:00", "end_time": f"2026-05-21T{9 + i:02d}:30:00"}
+        for i in range(5)
+    ]
+
+    decision = appointment_booker.classify_booking_menu_reply(
+        {"user_input": "5", "slot_options": slot_options},
+        "slot_selection",
+    )
+
+    assert decision.action == "select_option"
+    assert decision.selected_value == "5"
+
+
+def test_classify_booking_menu_reply_out_of_range_digit_falls_back_to_llm(monkeypatch):
+    monkeypatch.setattr(
+        appointment_booker,
+        "generate_text",
+        lambda **kwargs: '{"action":"unclear","selected_value":null,"reason":"out of range"}',
+    )
+
+    decision = appointment_booker.classify_booking_menu_reply(
+        {"user_input": "9", "slot_options": [{"start_time": "2026-05-21T09:00:00", "end_time": "2026-05-21T09:30:00"}]},
+        "slot_selection",
+    )
+
+    assert decision.action == "unclear"
+
+
+def test_booker_confirms_booking_from_slot_selection_retry_state(monkeypatch):
+    monkeypatch.setattr(
+        appointment_booker,
+        "classify_booking_menu_reply",
+        lambda state, menu_type: appointment_booker.BookingMenuDecision(
+            action="select_option",
+            selected_value="1",
+            reason="Selected by number.",
+        ),
+    )
+    monkeypatch.setattr(
+        appointment_booker,
+        "book_selected_slot",
+        lambda slot_id, patient_id: {
+            "slot_id": slot_id,
+            "doctor_name": "Dr. A",
+            "department": "Cardiology",
+            "start_time": "2026-05-21T09:00:00",
+        },
+    )
+
+    state = appointment_booker.appointment_booker_node(
+        {
+            "awaiting": "slot_selection_retry_1",
+            "user_input": "1",
+            "slot_options": [{"slot_id": "slot-1", "start_time": "2026-05-21T09:00:00"}],
+            "patient_id": "patient-1",
+        }
+    )
+
+    assert state["awaiting"] == "report_forwarding_decision"
+    assert state["selected_slot_id"] == "slot-1"
+    assert state["confirmed_bookings"][0]["slot_id"] == "slot-1"
+
+
+def test_booker_advances_to_slots_from_doctor_selection_retry_state(monkeypatch):
+    monkeypatch.setattr(
+        appointment_booker,
+        "classify_booking_menu_reply",
+        lambda state, menu_type: appointment_booker.BookingMenuDecision(
+            action="select_option",
+            selected_value="1",
+            reason="Selected by number.",
+        ),
+    )
+    monkeypatch.setattr(
+        appointment_booker,
+        "available_slots_for_doctor",
+        lambda doctor_id, limit: [
+            {
+                "slot_id": "slot-1",
+                "start_time": "2026-05-21T09:00:00",
+                "end_time": "2026-05-21T09:30:00",
+                "doctor_name": "Dr. A",
+            }
+        ],
+    )
+
+    state = appointment_booker.appointment_booker_node(
+        {
+            "awaiting": "doctor_selection_retry_2",
+            "user_input": "1",
+            "doctor_options": [{"doctor_id": "doc-1", "doctor_name": "Dr. A"}],
+        }
+    )
+
+    assert state["awaiting"] == "slot_selection"
+    assert state["selected_doctor_id"] == "doc-1"
+
+
+def test_date_options_skip_sunday_and_backfill_window(monkeypatch):
+    from datetime import date as real_date
+
+    class FakeDate(real_date):
+        @classmethod
+        def today(cls):
+            return real_date(2026, 9, 7)  # a Monday, so Sep 13 (Sunday) falls in the raw window
+
+    monkeypatch.setattr(appointment_booker, "date", FakeDate)
+
+    options = appointment_booker._date_options()
+
+    assert len(options) == appointment_booker._DATE_OPTION_COUNT
+    assert all(real_date.fromisoformat(o["value"]).weekday() != 6 for o in options)
+
+
+def test_booker_offers_date_picker_on_request_mid_slot_selection():
+    from datetime import date
+
+    state = appointment_booker.appointment_booker_node(
+        {
+            "awaiting": "slot_selection",
+            "user_input": "actually, let me pick a different date",
+            "slot_options": [{"slot_id": "slot-1", "start_time": "2026-05-21T09:00:00"}],
+        }
+    )
+
+    assert state["awaiting"] == "date_selection"
+    assert state["date_options"]
+    assert all(date.fromisoformat(o["value"]).weekday() != 6 for o in state["date_options"])
+
+
+def test_extract_requested_date_from_text_patterns():
+    from datetime import date, timedelta
+
+    extract = appointment_booker._extract_requested_date_from_text
+    today = date.today()
+
+    day_month_result = extract("can i book for 11 september ?")
+    resolved = date.fromisoformat(day_month_result)
+    assert (resolved.month, resolved.day) == (9, 11)
+    assert resolved >= today
+
+    assert extract("sept 11 2026") == "2026-09-11"
+    assert extract("book for 11/09/2026") == "2026-09-11"
+    assert extract("book for 2026-09-11") == "2026-09-11"
+    # day > 12 proves DD/MM (not MM/DD) interpretation
+    assert extract("book for 15/09/2026") == "2026-09-15"
+
+    assert extract("tomorrow") == (today + timedelta(days=1)).isoformat()
+    assert extract("day after tomorrow") == (today + timedelta(days=2)).isoformat()
+    assert extract("in 3 days") == (today + timedelta(days=3)).isoformat()
+    assert extract("3 days from now") == (today + timedelta(days=3)).isoformat()
+
+    weekday_result = extract("monday")
+    assert weekday_result == extract("next monday")
+    assert date.fromisoformat(weekday_result).weekday() == 0
+    assert date.fromisoformat(weekday_result) > today
+
+    ordinal_result = extract("the 15th")
+    assert date.fromisoformat(ordinal_result).day == 15
+
+    assert extract("thanks") is None
+    assert extract("I have a fever") is None
+    assert extract("1") is None
+    assert extract("5") is None
+
+
+def test_booker_reslots_same_doctor_for_extracted_date(monkeypatch):
+    seen = {}
+
+    def fake_slots_on_date(doctor_id, requested_date, limit):
+        seen["doctor_id"] = doctor_id
+        seen["requested_date"] = requested_date
+        return [
+            {
+                "slot_id": "slot-sep-11",
+                "start_time": "2026-09-11T09:00:00",
+                "end_time": "2026-09-11T09:30:00",
+                "doctor_name": "Dr. Amit Vyas",
+            }
+        ]
+
+    monkeypatch.setattr(appointment_booker, "available_slots_for_doctor_on_date", fake_slots_on_date)
+
+    state = appointment_booker.appointment_booker_node(
+        {
+            "awaiting": "slot_selection",
+            "user_input": "can i book for 11 september ?",
+            "selected_doctor_id": "doc-amit",
+            "selected_doctor_name": "Dr. Amit Vyas",
+            "doctor_options": [{"doctor_id": "doc-amit", "doctor_name": "Dr. Amit Vyas"}],
+            "target_department": "Cardiology",
+        }
+    )
+
+    assert state["awaiting"] == "slot_selection"
+    assert seen["doctor_id"] == "doc-amit"
+    assert seen["requested_date"] == "2026-09-11"
+    assert state["slot_options"][0]["slot_id"] == "slot-sep-11"
+    assert "Dr. Amit Vyas" in state["final_response"]
+
+
+def test_booker_researches_doctors_for_extracted_date_when_none_selected_yet(monkeypatch):
+    seen = {}
+
+    def fake_doctors_on_date(department, requested_date, limit):
+        seen["department"] = department
+        seen["requested_date"] = requested_date
+        return [
+            {
+                "doctor_id": "doc-1",
+                "doctor_name": "Dr. A",
+                "experience_years": 10,
+                "next_available_time": "2026-09-11T09:00:00",
+                "available_slot_count": 3,
+            },
+            {
+                "doctor_id": "doc-2",
+                "doctor_name": "Dr. B",
+                "experience_years": 5,
+                "next_available_time": "2026-09-11T10:00:00",
+                "available_slot_count": 2,
+            },
+        ]
+
+    monkeypatch.setattr(appointment_booker, "available_doctors_for_department_on_date", fake_doctors_on_date)
+
+    state = appointment_booker.appointment_booker_node(
+        {
+            "awaiting": "doctor_selection",
+            "user_input": "can i book for 11 september ?",
+            "target_department": "Cardiology",
+            "doctor_options": [{"doctor_id": "doc-old", "doctor_name": "Dr. Old"}],
+        }
+    )
+
+    assert state["awaiting"] == "doctor_selection"
+    assert seen["department"] == "Cardiology"
+    assert seen["requested_date"] == "2026-09-11"
+    assert "2026-09-11" in state["final_response"]
+
+
+def test_booker_rejects_extracted_sunday_date_with_picker():
+    from datetime import date, timedelta
+
+    today = date.today()
+    days_to_sunday = (6 - today.weekday()) % 7
+    days_to_sunday = days_to_sunday or 7
+    sunday = today + timedelta(days=days_to_sunday)
+
+    state = appointment_booker.appointment_booker_node(
+        {
+            "awaiting": "slot_selection",
+            "user_input": f"can i book for {sunday.day} {sunday.strftime('%B').lower()} ?",
+            "selected_doctor_id": "doc-amit",
+            "selected_doctor_name": "Dr. Amit Vyas",
+            "doctor_options": [{"doctor_id": "doc-amit", "doctor_name": "Dr. Amit Vyas"}],
+        }
+    )
+
+    assert state["awaiting"] == "date_selection"
+    assert "closed on Sundays" in state["final_response"]
+    assert all(date.fromisoformat(o["value"]).weekday() != 6 for o in state["date_options"])
+
+
 def test_booker_books_selected_slot_in_localized_language_without_catalog_key_error(monkeypatch):
     monkeypatch.setattr(
         appointment_booker,
@@ -578,18 +849,20 @@ def test_booker_uses_requested_date_for_department_availability(monkeypatch):
 def test_booker_rejects_dates_more_than_one_week_ahead():
     from datetime import date, timedelta
 
+    # Comfortably beyond the booking window even after Sundays are skipped and the
+    # window backfills to still offer a full set of options (see _date_options).
     state = appointment_booker.appointment_booker_node(
         {
             "target_department": "Neurology",
-            "requested_date": (date.today() + timedelta(days=8)).isoformat(),
+            "requested_date": (date.today() + timedelta(days=20)).isoformat(),
             "intent": "direct_booking",
-            "user_input": "book after 8 days",
+            "user_input": "book after 20 days",
         }
     )
 
     assert state["awaiting"] == "date_selection"
     assert len(state["date_options"]) == 8
-    assert "7 days ahead" in state["final_response"]
+    assert "closed on Sundays" in state["final_response"]
 
 
 def test_booker_asks_for_another_date_when_no_doctors_available(monkeypatch):

@@ -1,8 +1,10 @@
-from fastapi import APIRouter, Depends, HTTPException, Request
+from fastapi import APIRouter, Depends, HTTPException, Query, Request
 from fastapi.security import HTTPAuthorizationCredentials
 from pydantic import BaseModel
 
 from app.api.dependencies import bearer_scheme, get_current_doctor
+from app.services.appointments import doctor_appointments, doctor_patient_detail, doctor_patients
+from app.services.consults import list_latest_consult_status_by_booking
 from app.services.doctor_auth import (
     authenticate_doctor_password, check_rate_limit, complete_invite, complete_mfa_challenge,
     issue_invite, start_mfa_enrollment, verify_mfa_enrollment,
@@ -58,7 +60,11 @@ def complete_invite_route(request: CompleteInviteRequest):
         _error(exc, 400)
     except ValueError as exc:
         _error(exc, 400)
-    token = create_doctor_mfa_enrollment_token(**account)
+    if account["mfa_enabled"]:
+        return {"status": "password_reset"}
+    token = create_doctor_mfa_enrollment_token(
+        doctor_id=account["doctor_id"], account_id=account["account_id"], email=account["email"]
+    )
     return {"status": "password_set", "mfa_enrollment_token": token, "token_type": "bearer"}
 
 
@@ -114,3 +120,38 @@ def mfa_challenge(request: MfaCodeRequest, http_request: Request, credentials: H
 @router.get("/me")
 def doctor_me(doctor: dict = Depends(get_current_doctor)):
     return {"status": "authenticated", "doctor": doctor}
+
+
+@router.get("/appointments")
+def doctor_appointments_route(
+    scope: str = Query(...),
+    doctor: dict = Depends(get_current_doctor),
+):
+    normalized_scope = scope.strip().lower()
+    if normalized_scope not in ("upcoming", "past"):
+        raise HTTPException(status_code=400, detail="scope must be 'upcoming' or 'past'.")
+
+    appointments = doctor_appointments(doctor["doctor_id"], normalized_scope)
+    consult_by_booking = list_latest_consult_status_by_booking(
+        doctor["doctor_id"], [appt["booking_id"] for appt in appointments]
+    )
+    for appt in appointments:
+        consult = consult_by_booking.get(appt["booking_id"])
+        appt["consult_id"] = consult["id"] if consult else None
+        appt["consult_status"] = consult["status"] if consult else None
+        appt["consult_started_at"] = consult["started_at"] if consult else None
+        appt["consult_ended_at"] = consult["ended_at"] if consult else None
+    return {"appointments": appointments}
+
+
+@router.get("/patients")
+def doctor_patients_route(doctor: dict = Depends(get_current_doctor)):
+    return {"patients": doctor_patients(doctor["doctor_id"])}
+
+
+@router.get("/patients/{patient_id}")
+def doctor_patient_detail_route(patient_id: str, doctor: dict = Depends(get_current_doctor)):
+    detail = doctor_patient_detail(doctor["doctor_id"], patient_id)
+    if not detail:
+        raise HTTPException(status_code=404, detail="Patient not found.")
+    return detail

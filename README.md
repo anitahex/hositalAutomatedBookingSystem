@@ -42,7 +42,7 @@ The sender's WhatsApp number must match the patient's registered `mobile_number`
 | Backend | Python 3.11 · FastAPI · Uvicorn |
 | AI Orchestration | LangGraph · LangChain |
 | LLM | OpenAI API (same configured chat/routing and vision models) |
-| Embeddings | Sentence Transformers (384-dim) via Hugging Face |
+| Embeddings | `sentence-transformers/all-MiniLM-L6-v2` (384-dim), called via a **remote** Hugging Face Inference Endpoint (`HuggingFaceEndpointEmbeddings`) — not run locally, requires `HF_TOKEN` |
 | Vector Store | Qdrant |
 | Relational DB | PostgreSQL 15 |
 | State Checkpoints | SQLite (LangGraph checkpointer) |
@@ -208,36 +208,52 @@ hositalAutomatedBookingSystem/
 
 ## Getting Started
 
+This section is written for a fresh machine that has Docker and Docker Compose installed, pulling this repo for the first time. Follow it in order — steps 3 and 4 are easy to miss and the app will otherwise come up with no way to log in as an admin or invite a doctor.
+
 ### Prerequisites
 
 - Docker and Docker Compose
-- OpenAI API key with access to the configured chat and vision models
-- Azure Blob Storage container (for document uploads)
+- A Hugging Face account with an access token (**required** — see below)
+- An OpenAI API key (optional but strongly recommended — the assistant degrades to generic canned replies without it)
+- Azure Blob Storage container (only needed if patients will upload documents)
+- An SMTP account and/or a Deepgram/Twilio account (only needed for doctor-invite emails / consult transcription / WhatsApp — see the relevant subsections below)
 
 ### 1. Configure Environment
 
-Create a `.env` file in the project root. The variables below are the only ones you need to supply — `DATABASE_URL`, `QDRANT_URL`, and `QDRANT_MODE` are already set by `docker-compose.yml` and do not need to be in `.env`.
+Copy the template and fill it in:
 
-```env
-# Authentication
-JWT_SECRET=your-long-random-secret-min-32-chars
-JWT_EXP_SECONDS=604800
-
-# OpenAI API — conversation, routing, summaries, and document extraction
-OPENAI_API_KEY=your-openai-api-key
-OPENAI_CONV_MODEL=gpt-5.4-mini
-OPENAI_ROUTER_MODEL=gpt-5.4-mini
-OPENAI_SUMMARY_MODEL=gpt-5.4-mini
-OPENAI_VISION_MODEL=gpt-4o
-
-# Azure Blob Storage
-AZURE_STORAGE_CONNECTION_STRING=DefaultEndpointsProtocol=https;AccountName=...
-AZURE_CONTAINER_NAME=hospital-documents
-
-# Qdrant collection settings
-QDRANT_COLLECTION=clinical_knowledge_base
-VECTOR_SIZE=384
+```bash
+cp .env.example .env
 ```
+
+`.env.example` documents every variable with inline comments; the summary below groups them by what actually breaks if you skip them.
+
+**Required — the backend will not start correctly without these:**
+
+| Variable | Why |
+|---|---|
+| `HF_TOKEN` | **Mandatory.** Embeddings are called via a remote Hugging Face Inference Endpoint (see the Tech Stack table above) — if this is unset, the backend crashes at import time, before the FastAPI app object even exists. Get one from huggingface.co → Settings → Access Tokens. |
+| `POSTGRES_PASSWORD` | Used by `docker-compose.yml` for both the `postgres` container and the `backend`'s `DATABASE_URL` — pick a real value, not the `.env.example` placeholder. |
+| `JWT_SECRET` | A long random string. If left unset, the app falls back to a **public, insecure** default and logs a loud warning on every startup — fine for a five-minute local test, never acceptable on a real server. |
+
+**Strongly recommended:**
+
+| Variable | Why |
+|---|---|
+| `OPENAI_API_KEY` | Without it, chat/triage/booking/document-analysis all silently fall back to generic canned responses instead of real LLM output — the app *runs*, but isn't actually useful. `OPENAI_MODEL` (default `gpt-4o`) and the optional `OPENAI_ROUTER_MODEL`/`OPENAI_SUMMARY_MODEL`/`OPENAI_VISION_MODEL` overrides are documented in `.env.example`. |
+
+**Only needed for specific features — safe to leave blank otherwise:**
+
+| Variable(s) | Feature | If left unset |
+|---|---|---|
+| `AZURE_STORAGE_CONNECTION_STRING`, `AZURE_CONTAINER_NAME` | Patient document upload/vault | Upload attempts fail; everything else works |
+| `DEEPGRAM_API_KEY` | Doctor consult transcription, patient voice-to-text input | Those two features fail; everything else works |
+| `TWILIO_AUTH_TOKEN`, `VALIDATE_TWILIO_WEBHOOK`, `PUBLIC_BASE_URL` | WhatsApp channel — see the [Twilio WhatsApp setup](#twilio-whatsapp-setup) section above | The WhatsApp webhook doesn't work; the web app is unaffected |
+| `DOCTOR_AUTH_*` (SMTP block) | Doctor invite/reset emails — see [step 4](#4-invite-your-first-doctor) below | You'll have to read invite links from server logs instead of emailing them |
+| `ENABLE_API_DOCS` | Interactive `/docs`/`/redoc` | Stays disabled by default — leave this alone in production; it exposes the full API schema including admin models |
+| `JWT_LEGACY_SECRET` | JWT secret rotation | Only ever set this during a deliberate rotation — see the comment in `.env.example` |
+
+`DATABASE_URL`, `QDRANT_URL`, and `QDRANT_MODE` are already set correctly by `docker-compose.yml` for the Docker path below and do not need to be in `.env`.
 
 ### 2. Run with Docker Compose
 
@@ -268,9 +284,60 @@ On first start, the entrypoint automatically:
 3. Seeds the doctor roster and appointment slots from the CSV files
 4. Populates the Qdrant clinical knowledge base from the clinical dataset
 
+This is gated behind a one-time flag file (`/app/data/.initialized` inside the `app_data` volume), so it only runs once — a plain `docker compose restart` won't repeat it.
+
+**Not everything is created at this step.** A handful of tables (the consult/SOAP feature, holidays, revoked-login-tokens, and — unless you set `ADMIN_BOOTSTRAP_ENABLED=true` below — the admin account table) only get created lazily, the first time that specific feature is actually used, not at deploy time. This is intentional; see `TECH_DEBT.md` if you want the full detail.
+
+Confirm the backend is actually up before continuing:
+
+```bash
+curl http://localhost:8010/health
+# {"status":"ok"}
+```
+
+If this doesn't return quickly, check `docker compose logs backend` — the most common first-run failure is a missing/invalid `HF_TOKEN` (see step 1), which crashes the backend container immediately.
+
 The app is available at **http://localhost:8010**
 
-### 3. Local Development (without Docker)
+### 3. Create the first admin account
+
+There's no self-service "create the first admin" button in the UI — you need one of these two paths:
+
+**Option A — bootstrap via `.env`, before first boot.** Add these to `.env` *before* running `docker compose up -d` for the first time:
+```env
+ADMIN_BOOTSTRAP_ENABLED=true
+ADMIN_EMAIL=admin@yourhospital.com
+ADMIN_PASSWORD=a-strong-password
+ADMIN_NAME=Administrator
+```
+This account is created (and its password re-synced) on every startup while `ADMIN_BOOTSTRAP_ENABLED` stays `true` — a deliberate opt-in, so leaving a stale value here doesn't silently reset a password later. Consider setting it back to `false` after the first successful login.
+
+**Option B — run it directly against an already-running container**, any time after `docker compose up -d`:
+```bash
+docker compose exec backend python scripts/manage_admin.py --email admin@yourhospital.com --name "Administrator"
+# prompts for a password interactively if --password is omitted
+```
+
+Either way, log in at **http://localhost:8010** with that email/password to reach the admin panel.
+
+### 4. Invite your first doctor
+
+Doctor accounts are created in two steps from the admin panel: first add the doctor's profile (name/department/experience), then click "Send Invite" and type in *that doctor's* real email address (this is entered live in the UI, not stored in `.env` — see `DOCTOR_AUTH_EMAIL_FROM` below, which is a completely different thing: the *sender* identity, not the recipient).
+
+Before doing this, decide how invite emails actually get delivered:
+
+- **`DOCTOR_AUTH_EMAIL_NO_SEND=true`** (good for a first test) — no email is sent at all; the invite link is only printed to `docker compose logs backend`, e.g. `[doctor-invite:no-send] invite link for doctor@example.com: https://.../doctor/set-password?token=...`. You'd copy that link out of the logs and send it to the doctor yourself.
+- **`DOCTOR_AUTH_EMAIL_NO_SEND=false`** (real delivery) — also set `DOCTOR_AUTH_SMTP_HOST`, `DOCTOR_AUTH_SMTP_PORT`, `DOCTOR_AUTH_SMTP_USE_TLS`, `DOCTOR_AUTH_SMTP_USERNAME`, `DOCTOR_AUTH_SMTP_PASSWORD`, and `DOCTOR_AUTH_EMAIL_FROM` to a real SMTP provider (Gmail with an App Password, SendGrid, AWS SES, Mailgun, or your organization's existing Office365/Google Workspace mailbox all work — standard SMTP+STARTTLS on port 587). If SMTP isn't configured while this is `false`, sending an invite fails outright with an error, rather than silently falling back to logging.
+
+Either way, **`DOCTOR_AUTH_FRONTEND_URL` must be your real public domain** (e.g. `https://yourdomain.com`), not `localhost` — this is the base URL baked into every invite/reset link. Also generate a real encryption key for MFA secret storage (a placeholder here is not safe to run with):
+```bash
+python -c "from cryptography.fernet import Fernet; print(Fernet.generate_key().decode())"
+```
+and set it as `DOCTOR_AUTH_ENCRYPTION_KEY`.
+
+Once the doctor opens their invite link, they set a password and enroll in MFA (QR code for an authenticator app) in the same flow.
+
+### 5. Local Development (without Docker)
 
 ```bash
 pip install -r requirements.txt
@@ -279,6 +346,18 @@ python run.py
 ```
 
 > **Note for Windows:** `run.py` sets `WindowsSelectorEventLoopPolicy` automatically to fix the asyncio + aiohttp compatibility issue.
+
+---
+
+## Before Going to Production
+
+This repo has undergone a full security/functionality audit — the complete findings live in `FULL_SYSTEM_AUDIT.md` (and known, intentionally-accepted tech debt in `TECH_DEBT.md`). Do not skip reading it before a real deployment. The short version of what's most likely to bite you:
+
+- **TLS/HTTPS is not configured in `nginx.conf`.** Confirm whether TLS terminates in front of this stack (a load balancer/CDN) or whether you need to add it here yourself — `nginx.conf` has a comment with the exact `Strict-Transport-Security` header line to add, but only add it once HTTPS is confirmed working end-to-end, not before (it's deliberately left out today, not just forgotten).
+- **The admin panel (`/admin`) has no network-layer restriction** — anyone who obtains admin credentials can reach it from anywhere. `FULL_SYSTEM_AUDIT.md` §"P1 #12" has a ready-to-use nginx IP-allowlist snippet.
+- **Leave `ENABLE_API_DOCS` unset/`false`** in production — it's off by default for a reason (full schema, including admin models, would otherwise be publicly reachable at `/docs`).
+- **`JWT_SECRET` must be a real random value, not left blank.** An unset value falls back to a public, well-known string and logs a warning on every boot — treat that warning as a deploy blocker, not noise.
+- The WhatsApp channel's signature validation (`VALIDATE_TWILIO_WEBHOOK`) can be turned off — never do this outside local testing.
 
 ---
 

@@ -197,6 +197,148 @@ def extract_local_intake_info(user_text: str) -> dict:
     return info
 
 
+def looks_like_end_chat(text: str) -> bool:
+    lowered = " ".join((text or "").lower().replace("'", "").split())
+    if not lowered:
+        return False
+    return any(
+        phrase in lowered
+        for phrase in (
+            "end the chat",
+            "end chat",
+            "close the chat",
+            "that's all",
+            "thats all",
+            "that is all",
+            "i am done",
+            "bye",
+            "goodbye",
+            "no more",
+            "nothing else",
+        )
+    )
+
+
+def looks_like_thanks(text: str) -> bool:
+    lowered = " ".join((text or "").lower().replace("'", "").split())
+    if not lowered:
+        return False
+    return any(
+        phrase in lowered
+        for phrase in (
+            "thank you",
+            "thanks",
+            "thx",
+            "appreciate it",
+        )
+    )
+
+
+_NON_ANSWER_PHRASES = frozenset({
+    "hi", "hii", "hiii", "hello", "hey", "heya", "yo", "sup",
+    "ok", "okay", "k", "kk", "hmm", "hm", "hmmm", "uh", "um", "uhh",
+    "test", "testing", "?", "...", "idk", "i dont know", "i don't know",
+    "what", "why", "who are you", "are you a bot", "are you real",
+})
+
+
+def looks_like_non_answer(user_text: str) -> bool:
+    """Cheap heuristic for a reply that is a greeting/filler and clearly does not
+    engage with the clinical question just asked (e.g. "hi", "ok", "hmm").
+    Used to route such turns to the full LLM-backed intake flow, which can
+    tell a genuine (if short) answer apart from a non-answer, instead of the
+    streaming fast-path that always asks the next scripted question.
+    Deliberately conservative (explicit phrase list only) to avoid misclassifying
+    short-but-real clinical answers like "mild", "yes", or "3 days"."""
+    lowered = normalize_text(user_text).strip(" .!")
+    if not lowered:
+        return True
+    return lowered in _NON_ANSWER_PHRASES
+
+
+_CRISIS_PHRASES = (
+    "kill myself", "kill himself", "kill herself", "kill themselves",
+    "suicide", "suicidal", "end my life", "ending my life",
+    "want to die", "wish i was dead", "wish i were dead", "better off dead",
+    "hurt myself", "harm myself", "self harm", "self-harm",
+    "murder someone", "murder somebody", "murder a doctor", "murder him", "murder her",
+    "want to murder", "going to murder", "can i murder", "kill someone", "kill somebody",
+    "want to kill", "going to kill", "kill a doctor", "kill a person",
+)
+
+# National India-wide resources; a deployment covering other regions should
+# replace/extend these with the locally appropriate crisis line.
+CRISIS_SAFETY_RESPONSE = (
+    "I want to take what you just said seriously. If you're thinking about harming "
+    "yourself or someone else, please reach out right now — you can call or text the "
+    "KIRAN mental health helpline at 1800-599-0019 (toll-free, 24/7), or dial 112 for "
+    "emergency services if you or someone else is in immediate danger.\n\n"
+    "I'm not able to provide crisis counseling here, but I'm still here to help with "
+    "symptoms or booking a doctor's appointment whenever you're ready."
+)
+
+
+def looks_like_crisis_or_harm(text: str) -> bool:
+    """Deterministic detection of self-harm/suicide or intent-to-harm-others language.
+
+    Used as a hard safety gate BEFORE any freeform LLM generation — relying on the
+    model's own emergent reaction to alarming input is not reliable or consistent, and
+    previously left the conversation stuck repeating a follow-up question for several
+    turns regardless of what the patient said next (see FULL_SYSTEM_AUDIT.md /
+    the traced demo-transcript bug). Deliberately phrase-based (never a bare "kill")
+    to avoid misfiring on common hyperbole like "this pain is killing me"."""
+    lowered = " ".join((text or "").lower().replace("'", "").split())
+    if not lowered:
+        return False
+    return any(phrase in lowered for phrase in _CRISIS_PHRASES)
+
+
+_OFF_TOPIC_MARKERS = (
+    "who is", "who was", "what is the capital", "capital of", "weather",
+    "prime minister", "president of", "write me a", "write a python",
+    "write code", "python code", "how to build a", "how to make a program",
+    "rag system", "gpt model", "gpt-", "openai model", "cricket", "movie",
+    "actor", "actress", "compare it with", "fastest way to reach",
+    "fastest way to", "capital city", "good city or bad", "is a good city",
+)
+
+
+def looks_like_general_knowledge_question(text: str) -> bool:
+    """Cheap heuristic for a message that is a general-knowledge / off-topic question
+    rather than an answer to the clinical intake question just asked — e.g. "who is
+    the prime minister", "write me a python code", "what's the weather". Used as a
+    backstop so these aren't silently absorbed as intake answers by the no-LLM-routing
+    fast paths, which otherwise have no way to tell topic apart from filler. Deliberately
+    a marker list, not exhaustive — genuinely ambiguous messages still fall through to
+    the full LLM-backed pipeline via the existing irrelevant-reply-streak safety valve."""
+    lowered = " ".join((text or "").lower().replace("'", "").split())
+    if not lowered:
+        return False
+    return any(marker in lowered for marker in _OFF_TOPIC_MARKERS)
+
+
+_NON_MEDICAL_SUBJECT_TERMS = frozenset({
+    "car", "vehicle", "engine", "fuel", "petrol", "diesel", "bike", "motorcycle",
+    "scooter", "truck", "tyre", "tire", "laptop", "computer", "phone", "mobile phone",
+    "wifi", "internet", "router", "printer", "television", "tv", "fridge",
+    "refrigerator", "washing machine", "appliance", "battery", "software", "app crash",
+    "website", "server",
+})
+
+
+def looks_like_non_medical_subject(text: str) -> bool:
+    """Cheap backstop for text whose subject is clearly an inanimate object/device
+    (a car, a laptop, wifi, ...) rather than the patient's own body or health — used to
+    filter obviously-misclassified "symptoms" out of LLM extraction output before they
+    get merged into conversational state (they would otherwise persist for the rest of
+    the session and leak into unrelated later answers). This is a backstop, not the
+    primary defense — the triage prompt itself is the primary defense."""
+    lowered = " ".join((text or "").lower().replace("'", "").split())
+    if not lowered:
+        return False
+    return any(term in lowered for term in _NON_MEDICAL_SUBJECT_TERMS)
+
+
 def looks_like_intake_wrapup(user_text: str) -> bool:
     lowered = normalize_text(user_text)
     if not lowered:
