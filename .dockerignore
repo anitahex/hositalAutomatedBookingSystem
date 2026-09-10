@@ -10,3 +10,7 @@ venv
 qdrant_storage
 data
 *.code-workspace
+
+# Downloaded during the build by scripts/download_language_model.py instead of
+# copied from the host, so a local copy doesn't need to enter the build context.
+models

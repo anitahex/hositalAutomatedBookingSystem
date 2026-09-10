@@ -12,6 +12,9 @@ COPY requirements.txt .
 RUN pip install --no-cache-dir torch==2.6.0 --index-url https://download.pytorch.org/whl/cpu && \
     pip install --no-cache-dir -r requirements.txt
 
+COPY scripts/download_language_model.py scripts/download_language_model.py
+RUN python scripts/download_language_model.py
+
 COPY . .
 
 RUN mkdir -p data

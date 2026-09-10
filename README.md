@@ -261,6 +261,8 @@ cp .env.example .env
 docker compose up -d
 ```
 
+Building the `backend` image also downloads the fastText language-identification model (`models/lid.176.bin`, ~126MB) automatically. If that download fails (e.g. no network access at build time), the build continues anyway and the app falls back to a lower-accuracy, script-based language heuristic — see `app/services/language.py`.
+
 This starts four services:
 
 | Service | Image | Internal Port | Exposed |
@@ -341,6 +343,7 @@ Once the doctor opens their invite link, they set a password and enroll in MFA (
 
 ```bash
 pip install -r requirements.txt
+python scripts/download_language_model.py  # optional — fetches models/lid.176.bin for full-accuracy language detection
 # Export the variables from .env into your shell, then:
 python run.py
 ```
