@@ -237,3 +237,25 @@ def test_admin_doctors_route_returns_login_status_fields(monkeypatch):
     response = admin_route.admin_doctors(admin=_admin())
     assert response["doctors"][0]["login_status"] == "mfa_enrolled"
     assert response["doctors"][0]["invite_action"] == "reset"
+
+
+# ── list_slots ───────────────────────────────────────────────────────────────
+
+def test_list_slots_filters_to_upcoming_by_default(monkeypatch):
+    connection = _Connection()
+
+    @contextmanager
+    def fake_connect_db():
+        yield connection
+
+    monkeypatch.setattr(admin_management, "connect_db", fake_connect_db)
+    monkeypatch.setattr(admin_management, "ensure_booking_schema", lambda conn: None)
+
+    admin_management.list_slots()
+
+    query, _ = connection.cursor_instance.calls[-1]
+    assert "NOW()" in query, (
+        "list_slots() has no upcoming-time filter, so with far more historical than "
+        "future slots, 'ORDER BY start_time ASC LIMIT 500' always returns the oldest "
+        "rows and the admin Slots panel can never scroll to current availability."
+    )

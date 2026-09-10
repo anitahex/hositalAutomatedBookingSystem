@@ -1352,7 +1352,7 @@ def book_preferred_slot(state: GraphState):
 
     doctor_name = str(booked.get("doctor") or booked.get("doctor_name") or "Doctor")
     department_name = str(booked.get("department") or "Unknown department")
-    start_time = str(booked.get("start_time") or booked.get("time") or "Unknown time")
+    start_time = _fmt_time(str(booked.get("start_time") or booked.get("time") or "Unknown time"))
     slot_reference = str(booked.get("slot_id") or "")
     booking_reference = str(booked.get("booking_id") or slot_reference)
     confirmed_booking = {

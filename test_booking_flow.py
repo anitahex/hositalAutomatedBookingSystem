@@ -1247,6 +1247,44 @@ def test_book_selected_slot_returns_compatibility_fields(monkeypatch):
     assert booking["start_time"] == datetime(2026, 5, 21, 9, 0, 0)
 
 
+def test_booking_confirmation_time_matches_slot_list_format(monkeypatch):
+    monkeypatch.setattr(
+        appointment_booker,
+        "classify_booking_menu_reply",
+        lambda state, menu_type: appointment_booker.BookingMenuDecision(
+            action="select_option",
+            selected_value="1",
+            reason="Selected by number.",
+        ),
+    )
+    monkeypatch.setattr(
+        appointment_booker,
+        "book_selected_slot",
+        lambda slot_id, patient_id: {
+            "slot_id": slot_id,
+            "doctor_name": "Dr. A",
+            "department": "Cardiology",
+            "start_time": "2026-05-21T15:30:00",
+        },
+    )
+
+    state = appointment_booker.appointment_booker_node(
+        {
+            "awaiting": "slot_selection",
+            "user_input": "1",
+            "slot_options": [{"slot_id": "slot-1", "start_time": "2026-05-21T15:30:00"}],
+            "patient_id": "patient-1",
+        }
+    )
+
+    formatted_time = appointment_booker._fmt_time("2026-05-21T15:30:00")
+    assert formatted_time in state["final_response"], (
+        "Booking confirmation should show the same formatted time "
+        "('3:30 PM' style) that the slot list showed, not the raw ISO timestamp."
+    )
+    assert "2026-05-21T15:30:00" not in state["final_response"]
+
+
 def test_conversation_stops_when_structured_intake_is_sufficient(monkeypatch):
     monkeypatch.setattr(
         conversation_agent,

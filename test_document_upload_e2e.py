@@ -323,3 +323,19 @@ def test_no_automatic_cleanup_exists_for_expired_or_orphaned_pending_uploads():
     # stale-recording), and it has nothing to do with pending_uploads.
     assert hasattr(main_module, "_consult_retention_sweep_loop")
     assert not hasattr(main_module, "_pending_upload_sweep_loop")
+
+
+# This is a prompt-content check, not a behavioral guarantee: it confirms the
+# instruction given to the model still tells it to bail out with "Illegible in
+# document" on any uncertain handwriting, rather than giving its best full-name
+# reading with a low-confidence "(?)" marker (a separate, same-image structured-
+# extraction call reads the same uncertain names fine, so the model can do this).
+def test_stream_format_prompt_allows_best_effort_reading_of_unclear_handwriting():
+    from app.inference.azure_client import _STREAM_FORMAT_SYSTEM
+
+    prompt = _STREAM_FORMAT_SYSTEM
+    assert "best-effort" in prompt or "(?)" in prompt, (
+        "The chat-facing document analysis prompt still instructs the model to write "
+        "'Illegible in document' for any uncertain handwriting instead of committing "
+        "to a best-effort full reading marked with '(?)' for low confidence."
+    )
