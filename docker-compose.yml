@@ -44,11 +44,30 @@ services:
       context: .
       dockerfile: Dockerfile.frontend
     ports:
-      - "8010:80"
+      - "80:80"
+      - "443:443"
+      - "8010:80"   # kept so old bookmarks still work — nginx now 301-redirects this to https
+    volumes:
+      - certbot_certs:/etc/letsencrypt
+      - certbot_webroot:/var/www/certbot
     depends_on:
       - backend
+
+  certbot:
+    image: certbot/certbot:latest
+    env_file:
+      - .env
+    volumes:
+      - certbot_certs:/etc/letsencrypt
+      - certbot_webroot:/var/www/certbot
+      - ./certbot-entrypoint.sh:/certbot-entrypoint.sh:ro
+    entrypoint: ["/bin/sh", "/certbot-entrypoint.sh"]
+    depends_on:
+      - frontend
 
 volumes:
   postgres_data:
   qdrant_data:
   app_data:
+  certbot_certs:
+  certbot_webroot:

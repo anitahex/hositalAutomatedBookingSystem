@@ -280,13 +280,13 @@ This starts four services:
 | `qdrant_data` | Qdrant vector index storage |
 | `app_data` | LangGraph SQLite checkpoints (`/app/data/`) |
 
-On first start, the entrypoint automatically:
+On every start, the entrypoint automatically:
 1. Waits for PostgreSQL to pass its health check and Qdrant to start
 2. Runs Alembic migrations (`alembic upgrade head`)
 3. Seeds the doctor roster and appointment slots from the CSV files
 4. Populates the Qdrant clinical knowledge base from the clinical dataset
 
-This is gated behind a one-time flag file (`/app/data/.initialized` inside the `app_data` volume), so it only runs once — a plain `docker compose restart` won't repeat it.
+Each of these runs on **every** container start, not just the first — each is self-checking (migrations are idempotent via Alembic's own version table; the CSV seeding is an idempotent upsert; the Qdrant hydration checks the collection's actual point count before re-embedding anything) rather than gated behind a one-time flag file. An earlier version of this gated all four behind `/app/data/.initialized` in the `app_data` volume — that flag lived in a different volume than the actual database data, so if the two ever diverged (a recreated Postgres volume, a different `DATABASE_URL`, a partial earlier deploy), the flag stayed present forever while the doctors/appointment_slots tables silently stayed empty. See `TECH_DEBT.md` for the full writeup.
 
 **Not everything is created at this step.** A handful of tables (the consult/SOAP feature, holidays, revoked-login-tokens, and — unless you set `ADMIN_BOOTSTRAP_ENABLED=true` below — the admin account table) only get created lazily, the first time that specific feature is actually used, not at deploy time. This is intentional; see `TECH_DEBT.md` if you want the full detail.
 

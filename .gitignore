@@ -30,3 +30,7 @@ Thumbs.db
 # Test coverage artifacts
 .coverage
 htmlcov/
+
+# Build-time-downloaded model artifacts (see scripts/download_language_model.py,
+# fetched during the Docker build) — not source, and too large to commit anyway.
+models/
