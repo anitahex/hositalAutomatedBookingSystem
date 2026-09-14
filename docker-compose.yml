@@ -38,6 +38,14 @@ services:
       QDRANT_MODE: remote
       QDRANT_URL: http://qdrant:6333
       CHECKPOINT_DB_PATH: /app/data/checkpoints.sqlite
+    ports:
+      # TLS and public routing are handled by a reverse proxy on the host, NOT by
+      # this stack — the deployment target is a shared box whose nginx already
+      # fronts ~40 other sites, so this app can never own :80/:443. Bound to
+      # loopback so only that local proxy can reach it, never the public internet.
+      # The host proxy forwards to this port; if yours uses a different one,
+      # change the left-hand side only.
+      - "127.0.0.1:8010:8010"
     volumes:
       - app_data:/app/data
     depends_on:
@@ -52,26 +60,7 @@ services:
       retries: 5
       start_period: 150s
 
-  frontend:
-    build:
-      context: .
-      dockerfile: Dockerfile.frontend
-    env_file:
-      - .env
-    ports:
-      - "80:80"
-      - "443:443"
-      - "8010:80"   # kept so old bookmarks still work — Caddy 301-redirects this to https
-    volumes:
-      - caddy_data:/data
-      - caddy_config:/config
-    depends_on:
-      backend:
-        condition: service_healthy
-
 volumes:
   postgres_data:
   qdrant_data:
   app_data:
-  caddy_data:
-  caddy_config:
