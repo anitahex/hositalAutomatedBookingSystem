@@ -7,12 +7,13 @@ services:
       POSTGRES_USER: postgres
       POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?POSTGRES_PASSWORD must be set in .env}
       POSTGRES_DB: hospital_db
-    ports:
-      # Host 5432 is commonly already taken by a native/system Postgres install —
-      # map to 5433 on the host instead. Containers on this compose network still
-      # reach it as postgres:5432 (unaffected); local tools on the host need
-      # localhost:5433.
-      - "5433:5432"
+    # No ports: mapping — only the backend container needs to reach this, over the
+    # internal compose network (postgres:5432), regardless of any host port
+    # mapping. Publishing it to the host previously conflicted with a native
+    # Postgres install locally, and left it reachable from the public internet on
+    # the server (no ufw rule blocked it). If you need host-side access for local
+    # debugging, add a docker-compose.override.yml (gitignored) with your own
+    # `ports: ["5433:5432"]` instead of editing this file.
     volumes:
       - postgres_data:/var/lib/postgresql/data
     healthcheck:
