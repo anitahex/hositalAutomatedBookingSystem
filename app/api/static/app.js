@@ -1754,8 +1754,8 @@ async function copyTextWithFallback(text) {
     await navigator.clipboard.writeText(text);
     return;
   }
-  // Legacy fallback — this app's nginx config serves plain HTTP with no TLS, and
-  // navigator.clipboard requires a secure context (HTTPS, or specifically localhost).
+  // Legacy fallback for browsers/contexts without navigator.clipboard — it requires a
+  // secure context (HTTPS, or specifically localhost) and isn't available everywhere.
   const textarea = document.createElement("textarea");
   textarea.value = text;
   textarea.style.position = "fixed";
@@ -5138,6 +5138,36 @@ function validateSignupStepOne() {
   return true;
 }
 
+function validateSignupStepTwo() {
+  const name = document.querySelector("#profileName");
+  const age = document.querySelector("#profileAge");
+  const mobile = document.querySelector("#profileMobile");
+  const email = document.querySelector("#profileEmail");
+  const bloodGroup = document.querySelector("#profileBloodGroup");
+  const address = document.querySelector("#profileAddress");
+
+  for (const field of [name, age, mobile, email, bloodGroup, address]) {
+    if (!field.reportValidity()) {
+      return false;
+    }
+  }
+
+  if (!name.value.trim()) {
+    setAuthMessage("Name cannot be blank.");
+    name.focus();
+    return false;
+  }
+
+  if (!address.value.trim()) {
+    setAuthMessage("Address cannot be blank.");
+    address.focus();
+    return false;
+  }
+
+  setAuthMessage("");
+  return true;
+}
+
 function resetChat() {
   hideChatClosed();
   if (documentUpload) documentUpload.value = "";
@@ -6099,6 +6129,10 @@ signupForm.addEventListener("submit", async (event) => {
   if (!validateSignupStepOne()) {
     signupStepTwo.classList.add("hidden");
     signupStepOne.classList.remove("hidden");
+    return;
+  }
+
+  if (!validateSignupStepTwo()) {
     return;
   }
 

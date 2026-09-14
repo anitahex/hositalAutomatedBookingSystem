@@ -22,18 +22,43 @@ from app.services.tokens import create_doctor_mfa_pending_token, revoke_token, v
 router = APIRouter()
 
 
+VALID_BLOOD_GROUPS = {"A+", "A-", "B+", "B-", "AB+", "AB-", "O+", "O-"}
+
+
 class SignupRequest(BaseModel):
     email: EmailStr
     password: str
     confirm_password: str
-    name: str
+    name: str = Field(min_length=2, max_length=100)
     age: int = Field(gt=0, lt=130)
     mobile_number: str
-    address: str
+    address: str = Field(min_length=5, max_length=500)
     profile_email: EmailStr
     blood_group: str
     health_issues: str | None = None
     preferred_language: str = "en"
+
+    @field_validator("name")
+    @classmethod
+    def _validate_name(cls, value: str) -> str:
+        if not value.strip():
+            raise ValueError("Name cannot be blank.")
+        return value
+
+    @field_validator("address")
+    @classmethod
+    def _validate_address(cls, value: str) -> str:
+        if not value.strip():
+            raise ValueError("Address cannot be blank.")
+        return value
+
+    @field_validator("blood_group")
+    @classmethod
+    def _validate_blood_group(cls, value: str) -> str:
+        normalized = value.strip().upper()
+        if normalized not in VALID_BLOOD_GROUPS:
+            raise ValueError("Blood group must be one of: " + ", ".join(sorted(VALID_BLOOD_GROUPS)))
+        return normalized
 
     @field_validator("mobile_number")
     @classmethod

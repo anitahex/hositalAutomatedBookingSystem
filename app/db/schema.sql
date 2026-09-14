@@ -100,6 +100,40 @@ CREATE TABLE unified_auth_audit_log (
     created_at TIMESTAMP NOT NULL DEFAULT NOW()
 );
 
+-- Deleting a users/doctor_accounts/admin_accounts row would otherwise leave its
+-- account_email_registry row behind forever (account_id has no FK/cascade), which
+-- permanently blocks that email from ever signing up again. Keep the registry
+-- self-cleaning for any deletion path. Mirrors app/services/account_registry.py.
+CREATE OR REPLACE FUNCTION account_email_registry_cleanup_patient() RETURNS trigger AS $$
+BEGIN
+    DELETE FROM account_email_registry WHERE account_type = 'patient' AND account_id = OLD.user_id;
+    RETURN OLD;
+END;
+$$ LANGUAGE plpgsql;
+
+CREATE OR REPLACE FUNCTION account_email_registry_cleanup_doctor() RETURNS trigger AS $$
+BEGIN
+    DELETE FROM account_email_registry WHERE account_type = 'doctor' AND account_id = OLD.id;
+    RETURN OLD;
+END;
+$$ LANGUAGE plpgsql;
+
+CREATE OR REPLACE FUNCTION account_email_registry_cleanup_admin() RETURNS trigger AS $$
+BEGIN
+    DELETE FROM account_email_registry WHERE account_type = 'admin' AND account_id = OLD.admin_id;
+    RETURN OLD;
+END;
+$$ LANGUAGE plpgsql;
+
+CREATE TRIGGER trg_account_email_registry_cleanup AFTER DELETE ON users
+    FOR EACH ROW EXECUTE FUNCTION account_email_registry_cleanup_patient();
+
+CREATE TRIGGER trg_account_email_registry_cleanup AFTER DELETE ON doctor_accounts
+    FOR EACH ROW EXECUTE FUNCTION account_email_registry_cleanup_doctor();
+
+CREATE TRIGGER trg_account_email_registry_cleanup AFTER DELETE ON admin_accounts
+    FOR EACH ROW EXECUTE FUNCTION account_email_registry_cleanup_admin();
+
 CREATE TABLE appointment_slots (
     slot_id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
     doctor_id UUID NOT NULL REFERENCES doctors(doctor_id) ON DELETE CASCADE,

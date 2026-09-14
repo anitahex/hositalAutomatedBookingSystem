@@ -49,9 +49,9 @@
           </section>
           <section class="signup-step hidden" id="signupStepTwo">
             <div class="form-grid">
-              <label>Name<input id="profileName" type="text" autocomplete="name" required /></label>
+              <label>Name<input id="profileName" type="text" autocomplete="name" minlength="2" maxlength="100" required /></label>
               <label>Age<input id="profileAge" type="number" min="1" max="129" required /></label>
-              <label>Mobile number<input id="profileMobile" type="tel" autocomplete="tel" required /></label>
+              <label>Mobile number<input id="profileMobile" type="tel" autocomplete="tel" pattern="[0-9+()\-\s]{7,20}" maxlength="20" required /></label>
               <label>Email ID<input id="profileEmail" type="email" autocomplete="email" required /></label>
               <label>Blood group
                 <select id="profileBloodGroup" required>
@@ -62,9 +62,10 @@
                   <option>O+</option><option>O-</option>
                 </select>
               </label>
-              <label class="full-width">Address<textarea id="profileAddress" rows="3" required></textarea></label>
+              <label class="full-width">Address<textarea id="profileAddress" rows="3" minlength="5" maxlength="500" required></textarea></label>
               <label class="full-width">Health issues<textarea id="profileHealthIssues" rows="3" placeholder="Optional"></textarea></label>
             </div>
+            <p class="form-hint">Mobile number should contain 7 to 15 digits.</p>
             <div class="form-actions">
               <button class="secondary" id="signupBackBtn" type="button">Back</button>
               <button type="submit">Create account</button>
