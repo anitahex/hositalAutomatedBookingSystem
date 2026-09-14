@@ -356,7 +356,7 @@ python run.py
 
 This repo has undergone a full security/functionality audit — the complete findings live in `FULL_SYSTEM_AUDIT.md` (and known, intentionally-accepted tech debt in `TECH_DEBT.md`). Do not skip reading it before a real deployment. The short version of what's most likely to bite you:
 
-- **TLS/HTTPS is not configured in `nginx.conf`.** Confirm whether TLS terminates in front of this stack (a load balancer/CDN) or whether you need to add it here yourself — `nginx.conf` has a comment with the exact `Strict-Transport-Security` header line to add, but only add it once HTTPS is confirmed working end-to-end, not before (it's deliberately left out today, not just forgotten).
+- **TLS/HTTPS is handled by the `certbot` service + `nginx.conf`'s `:443` block**, obtaining a Let's Encrypt certificate for `165-232-178-215.sslip.io`. That hostname is IP-literal (sslip.io always resolves it to `165.232.178.215`) — whichever host runs this stack **must own that exact IP**, or certificate issuance and HTTPS will fail. `nginx.conf` has a comment with the exact `Strict-Transport-Security` header line to add once HTTPS is confirmed working end-to-end.
 - **The admin panel (`/admin`) has no network-layer restriction** — anyone who obtains admin credentials can reach it from anywhere. `FULL_SYSTEM_AUDIT.md` §"P1 #12" has a ready-to-use nginx IP-allowlist snippet.
 - **Leave `ENABLE_API_DOCS` unset/`false`** in production — it's off by default for a reason (full schema, including admin models, would otherwise be publicly reachable at `/docs`).
 - **`JWT_SECRET` must be a real random value, not left blank.** An unset value falls back to a public, well-known string and logs a warning on every boot — treat that warning as a deploy blocker, not noise.
@@ -397,5 +397,9 @@ alembic downgrade -1
 - **Slot policy**: Only slots more than 30 minutes ahead of the current time are shown; bookings are available for the next 7 days.
 - **Cancellation policy**: Appointments can only be cancelled or rescheduled more than 24 hours before the scheduled time.
 - **Document security**: Uploaded files are stored temporarily in server memory, then moved to Azure Blob Storage after consent confirmation. Original files are not persisted on the server.
+- **Re-deploying to a new host**: `git pull`/`git clone` does not bring over everything needed to run the stack.
+  - `.env` is gitignored and must be copied from the old server manually.
+  - The `certbot_certs` Docker volume is local to each host, so a fresh host starts with no certificate. `frontend-entrypoint.sh` serves a temporary self-signed placeholder until the `certbot` service obtains a real one (same bootstrap flow as the original deploy) — this only succeeds if the new host owns the IP that `165-232-178-215.sslip.io` resolves to, so stop the old host (or otherwise release the IP) before/while starting the new one, since Let's Encrypt's HTTP-01 challenge validates against whichever host currently answers on it.
+  - `models/lid.176.bin` is also not tracked in git — `docker compose build` re-downloads it via `scripts/download_language_model.py`.
 - **State persistence**: LangGraph conversation state is checkpointed to SQLite at `/app/data/checkpoints.sqlite` (controlled by the `CHECKPOINT_DB_PATH` env var), mounted via the `app_data` Docker volume so state survives container restarts.
 - **Data volumes**: All stateful data (PostgreSQL, Qdrant, checkpoints) is stored in named Docker volumes and is not lost on `docker compose down`. Use `docker compose down -v` to wipe everything.
