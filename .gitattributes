@@ -1,0 +1,4 @@
+# Shell scripts run inside Linux containers — CRLF line endings (from a Windows
+# checkout) break their shebang line and make Docker fail with
+# "exec /entrypoint.sh: no such file or directory".
+*.sh text eol=lf

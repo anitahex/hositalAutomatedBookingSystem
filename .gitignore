@@ -2,6 +2,7 @@
 .env.local
 .env.*.local
 venv/
+.venv/
 __pycache__/
 *.pyc
 .pytest_cache/
@@ -34,3 +35,9 @@ htmlcov/
 # Build-time-downloaded model artifacts (see scripts/download_language_model.py,
 # fetched during the Docker build) — not source, and too large to commit anyway.
 models/
+
+# Local-only Caddy/Compose overrides for testing HTTPS against localhost — both files'
+# own headers say not to deploy or commit them (they swap in a local CA cert instead of
+# real ACME, and publish a debug port). See docker-compose.override.yml for details.
+docker-compose.override.yml
+Caddyfile.local
