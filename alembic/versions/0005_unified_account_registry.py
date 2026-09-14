@@ -8,6 +8,20 @@ depends_on = None
 
 def upgrade():
     op.execute("""
+    -- admin_accounts was previously only ever created lazily by
+    -- app.services.admin_auth.ensure_admin_schema() at runtime, never by a tracked
+    -- migration — so a fresh database (migrations only, no prior app boot) reached
+    -- this point with no admin_accounts table at all and crashed. IF NOT EXISTS
+    -- makes this a no-op on any deployment where the table already exists.
+    CREATE TABLE IF NOT EXISTS admin_accounts (
+      admin_id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+      email TEXT NOT NULL UNIQUE,
+      password_hash TEXT NOT NULL,
+      name TEXT NOT NULL,
+      is_active BOOLEAN NOT NULL DEFAULT TRUE,
+      created_at TIMESTAMP NOT NULL DEFAULT NOW(),
+      updated_at TIMESTAMP NOT NULL DEFAULT NOW()
+    );
     CREATE TABLE account_email_registry (
       email TEXT PRIMARY KEY, account_type TEXT NOT NULL CHECK (account_type IN ('patient','doctor','admin')),
       account_id UUID NOT NULL, created_at TIMESTAMP NOT NULL DEFAULT NOW()

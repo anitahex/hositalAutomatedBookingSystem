@@ -39,6 +39,19 @@ def run_migrations_online() -> None:
     cfg["sqlalchemy.url"] = get_url()
     connectable = engine_from_config(cfg, prefix="sqlalchemy.", poolclass=pool.NullPool)
     with connectable.connect() as connection:
+        # Alembic auto-creates alembic_version with version_num VARCHAR(32) if the
+        # table doesn't exist yet, but this repo's revision ids (e.g.
+        # "0002_add_document_original_filename") are longer than that — a fresh
+        # install would fail past the first migration. Pre-create the table with a
+        # wider column so Alembic just uses it as-is (it only creates the table when
+        # missing, never alters an existing one's width).
+        connection.exec_driver_sql(
+            "CREATE TABLE IF NOT EXISTS alembic_version ("
+            "version_num VARCHAR(255) NOT NULL, "
+            "CONSTRAINT alembic_version_pkc PRIMARY KEY (version_num)"
+            ")"
+        )
+        connection.commit()
         context.configure(connection=connection, target_metadata=target_metadata)
         with context.begin_transaction():
             context.run_migrations()
