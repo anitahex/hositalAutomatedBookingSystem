@@ -147,7 +147,6 @@ hositalAutomatedBookingSystem/
 ├── docker-compose.yml
 ├── Dockerfile                     # Python 3.11 backend image
 ├── docker-entrypoint.sh           # Migrations + data ingestion + server start
-├── deploy/nginx/                  # Reference server block for the host's reverse proxy
 ├── requirements.txt
 ├── run.py                         # Local dev entry point
 ├── doctors_roster.csv             # Seed data: doctors & departments
@@ -355,7 +354,9 @@ python run.py
 
 This repo has undergone a full security/functionality audit — the complete findings live in `FULL_SYSTEM_AUDIT.md` (and known, intentionally-accepted tech debt in `TECH_DEBT.md`). Do not skip reading it before a real deployment. The short version of what's most likely to bite you:
 
-- **This stack does not terminate TLS and must never own `:80`/`:443`.** It is deployed on a shared host whose nginx already fronts ~40 other sites. The contract is `internet -> host nginx (TLS) -> 127.0.0.1:8010 -> backend`; `docker-compose.yml` publishes the backend on loopback to match, and `deploy/nginx/hospital-booking.conf` is a version-controlled reference of that server block (the authoritative copy lives on the host under `/etc/nginx/sites-available/`). Certificates are issued/renewed by the host's own certbot, shared with those other sites — nothing in this repo manages them. Binding `:80`/`:443` from this stack would take down every other site on that box.
+- **The app is served directly on `:8010` over plain HTTP** — `http://<host>:8010/`. The backend serves every route itself (`/`, `/static/*`, the API, the WebSockets), so there is no proxy layer and nothing in this repo terminates TLS.
+- **This stack must never bind `:80`/`:443`.** The deployment host is a shared box whose own nginx fronts ~40 unrelated sites on those ports. That nginx has no server block for this app and is not in its request path at all; binding those ports here would take every one of those sites down.
+- **No TLS means traffic is in the clear**, including patient logins, admin credentials, JWTs and consult data. For anything beyond testing, put this behind TLS — the lowest-disruption route on that shared host is to add one server block to the existing nginx for a real hostname, proxying to `127.0.0.1:8010`, and let its existing certbot issue the certificate. That touches none of the other sites.
 - **The admin panel (`/admin`) has no network-layer restriction** — anyone who obtains admin credentials can reach it from anywhere. `FULL_SYSTEM_AUDIT.md` §"P1 #12" has a ready-to-use nginx IP-allowlist snippet, which applies directly since the host proxy is nginx.
 - **Leave `ENABLE_API_DOCS` unset/`false`** in production — it's off by default for a reason (full schema, including admin models, would otherwise be publicly reachable at `/docs`).
 - **`JWT_SECRET` must be a real random value, not left blank.** An unset value falls back to a public, well-known string and logs a warning on every boot — treat that warning as a deploy blocker, not noise.

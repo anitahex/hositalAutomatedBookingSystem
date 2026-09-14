@@ -39,13 +39,15 @@ services:
       QDRANT_URL: http://qdrant:6333
       CHECKPOINT_DB_PATH: /app/data/checkpoints.sqlite
     ports:
-      # TLS and public routing are handled by a reverse proxy on the host, NOT by
-      # this stack — the deployment target is a shared box whose nginx already
-      # fronts ~40 other sites, so this app can never own :80/:443. Bound to
-      # loopback so only that local proxy can reach it, never the public internet.
-      # The host proxy forwards to this port; if yours uses a different one,
-      # change the left-hand side only.
-      - "127.0.0.1:8010:8010"
+      # Served directly on :8010 — this is the app's public URL
+      # (http://<host>:8010/). It deliberately does NOT use the host's nginx: that
+      # nginx fronts ~40 unrelated sites on the same box and has no server block
+      # for this app, so this stack must never bind :80/:443 or it would take those
+      # sites down. The backend serves every route itself (/, /static/*, the API and
+      # the WebSockets), so no proxy layer is needed in front of it.
+      #
+      # NOTE: this is plain HTTP with no TLS. See README's deployment section.
+      - "8010:8010"
     volumes:
       - app_data:/app/data
     depends_on:
