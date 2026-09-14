@@ -54,8 +54,6 @@ def ingest_relational_data():
                     doctor_id = EXCLUDED.doctor_id,
                     start_time = EXCLUDED.start_time,
                     end_time = EXCLUDED.end_time,
-                    is_booked = EXCLUDED.is_booked,
-                    booked_by_patient_id = EXCLUDED.booked_by_patient_id,
                     updated_at = NOW()
                 """,
                 list(
