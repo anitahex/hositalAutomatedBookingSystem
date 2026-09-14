@@ -321,7 +321,7 @@ def build_page_seven() -> str:
         "Azure OpenAI is used for chat generation, routing, summary generation, document relevance checks, and document extraction.",
         "Azure Blob Storage stores staged uploads, vault files, and generated JSON summaries.",
         "Sentence Transformers provide embeddings for vector search, and optional CrossEncoder reranking improves department matching.",
-        "Nginx serves the frontend and reverse-proxies API and WebSocket traffic.",
+        "Caddy terminates HTTPS and reverse-proxies API and WebSocket traffic to the backend, which serves the frontend directly.",
     ]
     for item in items:
         block, y = draw_multiline(72, y, "- " + item, size=11, width=78, line_gap=17)

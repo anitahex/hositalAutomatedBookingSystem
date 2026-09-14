@@ -7,6 +7,8 @@ services:
       POSTGRES_USER: postgres
       POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?POSTGRES_PASSWORD must be set in .env}
       POSTGRES_DB: hospital_db
+    ports:
+      - "5432:5432"
     volumes:
       - postgres_data:/var/lib/postgresql/data
     healthcheck:
@@ -38,36 +40,33 @@ services:
         condition: service_healthy
       qdrant:
         condition: service_started
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://localhost:8010/health', timeout=3)"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+      start_period: 150s
 
   frontend:
     build:
       context: .
       dockerfile: Dockerfile.frontend
+    env_file:
+      - .env
     ports:
       - "80:80"
       - "443:443"
-      - "8010:80"   # kept so old bookmarks still work — nginx now 301-redirects this to https
+      - "8010:80"   # kept so old bookmarks still work — Caddy 301-redirects this to https
     volumes:
-      - certbot_certs:/etc/letsencrypt
-      - certbot_webroot:/var/www/certbot
+      - caddy_data:/data
+      - caddy_config:/config
     depends_on:
-      - backend
-
-  certbot:
-    image: certbot/certbot:latest
-    env_file:
-      - .env
-    volumes:
-      - certbot_certs:/etc/letsencrypt
-      - certbot_webroot:/var/www/certbot
-      - ./certbot-entrypoint.sh:/certbot-entrypoint.sh:ro
-    entrypoint: ["/bin/sh", "/certbot-entrypoint.sh"]
-    depends_on:
-      - frontend
+      backend:
+        condition: service_healthy
 
 volumes:
   postgres_data:
   qdrant_data:
   app_data:
-  certbot_certs:
-  certbot_webroot:
+  caddy_data:
+  caddy_config:

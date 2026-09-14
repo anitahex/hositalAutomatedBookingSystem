@@ -146,9 +146,9 @@ hositalAutomatedBookingSystem/
 │   └── env.py
 ├── docker-compose.yml
 ├── Dockerfile                     # Python 3.11 backend image
-├── Dockerfile.frontend            # Nginx frontend image
+├── Dockerfile.frontend            # Caddy frontend image
 ├── docker-entrypoint.sh           # Migrations + data ingestion + server start
-├── nginx.conf
+├── Caddyfile
 ├── requirements.txt
 ├── run.py                         # Local dev entry point
 ├── doctors_roster.csv             # Seed data: doctors & departments
@@ -356,8 +356,8 @@ python run.py
 
 This repo has undergone a full security/functionality audit — the complete findings live in `FULL_SYSTEM_AUDIT.md` (and known, intentionally-accepted tech debt in `TECH_DEBT.md`). Do not skip reading it before a real deployment. The short version of what's most likely to bite you:
 
-- **TLS/HTTPS is handled by the `certbot` service + `nginx.conf`'s `:443` block**, obtaining a Let's Encrypt certificate for `165-232-178-215.sslip.io`. That hostname is IP-literal (sslip.io always resolves it to `165.232.178.215`) — whichever host runs this stack **must own that exact IP**, or certificate issuance and HTTPS will fail. `nginx.conf` has a comment with the exact `Strict-Transport-Security` header line to add once HTTPS is confirmed working end-to-end.
-- **The admin panel (`/admin`) has no network-layer restriction** — anyone who obtains admin credentials can reach it from anywhere. `FULL_SYSTEM_AUDIT.md` §"P1 #12" has a ready-to-use nginx IP-allowlist snippet.
+- **TLS/HTTPS is handled by Caddy** (`Caddyfile`), which obtains and renews a Let's Encrypt certificate for `165-232-178-215.sslip.io` automatically — no separate certbot service. That hostname is IP-literal (sslip.io always resolves it to `165.232.178.215`) — whichever host runs this stack **must own that exact IP**, or certificate issuance and HTTPS will fail. Add a `Strict-Transport-Security` header to `Caddyfile`'s `header` block once HTTPS is confirmed working end-to-end.
+- **The admin panel (`/admin`) has no network-layer restriction** — anyone who obtains admin credentials can reach it from anywhere. `FULL_SYSTEM_AUDIT.md` §"P1 #12" has a ready-to-use nginx IP-allowlist snippet — nginx is no longer part of this stack, so that snippet would need translating to Caddy's `remote_ip` matcher if this hardening is ever applied.
 - **Leave `ENABLE_API_DOCS` unset/`false`** in production — it's off by default for a reason (full schema, including admin models, would otherwise be publicly reachable at `/docs`).
 - **`JWT_SECRET` must be a real random value, not left blank.** An unset value falls back to a public, well-known string and logs a warning on every boot — treat that warning as a deploy blocker, not noise.
 - The WhatsApp channel's signature validation (`VALIDATE_TWILIO_WEBHOOK`) can be turned off — never do this outside local testing.

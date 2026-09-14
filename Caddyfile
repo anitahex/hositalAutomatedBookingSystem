@@ -1,0 +1,27 @@
+{
+	# Falls back to a placeholder if LETSENCRYPT_EMAIL isn't set (e.g. local dev) so Caddy
+	# still starts — {$VAR} alone expands to nothing when unset, which is a Caddyfile parse
+	# error for a directive that requires an argument.
+	email {$LETSENCRYPT_EMAIL:you@example.com}
+}
+
+165-232-178-215.sslip.io {
+	# Baseline security headers, carried over from the old nginx.conf (FULL_SYSTEM_AUDIT.md P0 #3).
+	# microphone=(self) is required for the doctor consult audio recording feature (getUserMedia);
+	# everything else this app doesn't use is denied outright.
+	header {
+		X-Content-Type-Options "nosniff"
+		X-Frame-Options "SAMEORIGIN"
+		Referrer-Policy "strict-origin-when-cross-origin"
+		Permissions-Policy "microphone=(self), camera=(), geolocation=(), payment=(), usb=()"
+		# 'unsafe-inline' for script-src/style-src is required by this app's existing inline
+		# <script> in index.html and inline style="" attributes throughout. connect-src allows
+		# ws:/wss: for the consult-audio and chat-stream WebSocket/SSE connections.
+		Content-Security-Policy "default-src 'self'; script-src 'self' 'unsafe-inline'; style-src 'self' 'unsafe-inline'; img-src 'self' data: blob:; font-src 'self'; connect-src 'self' ws: wss:; frame-ancestors 'self'; base-uri 'self'; form-action 'self'"
+	}
+
+	# The backend serves 100% of the routes itself (/, /static/*, /doctor/set-password, API,
+	# WebSockets) — see app/api/main.py — so this is a pure reverse proxy. Caddy detects
+	# WebSocket upgrade requests automatically; no special config needed.
+	reverse_proxy backend:8010
+}
