@@ -26,6 +26,13 @@ from app.services.doctor_auth import (
     list_doctor_auth_audit_log,
     unlock_doctor_account,
 )
+from app.services.account_registry import list_unified_auth_audit_log
+from app.services.patient_mfa import (
+    list_admin_patient_actions_log,
+    list_patient_auth_audit_log,
+    reset_patient_mfa,
+    unlock_patient_login,
+)
 
 
 router = APIRouter()
@@ -252,6 +259,29 @@ def admin_unlock_doctor(doctor_id: str, admin: dict = Depends(current_admin)):
     return {"status": "unlocked"}
 
 
+@router.post("/patients/{patient_id}/mfa/reset")
+def admin_reset_patient_mfa(patient_id: str, admin: dict = Depends(current_admin)):
+    """Support path for a locked-out patient — force-disables MFA without requiring
+    their password or a live TOTP/backup code. Mirrors admin_unlock_doctor's shape."""
+    try:
+        reset_patient_mfa(patient_id, actor_email=admin["email"])
+    except ValueError as exc:
+        raise HTTPException(status_code=404, detail=str(exc))
+    return {"status": "mfa_reset"}
+
+
+@router.post("/patients/{patient_id}/unlock")
+def admin_unlock_patient(patient_id: str, admin: dict = Depends(current_admin)):
+    """Clear a patient's brute-force lockout, including the escalation rung — the
+    support path for someone locked out who can't wait it out or reach their email.
+    Mirrors admin_unlock_doctor."""
+    try:
+        unlock_patient_login(patient_id, actor_email=admin["email"])
+    except ValueError as exc:
+        raise HTTPException(status_code=404, detail=str(exc))
+    return {"status": "unlocked"}
+
+
 @router.get("/doctor-auth-audit-log")
 def admin_doctor_auth_audit_log(
     admin: dict = Depends(current_admin),
@@ -263,6 +293,56 @@ def admin_doctor_auth_audit_log(
 ):
     return list_doctor_auth_audit_log(
         doctor_id=doctor_id, start_date=start_date, end_date=end_date, page=page, page_size=page_size,
+    )
+
+
+@router.get("/patient-auth-audit-log")
+def admin_patient_auth_audit_log(
+    admin: dict = Depends(current_admin),
+    patient_id: str | None = Query(default=None),
+    start_date: date | None = Query(default=None),
+    end_date: date | None = Query(default=None),
+    page: int = Query(default=1, ge=1),
+    page_size: int = Query(default=50, ge=1, le=200),
+):
+    """Patient self-service security events (password changed, MFA enabled/disabled,
+    backup codes regenerated)."""
+    return list_patient_auth_audit_log(
+        patient_id=patient_id, start_date=start_date, end_date=end_date, page=page, page_size=page_size,
+    )
+
+
+@router.get("/patient-actions-log")
+def admin_patient_actions_log(
+    admin: dict = Depends(current_admin),
+    patient_id: str | None = Query(default=None),
+    start_date: date | None = Query(default=None),
+    end_date: date | None = Query(default=None),
+    page: int = Query(default=1, ge=1),
+    page_size: int = Query(default=50, ge=1, le=200),
+):
+    """Admin-initiated actions on patient accounts (e.g. MFA reset) — previously
+    write-only, no read path existed."""
+    return list_admin_patient_actions_log(
+        patient_id=patient_id, start_date=start_date, end_date=end_date, page=page, page_size=page_size,
+    )
+
+
+@router.get("/login-audit-log")
+def admin_login_audit_log(
+    admin: dict = Depends(current_admin),
+    email: str | None = Query(default=None),
+    account_type: str | None = Query(default=None),
+    start_date: date | None = Query(default=None),
+    end_date: date | None = Query(default=None),
+    page: int = Query(default=1, ge=1),
+    page_size: int = Query(default=50, ge=1, le=200),
+):
+    """Login success/failure across every role — previously write-only, no read path
+    existed."""
+    return list_unified_auth_audit_log(
+        email=email, account_type=account_type, start_date=start_date, end_date=end_date,
+        page=page, page_size=page_size,
     )
 
 

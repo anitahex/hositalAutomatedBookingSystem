@@ -393,7 +393,7 @@ alembic downgrade -1
 
 ## Deployment Notes
 
-- **Timezone**: The backend stores all timestamps in UTC. Slot times are converted to IST (UTC+5:30) before being sent to the frontend.
+- **Timezone**: Appointment and chat timestamps are naive (no timezone type) and are stored and compared as India-local (IST) clock values — enforced by pinning the `postgres` service's session `timezone` to `Asia/Kolkata` and the `backend` container's `TZ` to the same in `docker-compose.yml`, rather than by storing UTC and converting on the way out.
 - **Slot policy**: Only slots more than 30 minutes ahead of the current time are shown; bookings are available for the next 7 days.
 - **Cancellation policy**: Appointments can only be cancelled or rescheduled more than 24 hours before the scheduled time.
 - **Document security**: Uploaded files are stored temporarily in server memory, then moved to Azure Blob Storage after consent confirmation. Original files are not persisted on the server.

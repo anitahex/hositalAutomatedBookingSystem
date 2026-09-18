@@ -5,17 +5,18 @@ from uuid import UUID
 from app.db.connection import connect_db
 from app.services.passwords import hash_password, verify_password
 from app.services.account_registry import ensure_registry_schema, reserve_email
+from app.services.login_lockout import (
+    AccountLockedError,
+    check_lockout,
+    clear_lockout,
+    ensure_lockout_schema,
+    record_failure,
+)
 
 
 PASSWORD_PATTERN = re.compile(
     r"^(?=.*[a-z])(?=.*[A-Z])(?=.*\d)(?=.*[^A-Za-z0-9]).{8,}$"
 )
-
-# Intentionally mirrors app/services/doctor_auth.py's LOCKOUT_THRESHOLD/LOCKOUT_DURATION
-# (not imported from there — doctor_auth.py already imports from this module, and
-# importing back would create a circular dependency).
-LOCKOUT_THRESHOLD = 5
-LOCKOUT_DURATION = timedelta(minutes=30)
 
 
 def normalize_mobile_number(value: str | None) -> str:
@@ -31,7 +32,32 @@ def normalize_mobile_number(value: str | None) -> str:
     return digits
 
 
+def normalize_mobile_number_india(value: str | None) -> str | None:
+    """Strict India-specific normalization for patient_profiles.mobile_number_normalized.
+
+    Deliberately separate from normalize_mobile_number above (used for WhatsApp-sender
+    matching, with more lenient semantics other code already depends on — not changed).
+    Returns None — never guessed — for anything outside these three exact shapes:
+      - 10 digits                   -> +91<digits>
+      - leading 0 + 11 digits total -> +91<digits without the leading 0>
+      - 12 digits starting with 91  -> +<digits>
+    """
+    raw = str(value or "").strip()
+    if raw.lower().startswith("whatsapp:"):
+        raw = raw.split(":", 1)[1]
+    digits = re.sub(r"\D", "", raw)
+
+    if len(digits) == 10:
+        return f"+91{digits}"
+    if len(digits) == 11 and digits.startswith("0"):
+        return f"+91{digits[1:]}"
+    if len(digits) == 12 and digits.startswith("91"):
+        return f"+{digits}"
+    return None
+
+
 def ensure_user_schema(conn):
+    ensure_lockout_schema(conn)
     with conn.cursor() as cur:
         cur.execute(
             """
@@ -41,12 +67,24 @@ def ensure_user_schema(conn):
                 user_id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
                 email TEXT NOT NULL UNIQUE,
                 password_hash TEXT NOT NULL,
-                failed_login_attempts INTEGER NOT NULL DEFAULT 0,
-                locked_until TIMESTAMP,
                 created_at TIMESTAMP NOT NULL DEFAULT NOW()
             );
-            ALTER TABLE users ADD COLUMN IF NOT EXISTS failed_login_attempts INTEGER NOT NULL DEFAULT 0;
-            ALTER TABLE users ADD COLUMN IF NOT EXISTS locked_until TIMESTAMP;
+            -- DEFAULT TRUE so pre-existing accounts are grandfathered in and never
+            -- retroactively locked out; new signups explicitly insert FALSE (see
+            -- create_user_with_profile) and only flip to TRUE once the emailed code
+            -- is confirmed (app/services/email_verification.py).
+            ALTER TABLE users ADD COLUMN IF NOT EXISTS email_verified BOOLEAN NOT NULL DEFAULT TRUE;
+            -- Nullable, no default: NULL means "never changed" and current_user treats
+            -- that as no invalidation, so existing accounts are never force-logged-out.
+            ALTER TABLE users ADD COLUMN IF NOT EXISTS password_changed_at TIMESTAMP;
+            -- Owned in detail by app/services/patient_mfa.py::ensure_mfa_schema;
+            -- declared here too (same redundant-safety-net convention as every other
+            -- ensure_*_schema in this codebase) so get_user_profile's SELECT below is
+            -- safe even if patient_mfa.py's own ensure call hasn't run yet on this
+            -- connection.
+            ALTER TABLE users ADD COLUMN IF NOT EXISTS mfa_enabled BOOLEAN NOT NULL DEFAULT FALSE;
+            ALTER TABLE users ADD COLUMN IF NOT EXISTS mfa_secret_encrypted TEXT;
+            ALTER TABLE users ADD COLUMN IF NOT EXISTS last_totp_step BIGINT;
 
             CREATE TABLE IF NOT EXISTS patient_profiles (
                 user_id UUID PRIMARY KEY REFERENCES users(user_id) ON DELETE CASCADE,
@@ -61,6 +99,15 @@ def ensure_user_schema(conn):
                 updated_at TIMESTAMP NOT NULL DEFAULT NOW()
             );
             ALTER TABLE patient_profiles ADD COLUMN IF NOT EXISTS preferred_language TEXT NOT NULL DEFAULT 'en';
+            -- Nullable, no default: populated going forward at signup/profile-update
+            -- time (normalize_mobile_number_india), backfilled separately for
+            -- existing rows via scripts/backfill_mobile_number_normalized.py.
+            ALTER TABLE patient_profiles ADD COLUMN IF NOT EXISTS mobile_number_normalized TEXT;
+            -- Split out of name for the editable profile form (migration 0020); name
+            -- itself is kept in sync as the combined value for every other reader.
+            ALTER TABLE patient_profiles ADD COLUMN IF NOT EXISTS first_name TEXT;
+            ALTER TABLE patient_profiles ADD COLUMN IF NOT EXISTS last_name TEXT;
+            ALTER TABLE patient_profiles ADD COLUMN IF NOT EXISTS gender TEXT;
             """
         )
 
@@ -106,8 +153,8 @@ def create_user_with_profile(
             with conn.cursor() as cur:
                 cur.execute(
                     """
-                    INSERT INTO users (email, password_hash)
-                    VALUES (%s, %s)
+                    INSERT INTO users (email, password_hash, email_verified)
+                    VALUES (%s, %s, FALSE)
                     RETURNING user_id;
                     """,
                     (email, hash_password(password)),
@@ -121,19 +168,21 @@ def create_user_with_profile(
                         name,
                         age,
                         mobile_number,
+                        mobile_number_normalized,
                         address,
                         email,
                         blood_group,
                         health_issues,
                         preferred_language
                     )
-                    VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s);
+                    VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s);
                     """,
                     (
                         user_id,
                         name.strip(),
                         age,
                         mobile_number.strip(),
+                        normalize_mobile_number_india(mobile_number),
                         address.strip(),
                         profile_email,
                         blood_group.strip(),
@@ -149,24 +198,50 @@ def create_user_with_profile(
     return get_user_profile(str(user_id))
 
 
+VALID_GENDERS = ("male", "female", "other", "prefer_not_to_say")
+
+
 def update_patient_profile(
     patient_id: str,
     *,
+    first_name: str | None = None,
+    last_name: str | None = None,
+    age: int | None = None,
+    gender: str | None = None,
     health_issues: str | None = None,
-    mobile_number: str | None = None,
     address: str | None = None,
     preferred_language: str | None = None,
 ):
-    """Update editable profile fields. Only supplied (non-None) fields are changed."""
+    """Update editable profile fields. Only supplied (non-None) fields are changed.
+
+    Email and mobile number are deliberately absent: both identify the account (email is
+    the login and the address every verification/OTP goes to, mobile is the WhatsApp
+    sender key and is uniquely indexed), so they are fixed here and would need a
+    verified change flow of their own rather than a silent profile edit.
+    """
     updates: list[str] = []
     params: list = []
 
+    if first_name is not None:
+        updates.append("first_name = %s")
+        params.append(first_name.strip() or None)
+    if last_name is not None:
+        updates.append("last_name = %s")
+        params.append(last_name.strip() or None)
+    if age is not None:
+        if not 0 < int(age) < 130:
+            raise ValueError("Age must be between 1 and 129.")
+        updates.append("age = %s")
+        params.append(int(age))
+    if gender is not None:
+        normalized_gender = gender.strip().lower().replace(" ", "_") or None
+        if normalized_gender and normalized_gender not in VALID_GENDERS:
+            raise ValueError("Gender must be one of: " + ", ".join(VALID_GENDERS))
+        updates.append("gender = %s")
+        params.append(normalized_gender)
     if health_issues is not None:
         updates.append("health_issues = %s")
         params.append((health_issues.strip() or None))
-    if mobile_number is not None:
-        updates.append("mobile_number = %s")
-        params.append(mobile_number.strip() or None)
     if address is not None:
         updates.append("address = %s")
         params.append(address.strip() or None)
@@ -176,6 +251,17 @@ def update_patient_profile(
 
     if not updates:
         return get_user_profile(patient_id)
+
+    # name stays the combined value so the chat greeting, admin cards and doctor views
+    # keep working off the single column they already read. COALESCE against the stored
+    # halves so updating only one of them still rebuilds the whole thing correctly.
+    if first_name is not None or last_name is not None:
+        updates.append(
+            "name = NULLIF(trim(concat_ws(' ', "
+            "COALESCE(%s, first_name), COALESCE(%s, last_name))), '')"
+        )
+        params.append(first_name.strip() if first_name is not None else None)
+        params.append(last_name.strip() if last_name is not None else None)
 
     params.append(patient_id)
     with connect_db() as conn:
@@ -192,58 +278,57 @@ def update_patient_profile(
 
 
 def authenticate_user(email: str, password: str):
-    """Verify patient credentials with the same brute-force lockout convention as
-    doctor/admin login (app/services/doctor_auth.py): a row-locked read, a failure
-    counter, and a temporary lockout after LOCKOUT_THRESHOLD consecutive failures.
-    Returns None (never a distinguishing error) for unknown email, wrong password,
-    or an active lockout — this deliberately avoids revealing account state to an
-    unauthenticated caller, matching authenticate_doctor_password's behavior."""
+    """Verify patient credentials behind the shared escalating lockout
+    (app/services/login_lockout.py).
+
+    Returns None for an unknown email or a wrong password — never a distinguishing
+    error. An account that is currently locked out raises AccountLockedError instead,
+    carrying the seconds remaining so the caller can say how long rather than claiming
+    the password was wrong; note that unknown emails accumulate failures and lock on
+    exactly the same schedule, so that distinction still leaks nothing.
+    """
     email = _normalise_email(email)
     with connect_db() as conn:
         try:
             ensure_user_schema(conn)
+            ensure_lockout_schema(conn)
             with conn.cursor() as cur:
+                check_lockout(cur, email)
+
                 cur.execute(
-                    """
-                    SELECT user_id, password_hash, failed_login_attempts, locked_until
-                    FROM users
-                    WHERE email = %s
-                    FOR UPDATE;
-                    """,
+                    "SELECT user_id, password_hash FROM users WHERE email = %s FOR UPDATE;",
                     (email,),
                 )
                 row = cur.fetchone()
 
-                if not row:
+                if not row or not verify_password(password, row[1]):
+                    record_failure(cur, email)
                     conn.commit()
                     return None
 
-                user_id, password_hash, failures, locked_until = row
-                now = datetime.now()
-                if locked_until and locked_until > now:
-                    conn.commit()
-                    return None
-
-                if not verify_password(password, password_hash):
-                    failures = int(failures or 0) + 1
-                    locked = now + LOCKOUT_DURATION if failures >= LOCKOUT_THRESHOLD else None
-                    cur.execute(
-                        "UPDATE users SET failed_login_attempts = %s, locked_until = %s WHERE user_id = %s;",
-                        (failures, locked, user_id),
-                    )
-                    conn.commit()
-                    return None
-
-                cur.execute(
-                    "UPDATE users SET failed_login_attempts = 0, locked_until = NULL WHERE user_id = %s;",
-                    (user_id,),
-                )
+                user_id = row[0]
+                clear_lockout(cur, email)
             conn.commit()
+        except AccountLockedError:
+            conn.rollback()
+            raise
         except Exception:
             conn.rollback()
             raise
 
     return get_user_profile(str(user_id))
+
+
+def verify_current_password(user_id: str, current_password: str) -> bool:
+    """Identity check only — does not change anything. Step 1 of the OTP-gated
+    change-password flow (app/services/password_reset.py handles step 2, the actual
+    update, once the OTP is confirmed)."""
+    with connect_db() as conn:
+        ensure_user_schema(conn)
+        with conn.cursor() as cur:
+            cur.execute("SELECT password_hash FROM users WHERE user_id = %s;", (user_id,))
+            row = cur.fetchone()
+    return bool(row) and verify_password(current_password, row[0])
 
 
 def get_user_profile(user_id: str):
@@ -261,13 +346,19 @@ def get_user_profile(user_id: str):
                     u.user_id,
                     u.email,
                     p.name,
+                    p.first_name,
+                    p.last_name,
+                    p.gender,
                     p.age,
                     p.mobile_number,
                     p.address,
                     p.email,
                     p.blood_group,
                     p.health_issues,
-                    p.preferred_language
+                    p.preferred_language,
+                    u.email_verified,
+                    u.password_changed_at,
+                    u.mfa_enabled
                 FROM users u
                 JOIN patient_profiles p ON p.user_id = u.user_id
                 WHERE u.user_id = %s;
@@ -283,6 +374,9 @@ def get_user_profile(user_id: str):
         profile_user_id,
         login_email,
         name,
+        first_name,
+        last_name,
+        gender,
         age,
         mobile_number,
         address,
@@ -290,12 +384,18 @@ def get_user_profile(user_id: str):
         blood_group,
         health_issues,
         preferred_language,
+        email_verified,
+        password_changed_at,
+        mfa_enabled,
     ) = row
 
     return {
         "patient_id": str(profile_user_id),
         "login_email": login_email,
         "name": name,
+        "first_name": first_name,
+        "last_name": last_name,
+        "gender": gender,
         "age": age,
         "mobile_number": mobile_number,
         "address": address,
@@ -303,6 +403,9 @@ def get_user_profile(user_id: str):
         "blood_group": blood_group,
         "health_issues": health_issues,
         "preferred_language": preferred_language or "en",
+        "email_verified": bool(email_verified),
+        "password_changed_at": password_changed_at,
+        "mfa_enabled": bool(mfa_enabled),
     }
 
 

@@ -139,12 +139,13 @@ def list_doctors(limit: int = 500):
                     da.email AS account_email,
                     da.is_active AS account_active,
                     da.mfa_enabled AS mfa_enabled,
-                    da.locked_until AS locked_until
+                    ll.locked_until AS locked_until
                 FROM doctors d
                 LEFT JOIN appointment_slots s ON s.doctor_id = d.doctor_id
                 LEFT JOIN doctor_accounts da ON da.doctor_id = d.doctor_id
+                LEFT JOIN login_lockouts ll ON ll.email = da.email
                 GROUP BY d.doctor_id, d.name, d.department, d.experience_years, d.is_active,
-                    da.id, da.email, da.is_active, da.mfa_enabled, da.locked_until
+                    da.id, da.email, da.is_active, da.mfa_enabled, ll.locked_until
                 ORDER BY d.department ASC, d.name ASC
                 LIMIT %s;
                 """,
@@ -226,13 +227,14 @@ def get_doctor(doctor_id: str):
                     da.email AS account_email,
                     da.is_active AS account_active,
                     da.mfa_enabled AS mfa_enabled,
-                    da.locked_until AS locked_until
+                    ll.locked_until AS locked_until
                 FROM doctors d
                 LEFT JOIN appointment_slots s ON s.doctor_id = d.doctor_id
                 LEFT JOIN doctor_accounts da ON da.doctor_id = d.doctor_id
+                LEFT JOIN login_lockouts ll ON ll.email = da.email
                 WHERE d.doctor_id::text = %s
                 GROUP BY d.doctor_id, d.name, d.department, d.experience_years, d.is_active,
-                    da.id, da.email, da.is_active, da.mfa_enabled, da.locked_until;
+                    da.id, da.email, da.is_active, da.mfa_enabled, ll.locked_until;
                 """,
                 (doctor_id,),
             )

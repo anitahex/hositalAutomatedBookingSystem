@@ -104,7 +104,11 @@ def load_chat_sessions_with_messages(patient_id: str, limit: int = 100):
 
     messages = []
     for chat_session_id, role, text, created_at in reversed(rows):
-        created_at_iso = created_at.isoformat()
+        # created_at is a naive India-local (IST) timestamp — the postgres session
+        # timezone is pinned to Asia/Kolkata (see docker-compose.yml), so NOW()-derived
+        # values here are genuinely IST. Label it explicitly, matching how
+        # appointment_booker.py's _slots_to_ist labels appointment-slot timestamps.
+        created_at_iso = created_at.isoformat() + "+05:30"
         session_id = chat_session_id or f"legacy-{created_at_iso[:10]}"
         messages.append(
             {

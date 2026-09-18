@@ -94,6 +94,11 @@ const adminAppointmentsPane = document.querySelector("#adminAppointmentsPane");
 const adminManagePane = document.querySelector("#adminManagePane");
 const adminInventoryPane = document.querySelector("#adminInventoryPane");
 const adminAuditPane = document.querySelector("#adminAuditPane");
+const adminAuditLogType = document.querySelector("#adminAuditLogType");
+const adminAuditDoctorFilterField = document.querySelector("#adminAuditDoctorFilterField");
+const adminAuditIdentifierFilterField = document.querySelector("#adminAuditIdentifierFilterField");
+const adminAuditIdentifierFilter = document.querySelector("#adminAuditIdentifierFilter");
+const adminAuditIdentifierLabel = document.querySelector("#adminAuditIdentifierLabel");
 const adminAuditDoctorFilter = document.querySelector("#adminAuditDoctorFilter");
 const adminAuditStartDate = document.querySelector("#adminAuditStartDate");
 const adminAuditEndDate = document.querySelector("#adminAuditEndDate");
@@ -106,8 +111,10 @@ const adminAuditPageIndicator = document.querySelector("#adminAuditPageIndicator
 const adminStatusButtons = Array.from(document.querySelectorAll("[data-admin-status]"));
 const adminRefreshLabel = adminRefreshBtn?.querySelector(".admin-action-label") || null;
 const adminToast = document.querySelector("#adminToast");
+const appToast = document.querySelector("#appToast");
 let adminRefreshResetTimer = null;
 let adminToastTimer = null;
+let appToastTimer = null;
 const profilePanel = document.querySelector("#profilePanel");
 const profilePanelTitle = document.querySelector("#profilePanelTitle");
 const profilePanelBody = document.querySelector("#profilePanelBody");
@@ -238,10 +245,40 @@ const signupStepOne = document.querySelector("#signupStepOne");
 const signupStepTwo = document.querySelector("#signupStepTwo");
 const signupNextBtn = document.querySelector("#signupNextBtn");
 const signupBackBtn = document.querySelector("#signupBackBtn");
+const patientVerifyForm = document.querySelector("#patientVerifyForm");
+const patientVerifyHint = document.querySelector("#patientVerifyHint");
+const patientVerifyCode = document.querySelector("#patientVerifyCode");
+const patientVerifyResendBtn = document.querySelector("#patientVerifyResendBtn");
+const patientMfaForm = document.querySelector("#patientMfaForm");
+const patientMfaCode = document.querySelector("#patientMfaCode");
+const patientMfaBackBtn = document.querySelector("#patientMfaBackBtn");
+const showForgotPasswordBtn = document.querySelector("#showForgotPasswordBtn");
+const forgotPasswordStartForm = document.querySelector("#forgotPasswordStartForm");
+const forgotPasswordIdentifier = document.querySelector("#forgotPasswordIdentifier");
+const forgotPasswordStartBackBtn = document.querySelector("#forgotPasswordStartBackBtn");
+const forgotPasswordConfirmEmailForm = document.querySelector("#forgotPasswordConfirmEmailForm");
+const forgotPasswordConfirmEmailHint = document.querySelector("#forgotPasswordConfirmEmailHint");
+const forgotPasswordConfirmEmail = document.querySelector("#forgotPasswordConfirmEmail");
+const forgotPasswordConfirmEmailBackBtn = document.querySelector("#forgotPasswordConfirmEmailBackBtn");
+const resetPasswordForm = document.querySelector("#resetPasswordForm");
+const resetPasswordCode = document.querySelector("#resetPasswordCode");
+const resetPasswordNew = document.querySelector("#resetPasswordNew");
+const resetPasswordConfirm = document.querySelector("#resetPasswordConfirm");
+const resetPasswordResendBtn = document.querySelector("#resetPasswordResendBtn");
+const resetPasswordCountdown = document.querySelector("#resetPasswordCountdown");
+const resetPasswordBackBtn = document.querySelector("#resetPasswordBackBtn");
 const authMessage = document.querySelector("#authMessage");
 const adminAuthMessage = document.querySelector("#adminAuthMessage");
 let doctorMfaToken = null;
 let doctorMfaUsingRecoveryCode = false;
+let patientVerifyToken = null;
+let patientMfaToken = null;
+let resetPasswordCountdownCancel = null;
+let secChangePasswordCountdownCancel = null;
+let loginLockoutCountdownCancel = null;
+const loginLockoutCountdown = document.querySelector("#loginLockoutCountdown");
+let resetEmail = null;
+let resetPendingMobileNumber = null;
 let pendingInviteToken = null;
 let doctorMfaEnrollmentToken = null;
 let doctorRecoveryCodesInMemory = null;
@@ -268,8 +305,10 @@ let consultPendingFrames = [];
 let state = null;
 let currentUser = JSON.parse(localStorage.getItem("currentUser") || "null");
 let accessToken = localStorage.getItem("accessToken");
+let refreshToken = localStorage.getItem("refreshToken");
 let currentAdmin = JSON.parse(localStorage.getItem("currentAdmin") || "null");
 let adminAccessToken = localStorage.getItem("adminAccessToken");
+let adminRefreshToken = localStorage.getItem("adminRefreshToken");
 let doctorAccessToken = localStorage.getItem("doctorAccessToken");
 let patientId = currentUser?.patient_id || null;
 let adminAuditPage = 1;
@@ -598,6 +637,113 @@ function showAdminToast(message, tone = "success", timeoutMs = 1800) {
   }, timeoutMs);
 }
 
+function showAppToast(message, tone = "success", timeoutMs = 3000) {
+  if (!appToast || !message) return;
+
+  if (appToastTimer) {
+    window.clearTimeout(appToastTimer);
+    appToastTimer = null;
+  }
+
+  appToast.textContent = message;
+  appToast.className = `app-toast is-${tone} enter`;
+  appToast.classList.remove("hidden");
+
+  appToastTimer = window.setTimeout(() => {
+    appToast.classList.add("hidden");
+    appToast.classList.remove("enter");
+    appToastTimer = null;
+  }, timeoutMs);
+}
+
+// Mirrors app/services/password_reset.py::RESEND_COOLDOWN_SECONDS — the initial
+// otp_sent responses (forgot-password/start, confirm-email) don't echo back
+// retry_after_seconds (only an explicit resend does), so this is the known starting
+// point for the countdown; every actual resend then re-syncs to the server's real value.
+const OTP_RESEND_COOLDOWN_SECONDS = 240;
+
+function beginLoginLockoutCountdown(seconds) {
+  if (loginLockoutCountdownCancel) {
+    loginLockoutCountdownCancel();
+    loginLockoutCountdownCancel = null;
+  }
+  const submitBtn = loginForm?.querySelector("button[type='submit']");
+  if (submitBtn) submitBtn.disabled = true;
+  loginLockoutCountdownCancel = startCountdown(
+    loginLockoutCountdown,
+    seconds,
+    () => {
+      if (submitBtn) submitBtn.disabled = false;
+      loginLockoutCountdownCancel = null;
+    },
+    "Too many failed attempts. Try again in",
+  );
+}
+
+function beginResetPasswordCountdown(seconds) {
+  if (resetPasswordCountdownCancel) {
+    resetPasswordCountdownCancel();
+    resetPasswordCountdownCancel = null;
+  }
+  if (resetPasswordResendBtn) resetPasswordResendBtn.disabled = true;
+  resetPasswordCountdownCancel = startCountdown(resetPasswordCountdown, seconds, () => {
+    if (resetPasswordResendBtn) resetPasswordResendBtn.disabled = false;
+  });
+}
+
+function attachPasswordToggle(input) {
+  if (!input || input.dataset.toggleAttached) return;
+  input.dataset.toggleAttached = "true";
+
+  const wrap = document.createElement("span");
+  wrap.className = "password-field-wrap";
+  input.parentNode.insertBefore(wrap, input);
+  wrap.appendChild(input);
+
+  const btn = document.createElement("button");
+  btn.type = "button";
+  btn.className = "password-toggle-btn";
+  btn.textContent = "Show";
+  btn.setAttribute("aria-label", "Show password");
+  btn.addEventListener("click", () => {
+    const showing = input.type === "text";
+    input.type = showing ? "password" : "text";
+    btn.textContent = showing ? "Show" : "Hide";
+    btn.setAttribute("aria-label", showing ? "Show password" : "Hide password");
+  });
+  wrap.appendChild(btn);
+}
+
+function wireAllPasswordToggles(root = document) {
+  root.querySelectorAll('input[type="password"]').forEach(attachPasswordToggle);
+}
+
+function startCountdown(el, seconds, onExpire, label = "Resend available in") {
+  if (!el) return () => {};
+  let remaining = Math.max(0, Math.ceil(seconds));
+
+  const render = () => {
+    const mm = String(Math.floor(remaining / 60)).padStart(2, "0");
+    const ss = String(remaining % 60).padStart(2, "0");
+    el.textContent = remaining > 0 ? `${label} ${mm}:${ss}` : "";
+  };
+
+  render();
+  const intervalId = window.setInterval(() => {
+    remaining -= 1;
+    if (remaining <= 0) {
+      remaining = 0;
+      render();
+      window.clearInterval(intervalId);
+      if (onExpire) onExpire();
+      return;
+    }
+    render();
+  }, 1000);
+
+  return () => window.clearInterval(intervalId);
+}
+
 function showWorkspacePage(page) {
   const pages = {
     assistant: pageAssistant,
@@ -651,6 +797,7 @@ function showAdminView(view) {
   if (nextView === "audit") {
     if (!adminManagementLoaded) loadAdminManagement();
     renderAdminAuditDoctorOptions();
+    updateAdminAuditFilterVisibility();
     loadAdminAuditLog(1);
   }
 }
@@ -661,6 +808,15 @@ function showAuthMode(mode) {
   loginForm.classList.toggle("hidden", !isLogin);
   signupForm.classList.toggle("hidden", !isSignup);
   if (doctorMfaForm) doctorMfaForm.classList.add("hidden");
+  if (patientVerifyForm) patientVerifyForm.classList.add("hidden");
+  if (patientMfaForm) patientMfaForm.classList.add("hidden");
+  if (forgotPasswordStartForm) forgotPasswordStartForm.classList.add("hidden");
+  if (forgotPasswordConfirmEmailForm) forgotPasswordConfirmEmailForm.classList.add("hidden");
+  if (resetPasswordForm) resetPasswordForm.classList.add("hidden");
+  if (resetPasswordCountdownCancel) {
+    resetPasswordCountdownCancel();
+    resetPasswordCountdownCancel = null;
+  }
   showLoginBtn.classList.toggle("active", isLogin);
   showSignupBtn.classList.toggle("active", isSignup);
   if (showAdminBtn) showAdminBtn.classList.remove("active");
@@ -780,14 +936,20 @@ function setPatientSummary(user) {
   patientIssues.textContent = safeText(user.health_issues, "None reported");
 }
 
-function setPatientAuthenticated(user, token) {
+function setPatientAuthenticated(user, token, refreshTokenValue) {
   currentUser = user;
   accessToken = token;
+  refreshToken = refreshTokenValue || null;
   currentAdmin = null;
   adminAccessToken = null;
   patientId = user.patient_id;
   localStorage.setItem("currentUser", JSON.stringify(user));
   localStorage.setItem("accessToken", token);
+  if (refreshToken) {
+    localStorage.setItem("refreshToken", refreshToken);
+  } else {
+    localStorage.removeItem("refreshToken");
+  }
   localStorage.removeItem("currentAdmin");
   localStorage.removeItem("adminAccessToken");
   localStorage.setItem("activePage", "assistant");
@@ -800,14 +962,20 @@ function setPatientAuthenticated(user, token) {
   setSidebarOpen(sidebarOpen);
 }
 
-function setAdminAuthenticated(admin, token) {
+function setAdminAuthenticated(admin, token, refreshTokenValue) {
   currentAdmin = admin;
   adminAccessToken = token;
+  adminRefreshToken = refreshTokenValue || null;
   currentUser = null;
   accessToken = null;
   patientId = null;
   localStorage.setItem("currentAdmin", JSON.stringify(admin));
   localStorage.setItem("adminAccessToken", token);
+  if (adminRefreshToken) {
+    localStorage.setItem("adminRefreshToken", adminRefreshToken);
+  } else {
+    localStorage.removeItem("adminRefreshToken");
+  }
   localStorage.removeItem("currentUser");
   localStorage.removeItem("accessToken");
   localStorage.setItem("activePage", "admin");
@@ -833,7 +1001,9 @@ function clearAuthenticated() {
   currentUser = null;
   currentAdmin = null;
   accessToken = null;
+  refreshToken = null;
   adminAccessToken = null;
+  adminRefreshToken = null;
   patientId = null;
   state = null;
   adminAppointments = [];
@@ -847,8 +1017,10 @@ function clearAuthenticated() {
   doctorAccessToken = null;
   localStorage.removeItem("currentUser");
   localStorage.removeItem("accessToken");
+  localStorage.removeItem("refreshToken");
   localStorage.removeItem("currentAdmin");
   localStorage.removeItem("adminAccessToken");
+  localStorage.removeItem("adminRefreshToken");
   localStorage.removeItem("doctorAccessToken");
   document.body.classList.remove("authenticated");
   document.body.classList.remove("admin-authenticated");
@@ -2477,23 +2649,71 @@ function adminAuthHeaders() {
   };
 }
 
+async function tryRefreshPatientToken() {
+  if (!refreshToken) return false;
+  try {
+    const data = await postJson("/auth/refresh", { refresh_token: refreshToken });
+    accessToken = data.access_token;
+    refreshToken = data.refresh_token;
+    localStorage.setItem("accessToken", accessToken);
+    localStorage.setItem("refreshToken", refreshToken);
+    return true;
+  } catch (error) {
+    return false;
+  }
+}
+
+async function tryRefreshAdminToken() {
+  if (!adminRefreshToken) return false;
+  try {
+    const data = await postJson("/auth/refresh", { refresh_token: adminRefreshToken });
+    adminAccessToken = data.access_token;
+    adminRefreshToken = data.refresh_token;
+    localStorage.setItem("adminAccessToken", adminAccessToken);
+    localStorage.setItem("adminRefreshToken", adminRefreshToken);
+    return true;
+  } catch (error) {
+    return false;
+  }
+}
+
 async function authedJson(url, options = {}) {
   const timeoutMs = options.timeoutMs ?? 15000;
-  const controller = new AbortController();
-  const timeoutId = window.setTimeout(() => controller.abort(), timeoutMs);
+
+  const attempt = async () => {
+    const controller = new AbortController();
+    const timeoutId = window.setTimeout(() => controller.abort(), timeoutMs);
+    try {
+      const response = await fetch(url, {
+        ...options,
+        signal: controller.signal,
+        headers: {
+          ...authHeaders(),
+          ...(options.headers || {}),
+        },
+      });
+      const data = await response.json().catch(() => ({}));
+      return { response, data };
+    } finally {
+      window.clearTimeout(timeoutId);
+    }
+  };
 
   try {
-    const response = await fetch(url, {
-      ...options,
-      signal: controller.signal,
-      headers: {
-        ...authHeaders(),
-        ...(options.headers || {}),
-      },
-    });
-    const data = await response.json().catch(() => ({}));
+    let refreshed = false;
+    let { response, data } = await attempt();
+    if (!response.ok && response.status === 401) {
+      refreshed = await tryRefreshPatientToken();
+      if (refreshed) {
+        ({ response, data } = await attempt());
+      }
+    }
     if (!response.ok) {
-      if (response.status === 401) {
+      // A 401 that survives a successful refresh isn't an expired session (we just
+      // proved the token is good) — it's the endpoint's own domain rejection (e.g. wrong
+      // current password on /auth/change-password). Only treat 401 as "log out" when we
+      // never got a fresh token to retry with.
+      if (response.status === 401 && !refreshed) {
         clearAuthenticated();
         showAuthMode("login");
       }
@@ -2505,28 +2725,42 @@ async function authedJson(url, options = {}) {
       throw new Error("Request timed out. Please try again.");
     }
     throw error;
-  } finally {
-    window.clearTimeout(timeoutId);
   }
 }
 
 async function adminAuthedJson(url, options = {}) {
   const timeoutMs = options.timeoutMs ?? 15000;
-  const controller = new AbortController();
-  const timeoutId = window.setTimeout(() => controller.abort(), timeoutMs);
+
+  const attempt = async () => {
+    const controller = new AbortController();
+    const timeoutId = window.setTimeout(() => controller.abort(), timeoutMs);
+    try {
+      const response = await fetch(url, {
+        ...options,
+        signal: controller.signal,
+        headers: {
+          ...adminAuthHeaders(),
+          ...(options.headers || {}),
+        },
+      });
+      const data = await response.json().catch(() => ({}));
+      return { response, data };
+    } finally {
+      window.clearTimeout(timeoutId);
+    }
+  };
 
   try {
-    const response = await fetch(url, {
-      ...options,
-      signal: controller.signal,
-      headers: {
-        ...adminAuthHeaders(),
-        ...(options.headers || {}),
-      },
-    });
-    const data = await response.json().catch(() => ({}));
+    let refreshed = false;
+    let { response, data } = await attempt();
+    if (!response.ok && response.status === 401) {
+      refreshed = await tryRefreshAdminToken();
+      if (refreshed) {
+        ({ response, data } = await attempt());
+      }
+    }
     if (!response.ok) {
-      if (response.status === 401) {
+      if (response.status === 401 && !refreshed) {
         clearAuthenticated();
       }
       throw new Error(data.detail || `Request failed with ${response.status}`);
@@ -2537,8 +2771,6 @@ async function adminAuthedJson(url, options = {}) {
       throw new Error("Admin request timed out. Please retry.");
     }
     throw error;
-  } finally {
-    window.clearTimeout(timeoutId);
   }
 }
 
@@ -2578,6 +2810,10 @@ function showProfilePanel(title) {
 function hideProfilePanel() {
   profilePanel.classList.add("hidden");
   profilePanelBody.replaceChildren();
+  if (secChangePasswordCountdownCancel) {
+    secChangePasswordCountdownCancel();
+    secChangePasswordCountdownCancel = null;
+  }
 }
 
 function scrollProfilePanelToTop() {
@@ -3390,6 +3626,42 @@ function renderAdminAppointmentCard(appointment) {
     )
   );
 
+  if (appointment.patient_id) {
+    const actions = document.createElement("div");
+    actions.className = "admin-inline-actions";
+
+    const resetMfaBtn = document.createElement("button");
+    resetMfaBtn.type = "button";
+    resetMfaBtn.className = "secondary compact";
+    resetMfaBtn.textContent = "Reset MFA";
+    resetMfaBtn.addEventListener("click", async () => {
+      try {
+        await resetPatientMfa(appointment.patient_id);
+        showAdminToast("MFA reset.");
+        await loadAdminAppointments(true);
+      } catch (error) {
+        showAdminToast(error.message, "error", 2500);
+      }
+    });
+    actions.appendChild(resetMfaBtn);
+
+    const unlockBtn = document.createElement("button");
+    unlockBtn.type = "button";
+    unlockBtn.className = "secondary compact";
+    unlockBtn.textContent = "Unlock login";
+    unlockBtn.addEventListener("click", async () => {
+      try {
+        await unlockPatientLogin(appointment.patient_id);
+        showAdminToast("Login unlocked.");
+      } catch (error) {
+        showAdminToast(error.message, "error", 2500);
+      }
+    });
+    actions.appendChild(unlockBtn);
+
+    item.appendChild(actions);
+  }
+
   return item;
 }
 
@@ -3803,6 +4075,14 @@ async function unlockDoctorAccount(doctorId) {
   return adminAuthedJson(`/admin/doctors/${doctorId}/unlock`, { method: "POST" });
 }
 
+async function resetPatientMfa(targetPatientId) {
+  return adminAuthedJson(`/admin/patients/${targetPatientId}/mfa/reset`, { method: "POST" });
+}
+
+async function unlockPatientLogin(targetPatientId) {
+  return adminAuthedJson(`/admin/patients/${targetPatientId}/unlock`, { method: "POST" });
+}
+
 function renderDoctorResetConfirm(doctor, resetBtn) {
   const confirmWrap = document.createElement("div");
   confirmWrap.className = "admin-inline-confirm";
@@ -3964,16 +4244,41 @@ function renderAdminAuditDoctorOptions() {
   adminAuditDoctorFilter.value = options.some(([doctorId]) => doctorId === currentValue) ? currentValue : "";
 }
 
+const ADMIN_AUDIT_LOG_TYPES = {
+  doctor: { endpoint: "/admin/doctor-auth-audit-log", identifierParam: null },
+  patient: { endpoint: "/admin/patient-auth-audit-log", identifierParam: "patient_id" },
+  admin_actions: { endpoint: "/admin/patient-actions-log", identifierParam: "patient_id" },
+  login: { endpoint: "/admin/login-audit-log", identifierParam: "email" },
+};
+
+function updateAdminAuditFilterVisibility() {
+  const logType = adminAuditLogType?.value || "doctor";
+  const isDoctor = logType === "doctor";
+  if (adminAuditDoctorFilterField) adminAuditDoctorFilterField.classList.toggle("hidden", !isDoctor);
+  if (adminAuditIdentifierFilterField) adminAuditIdentifierFilterField.classList.toggle("hidden", isDoctor);
+  if (adminAuditIdentifierLabel) {
+    adminAuditIdentifierLabel.textContent = logType === "login" ? "Email" : "Patient ID";
+  }
+}
+
 async function loadAdminAuditLog(page = 1) {
   adminAuditPage = page;
+  const logType = adminAuditLogType?.value || "doctor";
+  const config = ADMIN_AUDIT_LOG_TYPES[logType] || ADMIN_AUDIT_LOG_TYPES.doctor;
   const params = new URLSearchParams({ page: String(page), page_size: String(adminAuditPageSize) });
-  const doctorId = adminAuditDoctorFilter?.value || "";
-  if (doctorId) params.set("doctor_id", doctorId);
+
+  if (logType === "doctor") {
+    const doctorId = adminAuditDoctorFilter?.value || "";
+    if (doctorId) params.set("doctor_id", doctorId);
+  } else {
+    const identifier = adminAuditIdentifierFilter?.value.trim() || "";
+    if (identifier && config.identifierParam) params.set(config.identifierParam, identifier);
+  }
   if (adminAuditStartDate?.value) params.set("start_date", adminAuditStartDate.value);
   if (adminAuditEndDate?.value) params.set("end_date", adminAuditEndDate.value);
 
   try {
-    const data = await adminAuthedJson(`/admin/doctor-auth-audit-log?${params.toString()}`);
+    const data = await adminAuthedJson(`${config.endpoint}?${params.toString()}`);
     adminAuditTotal = data.total || 0;
     renderAdminAuditLogRows(data.entries || []);
     if (adminAuditResultCount) adminAuditResultCount.textContent = `${adminAuditTotal} entries`;
@@ -5097,7 +5402,15 @@ async function postJson(url, payload, bearerToken = null) {
 
     const data = await response.json().catch(() => ({}));
     if (!response.ok) {
-      throw new Error(data.detail || `Request failed with ${response.status}`);
+      // detail is an object on responses that carry structured data alongside the
+      // sentence (the 423 lockout's retry_after_seconds) — surface the sentence as the
+      // Error text either way, and hang status/body off the Error for callers that
+      // need more than a message.
+      const detail = typeof data.detail === "string" ? data.detail : data.detail?.message;
+      const error = new Error(detail || `Request failed with ${response.status}`);
+      error.status = response.status;
+      error.data = data;
+      throw error;
     }
     return data;
   } catch (error) {
@@ -5201,6 +5514,11 @@ function resetChat() {
   input.focus();
   scrollMessages(false);
   setChatTopButtonVisible(false);
+  // upcoming_bookings above is just a placeholder — a brand-new chat session has no
+  // idea what's actually booked. Fetch the real list from the DB so a slot booked
+  // earlier in this login session doesn't disappear from the dashboard preview just
+  // because the user started a new chat.
+  refreshActiveAppointments();
 }
 
 async function showPreviousBookings(title = "Previous bookings") {
@@ -5726,6 +6044,11 @@ if (adminRefreshBtn) {
   });
 }
 
+if (adminAuditLogType) adminAuditLogType.addEventListener("change", () => {
+  updateAdminAuditFilterVisibility();
+  loadAdminAuditLog(1);
+});
+
 if (adminAuditFilterBtn) adminAuditFilterBtn.addEventListener("click", () => loadAdminAuditLog(1));
 
 if (adminAuditPrevPageBtn) adminAuditPrevPageBtn.addEventListener("click", () => {
@@ -5792,64 +6115,562 @@ adminStatusButtons.forEach((button) => {
   });
 });
 
+function renderMfaSection(container) {
+  container.replaceChildren();
+
+  if (!currentUser.mfa_enabled) {
+    const wrap = document.createElement("div");
+    wrap.innerHTML = `
+      <p class="form-hint">Two-factor authentication is not enabled on your account.</p>
+      <button type="button" class="secondary" id="secEnableMfaBtn">Enable MFA</button>
+      <div id="secMfaEnrollBlock" class="hidden">
+        <p class="form-hint">Scan this QR code with your authenticator app (Google Authenticator, Authy, etc.), or enter the code manually.</p>
+        <div id="secMfaQrContainer" class="doctor-qr-container" aria-hidden="true"></div>
+        <p class="doctor-manual-code" id="secMfaProvisioningUri"></p>
+        <form id="secMfaEnrollForm">
+          <label>Authenticator code<input id="secMfaEnrollCode" inputmode="numeric" autocomplete="one-time-code" maxlength="6" required /></label>
+          <button type="submit">Verify &amp; enable MFA</button>
+        </form>
+        <p class="auth-error" id="secMfaEnrollMessage"></p>
+      </div>
+      <div id="secMfaRecoveryBlock" class="hidden">
+        <p class="form-hint">Save these recovery codes now — each is single-use, and they can never be shown again.</p>
+        <ol id="secRecoveryCodesList" class="doctor-recovery-codes"></ol>
+        <button class="secondary" id="secRecoveryDownloadBtn" type="button">Download as .txt</button>
+        <label class="admin-checkline">
+          <input id="secRecoveryAckCheckbox" type="checkbox" />
+          <span>I've saved my recovery codes</span>
+        </label>
+        <button id="secRecoveryDoneBtn" type="button" disabled>Done</button>
+      </div>
+    `;
+    container.appendChild(wrap);
+
+    const enableBtn = wrap.querySelector("#secEnableMfaBtn");
+    const enrollBlock = wrap.querySelector("#secMfaEnrollBlock");
+    const qrContainer = wrap.querySelector("#secMfaQrContainer");
+    const provisioningUriEl = wrap.querySelector("#secMfaProvisioningUri");
+    const enrollForm = wrap.querySelector("#secMfaEnrollForm");
+    const enrollCode = wrap.querySelector("#secMfaEnrollCode");
+    const enrollMessage = wrap.querySelector("#secMfaEnrollMessage");
+    const recoveryBlock = wrap.querySelector("#secMfaRecoveryBlock");
+    const recoveryList = wrap.querySelector("#secRecoveryCodesList");
+    const downloadBtn = wrap.querySelector("#secRecoveryDownloadBtn");
+    const ackCheckbox = wrap.querySelector("#secRecoveryAckCheckbox");
+    const doneBtn = wrap.querySelector("#secRecoveryDoneBtn");
+    let recoveryCodesInMemory = null;
+
+    enableBtn.addEventListener("click", async () => {
+      enableBtn.disabled = true;
+      try {
+        const data = await authedJson("/auth/mfa/setup/start", { method: "POST" });
+        provisioningUriEl.textContent = data.provisioning_uri;
+        qrContainer.innerHTML = "";
+        try {
+          const qr = qrcode(0, "M");
+          qr.addData(data.provisioning_uri);
+          qr.make();
+          qrContainer.innerHTML = qr.createSvgTag(4);
+        } catch (qrError) {
+          // Manual code text above still lets setup complete.
+        }
+        enableBtn.classList.add("hidden");
+        enrollBlock.classList.remove("hidden");
+        enrollCode.focus();
+      } catch (error) {
+        enableBtn.disabled = false;
+      }
+    });
+
+    enrollForm.addEventListener("submit", async (event) => {
+      event.preventDefault();
+      enrollMessage.textContent = "";
+      try {
+        const data = await authedJson("/auth/mfa/setup/verify", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ code: enrollCode.value.trim() }),
+        });
+        currentUser.mfa_enabled = true;
+        localStorage.setItem("currentUser", JSON.stringify(currentUser));
+        recoveryCodesInMemory = data.recovery_codes;
+        recoveryList.replaceChildren();
+        data.recovery_codes.forEach((code) => {
+          const li = document.createElement("li");
+          li.textContent = code;
+          recoveryList.appendChild(li);
+        });
+        ackCheckbox.checked = false;
+        doneBtn.disabled = true;
+        enrollBlock.classList.add("hidden");
+        recoveryBlock.classList.remove("hidden");
+      } catch (error) {
+        enrollMessage.textContent = error.message || "Invalid code.";
+      }
+    });
+
+    downloadBtn.addEventListener("click", () => {
+      if (recoveryCodesInMemory) downloadRecoveryCodesAsText(recoveryCodesInMemory);
+    });
+
+    ackCheckbox.addEventListener("change", () => {
+      doneBtn.disabled = !ackCheckbox.checked;
+    });
+
+    doneBtn.addEventListener("click", () => {
+      renderMfaSection(container);
+    });
+    return;
+  }
+
+  const wrap = document.createElement("div");
+  wrap.innerHTML = `
+    <p class="form-hint">Two-factor authentication is enabled on your account.</p>
+    <form id="secDisableMfaForm">
+      <label>Current password<input id="secDisablePassword" type="password" autocomplete="current-password" required /></label>
+      <label>Authentication code<input id="secDisableCode" inputmode="text" autocomplete="one-time-code" maxlength="64" required /></label>
+      <button type="submit" class="secondary">Disable MFA</button>
+      <p class="auth-error" id="secDisableMessage"></p>
+    </form>
+    <form id="secRegenerateForm">
+      <label>Authentication code<input id="secRegenerateCode" inputmode="text" autocomplete="one-time-code" maxlength="64" required /></label>
+      <button type="submit" class="secondary">Regenerate backup codes</button>
+      <p class="auth-error" id="secRegenerateMessage"></p>
+    </form>
+    <div id="secMfaRecoveryBlock" class="hidden">
+      <p class="form-hint">Save these recovery codes now — each is single-use, and they can never be shown again.</p>
+      <ol id="secRecoveryCodesList" class="doctor-recovery-codes"></ol>
+      <button class="secondary" id="secRecoveryDownloadBtn" type="button">Download as .txt</button>
+      <label class="admin-checkline">
+        <input id="secRecoveryAckCheckbox" type="checkbox" />
+        <span>I've saved my recovery codes</span>
+      </label>
+      <button id="secRecoveryDoneBtn" type="button" disabled>Done</button>
+    </div>
+  `;
+  container.appendChild(wrap);
+  wireAllPasswordToggles(wrap);
+
+  const disableForm = wrap.querySelector("#secDisableMfaForm");
+  const disableMessage = wrap.querySelector("#secDisableMessage");
+  const regenerateForm = wrap.querySelector("#secRegenerateForm");
+  const regenerateMessage = wrap.querySelector("#secRegenerateMessage");
+  const recoveryBlock = wrap.querySelector("#secMfaRecoveryBlock");
+  const recoveryList = wrap.querySelector("#secRecoveryCodesList");
+  const downloadBtn = wrap.querySelector("#secRecoveryDownloadBtn");
+  const ackCheckbox = wrap.querySelector("#secRecoveryAckCheckbox");
+  const doneBtn = wrap.querySelector("#secRecoveryDoneBtn");
+  let recoveryCodesInMemory = null;
+
+  disableForm.addEventListener("submit", async (event) => {
+    event.preventDefault();
+    disableMessage.textContent = "";
+    try {
+      await authedJson("/auth/mfa/disable", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          current_password: wrap.querySelector("#secDisablePassword").value,
+          code: wrap.querySelector("#secDisableCode").value.trim(),
+        }),
+      });
+      currentUser.mfa_enabled = false;
+      localStorage.setItem("currentUser", JSON.stringify(currentUser));
+      renderMfaSection(container);
+    } catch (error) {
+      disableMessage.textContent = error.message || "Could not disable MFA.";
+    }
+  });
+
+  regenerateForm.addEventListener("submit", async (event) => {
+    event.preventDefault();
+    regenerateMessage.textContent = "";
+    try {
+      const data = await authedJson("/auth/mfa/backup-codes/regenerate", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ code: wrap.querySelector("#secRegenerateCode").value.trim() }),
+      });
+      recoveryCodesInMemory = data.recovery_codes;
+      recoveryList.replaceChildren();
+      data.recovery_codes.forEach((code) => {
+        const li = document.createElement("li");
+        li.textContent = code;
+        recoveryList.appendChild(li);
+      });
+      ackCheckbox.checked = false;
+      doneBtn.disabled = true;
+      regenerateForm.classList.add("hidden");
+      disableForm.classList.add("hidden");
+      recoveryBlock.classList.remove("hidden");
+    } catch (error) {
+      regenerateMessage.textContent = error.message || "Could not regenerate backup codes.";
+    }
+  });
+
+  downloadBtn.addEventListener("click", () => {
+    if (recoveryCodesInMemory) downloadRecoveryCodesAsText(recoveryCodesInMemory);
+  });
+
+  ackCheckbox.addEventListener("change", () => {
+    doneBtn.disabled = !ackCheckbox.checked;
+  });
+
+  doneBtn.addEventListener("click", () => {
+    renderMfaSection(container);
+  });
+}
+
 function showEditProfile() {
   if (!currentUser) return;
   showProfilePanel("Edit profile");
 
-  const form = document.createElement("form");
-  form.className = "edit-profile-form";
-  form.innerHTML = `
-    <label class="ep-label">
-      <span>Health issues / pre-existing conditions</span>
-      <textarea class="ep-textarea" id="epHealthIssues" rows="3" placeholder="e.g. Diabetes, Hypertension">${currentUser.health_issues || ""}</textarea>
-    </label>
-    <label class="ep-label">
-      <span>Mobile number</span>
-      <input class="ep-input" id="epMobile" type="tel" value="${currentUser.mobile_number || ""}" placeholder="+91 9876543210"/>
-    </label>
-    <label class="ep-label">
-      <span>Address</span>
-      <input class="ep-input" id="epAddress" type="text" value="${currentUser.address || ""}" placeholder="Street, City"/>
-    </label>
-    <div class="ep-actions">
-      <button type="submit" class="ep-save-btn" id="epSaveBtn">Save changes</button>
-      <span class="ep-msg" id="epMsg"></span>
+  const shell = document.createElement("div");
+  shell.innerHTML = `
+    <div class="tab-bar" id="profileTabBar">
+      <button type="button" class="tab-btn is-active" data-profile-tab="personal">Personal Info</button>
+      <button type="button" class="tab-btn" data-profile-tab="security">Security</button>
     </div>
+    <div id="profileTabPersonal"></div>
+    <div id="profileTabSecurity" class="hidden"></div>
   `;
+  profilePanelBody.replaceChildren(shell);
 
-  profilePanelBody.replaceChildren(form);
+  const tabBar = shell.querySelector("#profileTabBar");
+  const personalPane = shell.querySelector("#profileTabPersonal");
+  const securityPane = shell.querySelector("#profileTabSecurity");
 
-  form.addEventListener("submit", async (e) => {
-    e.preventDefault();
-    const saveBtn = document.querySelector("#epSaveBtn");
-    const msg = document.querySelector("#epMsg");
+  tabBar.addEventListener("click", (event) => {
+    const btn = event.target.closest(".tab-btn");
+    if (!btn || !tabBar.contains(btn)) return;
+    const target = btn.dataset.profileTab;
+    tabBar.querySelectorAll(".tab-btn").forEach((b) => b.classList.toggle("is-active", b === btn));
+    personalPane.classList.toggle("hidden", target !== "personal");
+    securityPane.classList.toggle("hidden", target !== "security");
+  });
+
+  // Built with createElement rather than an innerHTML template: these carry user-entered
+  // values, and interpolating a name containing a quote or a tag into markup is both an
+  // escaping bug and an injection risk. Assigning .value sidesteps both.
+  const labelled = (text, control) => {
+    const label = document.createElement("label");
+    label.className = "ep-label";
+    const span = document.createElement("span");
+    span.textContent = text;
+    label.append(span, control);
+    return label;
+  };
+
+  const makeInput = (id, value, options = {}) => {
+    const el = document.createElement("input");
+    el.className = "ep-input";
+    el.id = id;
+    el.type = options.type || "text";
+    if (options.placeholder) el.placeholder = options.placeholder;
+    if (options.min !== undefined) el.min = options.min;
+    if (options.max !== undefined) el.max = options.max;
+    if (options.maxLength) el.maxLength = options.maxLength;
+    el.value = value ?? "";
+    return el;
+  };
+
+  // Email and mobile identify the account, so they are shown fixed rather than edited
+  // here — changing either needs a verified flow of its own, not a silent profile save.
+  const readOnlyRow = (text, value, badge) => {
+    const wrap = document.createElement("div");
+    wrap.className = "ep-label";
+    const span = document.createElement("span");
+    span.textContent = text;
+    const box = document.createElement("div");
+    box.className = "ep-readonly";
+    const val = document.createElement("span");
+    val.textContent = value || "—";
+    box.append(val);
+    if (badge) box.append(badge);
+    wrap.append(span, box);
+    return wrap;
+  };
+
+  const personalForm = document.createElement("form");
+  personalForm.className = "edit-profile-form";
+
+  const firstNameInput = makeInput("epFirstName", currentUser.first_name, { maxLength: 100, placeholder: "First name" });
+  const lastNameInput = makeInput("epLastName", currentUser.last_name, { maxLength: 100, placeholder: "Last name" });
+  const ageInput = makeInput("epAge", currentUser.age, { type: "number", min: 1, max: 129 });
+
+  const genderSelect = document.createElement("select");
+  genderSelect.className = "ep-input";
+  genderSelect.id = "epGender";
+  [
+    ["", "Select gender"],
+    ["male", "Male"],
+    ["female", "Female"],
+    ["other", "Other"],
+    ["prefer_not_to_say", "Prefer not to say"],
+  ].forEach(([value, text]) => {
+    const option = document.createElement("option");
+    option.value = value;
+    option.textContent = text;
+    genderSelect.appendChild(option);
+  });
+  genderSelect.value = currentUser.gender || "";
+
+  const addressInput = makeInput("epAddress", currentUser.address, { placeholder: "Street, City" });
+
+  const healthIssues = document.createElement("textarea");
+  healthIssues.className = "ep-textarea";
+  healthIssues.id = "epHealthIssues";
+  healthIssues.rows = 3;
+  healthIssues.placeholder = "e.g. Diabetes, Hypertension";
+  healthIssues.value = currentUser.health_issues || "";
+
+  const verifiedBadge = document.createElement("span");
+  const isVerified = currentUser.email_verified !== false;
+  verifiedBadge.className = `ep-badge ${isVerified ? "is-verified" : "is-unverified"}`;
+  verifiedBadge.textContent = isVerified ? "Verified" : "Not verified";
+
+  personalForm.append(
+    labelled("First name", firstNameInput),
+    labelled("Last name", lastNameInput),
+    labelled("Age", ageInput),
+    labelled("Gender", genderSelect),
+    readOnlyRow("Email address", currentUser.login_email || currentUser.email, verifiedBadge),
+    readOnlyRow("Mobile number", currentUser.mobile_number),
+    labelled("Address", addressInput),
+    labelled("Health issues / pre-existing conditions", healthIssues),
+  );
+
+  const dirtyBar = document.createElement("div");
+  dirtyBar.className = "ep-dirty-bar hidden";
+  dirtyBar.innerHTML = `
+    <span class="ep-dirty-text">You have unsaved changes</span>
+    <span class="ep-dirty-actions">
+      <button type="button" class="secondary compact" id="epDiscardBtn">Discard</button>
+      <button type="submit" class="ep-save-btn" id="epSaveBtn">Save changes</button>
+    </span>
+    <span class="ep-msg" id="epMsg"></span>
+  `;
+  personalForm.appendChild(dirtyBar);
+  personalPane.appendChild(personalForm);
+
+  const epMsg = dirtyBar.querySelector("#epMsg");
+  const currentValues = () => JSON.stringify({
+    first_name: firstNameInput.value.trim(),
+    last_name: lastNameInput.value.trim(),
+    age: ageInput.value.trim(),
+    gender: genderSelect.value,
+    address: addressInput.value.trim(),
+    health_issues: healthIssues.value.trim(),
+  });
+  let savedValues = currentValues();
+
+  const refreshDirtyState = () => {
+    dirtyBar.classList.toggle("hidden", currentValues() === savedValues);
+    epMsg.textContent = "";
+  };
+  personalForm.addEventListener("input", refreshDirtyState);
+  personalForm.addEventListener("change", refreshDirtyState);
+
+  dirtyBar.querySelector("#epDiscardBtn").addEventListener("click", () => {
+    firstNameInput.value = currentUser.first_name || "";
+    lastNameInput.value = currentUser.last_name || "";
+    ageInput.value = currentUser.age ?? "";
+    genderSelect.value = currentUser.gender || "";
+    addressInput.value = currentUser.address || "";
+    healthIssues.value = currentUser.health_issues || "";
+    refreshDirtyState();
+  });
+
+  personalForm.addEventListener("submit", async (event) => {
+    event.preventDefault();
+    const saveBtn = dirtyBar.querySelector("#epSaveBtn");
     saveBtn.disabled = true;
-    msg.textContent = "Saving…";
-
-    const payload = {
-      health_issues: document.querySelector("#epHealthIssues").value.trim() || null,
-      mobile_number: document.querySelector("#epMobile").value.trim() || null,
-      address: document.querySelector("#epAddress").value.trim() || null,
-    };
+    epMsg.textContent = "Saving…";
+    epMsg.style.color = "";
 
     try {
       const data = await authedJson("/auth/profile", {
         method: "PATCH",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify(payload),
+        body: JSON.stringify({
+          first_name: firstNameInput.value.trim() || null,
+          last_name: lastNameInput.value.trim() || null,
+          age: ageInput.value ? Number(ageInput.value) : null,
+          gender: genderSelect.value || null,
+          address: addressInput.value.trim() || null,
+          health_issues: healthIssues.value.trim() || null,
+        }),
       });
       currentUser = data.user;
       localStorage.setItem("currentUser", JSON.stringify(currentUser));
       setPatientSummary(currentUser);
-      msg.textContent = "Saved!";
-      msg.style.color = "var(--violet)";
-      setTimeout(hideProfilePanel, 900);
+      savedValues = currentValues();
+      dirtyBar.classList.add("hidden");
+      showAppToast("Profile updated.");
     } catch (err) {
-      msg.textContent = err.message || "Save failed.";
-      msg.style.color = "#dc2626";
+      epMsg.textContent = err.message || "Save failed.";
+      epMsg.style.color = "#dc2626";
+    } finally {
       saveBtn.disabled = false;
     }
   });
+
+  const securityBlock = document.createElement("div");
+  securityBlock.className = "edit-profile-form";
+  securityBlock.innerHTML = `
+    <form id="secChangePasswordStartForm">
+      <label class="ep-label"><span>Current password</span><input class="ep-input" id="secCurrentPassword" type="password" autocomplete="current-password" required /></label>
+      <div class="ep-actions">
+        <button type="submit" class="ep-save-btn">Send verification code</button>
+        <span class="ep-msg" id="secPasswordStartMsg"></span>
+      </div>
+    </form>
+    <form id="secChangePasswordOtpForm" class="hidden">
+      <p class="form-hint" id="secPasswordConfirmHint"></p>
+      <label class="ep-label"><span>Verification code</span><input class="ep-input" id="secPasswordOtp" inputmode="numeric" autocomplete="one-time-code" maxlength="6" required /></label>
+      <p class="form-hint" id="secPasswordCountdown"></p>
+      <div class="ep-actions">
+        <button type="submit" class="ep-save-btn">Verify code</button>
+        <button type="button" class="secondary" id="secPasswordResendBtn">Resend code</button>
+        <span class="ep-msg" id="secPasswordOtpMsg"></span>
+      </div>
+    </form>
+    <form id="secChangePasswordConfirmForm" class="hidden">
+      <p class="form-hint">Code verified. Choose your new password.</p>
+      <label class="ep-label"><span>New password</span><input class="ep-input" id="secNewPassword" type="password" autocomplete="new-password" minlength="8" required /></label>
+      <label class="ep-label"><span>Confirm new password</span><input class="ep-input" id="secConfirmPassword" type="password" autocomplete="new-password" required /></label>
+      <div class="ep-actions">
+        <button type="submit" class="ep-save-btn">Change password</button>
+        <span class="ep-msg" id="secPasswordConfirmMsg"></span>
+      </div>
+    </form>
+    <div id="secMfaSection"></div>
+  `;
+  securityPane.appendChild(securityBlock);
+  wireAllPasswordToggles(securityBlock);
+
+  const startForm = securityBlock.querySelector("#secChangePasswordStartForm");
+  const startMsg = securityBlock.querySelector("#secPasswordStartMsg");
+  const otpForm = securityBlock.querySelector("#secChangePasswordOtpForm");
+  const otpMsg = securityBlock.querySelector("#secPasswordOtpMsg");
+  const confirmForm = securityBlock.querySelector("#secChangePasswordConfirmForm");
+  const confirmHint = securityBlock.querySelector("#secPasswordConfirmHint");
+  const confirmMsg = securityBlock.querySelector("#secPasswordConfirmMsg");
+  const countdownEl = securityBlock.querySelector("#secPasswordCountdown");
+  const resendBtn = securityBlock.querySelector("#secPasswordResendBtn");
+
+  const beginSecCountdown = (seconds) => {
+    if (secChangePasswordCountdownCancel) {
+      secChangePasswordCountdownCancel();
+      secChangePasswordCountdownCancel = null;
+    }
+    resendBtn.disabled = true;
+    secChangePasswordCountdownCancel = startCountdown(countdownEl, seconds, () => {
+      resendBtn.disabled = false;
+    });
+  };
+
+  startForm.addEventListener("submit", async (event) => {
+    event.preventDefault();
+    startMsg.textContent = "Sending…";
+    startMsg.style.color = "";
+    try {
+      const data = await authedJson("/auth/change-password/start", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ current_password: securityBlock.querySelector("#secCurrentPassword").value }),
+      });
+      startForm.classList.add("hidden");
+      otpForm.classList.remove("hidden");
+      confirmHint.textContent = `Enter the code we sent to ${data.masked_email}.`;
+      showAppToast(`Verification code sent to ${data.masked_email}.`);
+      beginSecCountdown(OTP_RESEND_COOLDOWN_SECONDS);
+      securityBlock.querySelector("#secPasswordOtp").focus();
+    } catch (error) {
+      startMsg.textContent = error.message || "Could not send a verification code.";
+      startMsg.style.color = "#dc2626";
+    }
+  });
+
+  // Step 2 of 3 — the code is checked on its own so a wrong one surfaces here, rather
+  // than after the new password has already been typed twice.
+  otpForm.addEventListener("submit", async (event) => {
+    event.preventDefault();
+    otpMsg.textContent = "Verifying…";
+    otpMsg.style.color = "";
+    try {
+      await authedJson("/auth/change-password/verify-otp", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ otp: securityBlock.querySelector("#secPasswordOtp").value.trim() }),
+      });
+      otpMsg.textContent = "";
+      otpForm.classList.add("hidden");
+      confirmForm.classList.remove("hidden");
+      securityBlock.querySelector("#secNewPassword").focus();
+    } catch (error) {
+      otpMsg.textContent = error.message || "That code is invalid or has expired.";
+      otpMsg.style.color = "#dc2626";
+    }
+  });
+
+  confirmForm.addEventListener("submit", async (event) => {
+    event.preventDefault();
+    if (securityBlock.querySelector("#secNewPassword").value !== securityBlock.querySelector("#secConfirmPassword").value) {
+      confirmMsg.textContent = "Passwords do not match.";
+      confirmMsg.style.color = "#dc2626";
+      return;
+    }
+    confirmMsg.textContent = "Saving…";
+    confirmMsg.style.color = "";
+    try {
+      await authedJson("/auth/change-password/confirm", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          otp: securityBlock.querySelector("#secPasswordOtp").value.trim(),
+          new_password: securityBlock.querySelector("#secNewPassword").value,
+          confirm_password: securityBlock.querySelector("#secConfirmPassword").value,
+        }),
+      });
+      await tryRefreshPatientToken();
+      if (secChangePasswordCountdownCancel) {
+        secChangePasswordCountdownCancel();
+        secChangePasswordCountdownCancel = null;
+      }
+      // The password change commits on its own — it is never part of the profile
+      // Save/Discard above, so there is nothing left for the user to confirm here.
+      confirmForm.reset();
+      confirmForm.classList.add("hidden");
+      otpForm.reset();
+      startForm.reset();
+      startForm.classList.remove("hidden");
+      startMsg.textContent = "Password changed successfully.";
+      startMsg.style.color = "var(--violet)";
+      showAppToast("Password changed successfully.");
+    } catch (error) {
+      confirmMsg.textContent = error.message || "Could not change password.";
+      confirmMsg.style.color = "#dc2626";
+    }
+  });
+
+  resendBtn.addEventListener("click", async () => {
+    otpMsg.textContent = "";
+    try {
+      const data = await authedJson("/auth/change-password/resend", { method: "POST" });
+      if (data.status === "cooldown") {
+        beginSecCountdown(Number(data.retry_after_seconds) || OTP_RESEND_COOLDOWN_SECONDS);
+        return;
+      }
+      showAppToast("A new verification code has been sent.");
+      beginSecCountdown(Number(data.retry_after_seconds) || OTP_RESEND_COOLDOWN_SECONDS);
+    } catch (error) {
+      otpMsg.textContent = error.message || "Could not resend the code.";
+      otpMsg.style.color = "#dc2626";
+    }
+  });
+
+  renderMfaSection(securityBlock.querySelector("#secMfaSection"));
 }
 
 if (editProfileBtn) {
@@ -5923,11 +6744,33 @@ loginForm.addEventListener("submit", async (event) => {
       document.querySelector("#doctorMfaCode")?.focus();
       return;
     }
+    if (data.status === "patient_mfa_required") {
+      patientMfaToken = data.pending_token;
+      loginForm.classList.add("hidden");
+      patientMfaForm?.classList.remove("hidden");
+      patientMfaCode?.focus();
+      return;
+    }
+    if (data.status === "verification_required") {
+      patientVerifyToken = data.pending_token;
+      loginForm.classList.add("hidden");
+      if (patientVerifyHint) patientVerifyHint.textContent = `Enter the 6-digit code we emailed to ${data.email}.`;
+      patientVerifyForm?.classList.remove("hidden");
+      patientVerifyCode?.focus();
+      return;
+    }
     const payload = JSON.parse(atob(data.access_token.split(".")[1].replace(/-/g, "+").replace(/_/g, "/")));
-    if (payload.role === "admin") setAdminAuthenticated({ email: data.email, name: data.name, role: data.role }, data.access_token);
-    else if (payload.role === "patient") setPatientAuthenticated(data.user, data.access_token);
+    if (payload.role === "admin") setAdminAuthenticated({ email: data.email, name: data.name, role: data.role }, data.access_token, data.refresh_token);
+    else if (payload.role === "patient") setPatientAuthenticated(data.user, data.access_token, data.refresh_token);
     else setAuthMessage("Doctor Dashboard — coming soon");
   } catch (error) {
+    if (error.status === 423) {
+      // Locked out — say so with a live countdown instead of the generic credentials
+      // message, which is what made a lockout indistinguishable from a wrong password.
+      setAuthMessage("");
+      beginLoginLockoutCountdown(Number(error.data?.detail?.retry_after_seconds) || 60);
+      return;
+    }
     setAuthMessage("Invalid email or password.");
   }
 });
@@ -5939,6 +6782,130 @@ if (doctorMfaForm) doctorMfaForm.addEventListener("submit", async (event) => {
     if (data.recovery_code_used) doctorLowRecoveryNoticePending = true;
     setDoctorAuthenticated(data.access_token);
   } catch (error) { setAuthMessage("Invalid email or password."); }
+});
+
+if (patientMfaForm) patientMfaForm.addEventListener("submit", async (event) => {
+  event.preventDefault(); setAuthMessage("");
+  try {
+    const data = await postJson("/auth/mfa/verify", { code: patientMfaCode.value.trim() }, patientMfaToken);
+    setPatientAuthenticated(data.user, data.access_token, data.refresh_token);
+  } catch (error) {
+    setAuthMessage(error.message || "Invalid code.");
+  }
+});
+
+if (patientMfaBackBtn) patientMfaBackBtn.addEventListener("click", () => showAuthMode("login"));
+
+if (showForgotPasswordBtn) showForgotPasswordBtn.addEventListener("click", () => {
+  setAuthMessage("");
+  loginForm.classList.add("hidden");
+  if (forgotPasswordIdentifier) forgotPasswordIdentifier.value = "";
+  forgotPasswordStartForm?.classList.remove("hidden");
+  forgotPasswordIdentifier?.focus();
+});
+
+if (forgotPasswordStartBackBtn) forgotPasswordStartBackBtn.addEventListener("click", () => showAuthMode("login"));
+if (forgotPasswordConfirmEmailBackBtn) forgotPasswordConfirmEmailBackBtn.addEventListener("click", () => showAuthMode("login"));
+if (resetPasswordBackBtn) resetPasswordBackBtn.addEventListener("click", () => showAuthMode("login"));
+
+if (forgotPasswordStartForm) forgotPasswordStartForm.addEventListener("submit", async (event) => {
+  event.preventDefault(); setAuthMessage("");
+  const identifier = forgotPasswordIdentifier.value.trim();
+  try {
+    const data = await postJson("/auth/forgot-password/start", { identifier });
+    if (data.status === "not_found") {
+      setAuthMessage("We couldn't find an account with that email or mobile number.");
+      return;
+    }
+    if (data.status === "confirm_email_required") {
+      resetPendingMobileNumber = identifier;
+      if (forgotPasswordConfirmEmailHint) {
+        forgotPasswordConfirmEmailHint.textContent = `Confirm the email address on this account (${data.masked_email}).`;
+      }
+      forgotPasswordStartForm.classList.add("hidden");
+      forgotPasswordConfirmEmailForm?.classList.remove("hidden");
+      forgotPasswordConfirmEmail?.focus();
+      return;
+    }
+    if (data.status === "otp_sent") {
+      resetEmail = identifier;
+      forgotPasswordStartForm.classList.add("hidden");
+      resetPasswordForm?.classList.remove("hidden");
+      resetPasswordCode?.focus();
+      showAppToast(`Verification code sent to ${data.email || resetEmail}.`);
+      beginResetPasswordCountdown(OTP_RESEND_COOLDOWN_SECONDS);
+    }
+  } catch (error) {
+    setAuthMessage(error.message || "Something went wrong. Please try again.");
+  }
+});
+
+if (forgotPasswordConfirmEmailForm) forgotPasswordConfirmEmailForm.addEventListener("submit", async (event) => {
+  event.preventDefault(); setAuthMessage("");
+  const email = forgotPasswordConfirmEmail.value.trim();
+  try {
+    const data = await postJson("/auth/forgot-password/confirm-email", {
+      mobile_number: resetPendingMobileNumber,
+      email,
+    });
+    if (data.status === "email_mismatch") {
+      setAuthMessage("That email doesn't match this account.");
+      return;
+    }
+    if (data.status === "otp_sent") {
+      resetEmail = email;
+      forgotPasswordConfirmEmailForm.classList.add("hidden");
+      resetPasswordForm?.classList.remove("hidden");
+      resetPasswordCode?.focus();
+      showAppToast(`Verification code sent to ${data.email || resetEmail}.`);
+      beginResetPasswordCountdown(OTP_RESEND_COOLDOWN_SECONDS);
+    }
+  } catch (error) {
+    setAuthMessage(error.message || "Something went wrong. Please try again.");
+  }
+});
+
+if (resetPasswordForm) resetPasswordForm.addEventListener("submit", async (event) => {
+  event.preventDefault(); setAuthMessage("");
+  if (resetPasswordNew.value !== resetPasswordConfirm.value) {
+    setAuthMessage("Passwords do not match.");
+    return;
+  }
+  try {
+    await postJson("/auth/reset-password", {
+      email: resetEmail,
+      otp: resetPasswordCode.value.trim(),
+      new_password: resetPasswordNew.value,
+      confirm_password: resetPasswordConfirm.value,
+    });
+    resetEmail = null;
+    resetPendingMobileNumber = null;
+    if (resetPasswordCountdownCancel) {
+      resetPasswordCountdownCancel();
+      resetPasswordCountdownCancel = null;
+    }
+    showAuthMode("login");
+    setAuthMessage("Password reset. Please log in with your new password.");
+  } catch (error) {
+    setAuthMessage(error.message || "Could not reset your password.");
+  }
+});
+
+if (resetPasswordResendBtn) resetPasswordResendBtn.addEventListener("click", async () => {
+  setAuthMessage("");
+  resetPasswordResendBtn.disabled = true;
+  try {
+    const data = await postJson("/auth/resend-otp", { email: resetEmail });
+    if (data.status === "cooldown") {
+      beginResetPasswordCountdown(Number(data.retry_after_seconds) || OTP_RESEND_COOLDOWN_SECONDS);
+      return;
+    }
+    showAppToast("A new verification code has been sent.");
+    beginResetPasswordCountdown(Number(data.retry_after_seconds) || OTP_RESEND_COOLDOWN_SECONDS);
+  } catch (error) {
+    setAuthMessage(error.message || "Could not resend the code.");
+    resetPasswordResendBtn.disabled = false;
+  }
 });
 
 if (doctorMfaRecoveryToggle) doctorMfaRecoveryToggle.addEventListener("click", () => {
@@ -6149,9 +7116,37 @@ signupForm.addEventListener("submit", async (event) => {
       blood_group: document.querySelector("#profileBloodGroup").value,
       health_issues: document.querySelector("#profileHealthIssues").value.trim() || null,
     });
-    setPatientAuthenticated(data.user, data.access_token);
+    patientVerifyToken = data.pending_token;
+    signupForm.classList.add("hidden");
+    if (patientVerifyHint) patientVerifyHint.textContent = `Enter the 6-digit code we emailed to ${data.email}.`;
+    patientVerifyForm?.classList.remove("hidden");
+    patientVerifyCode?.focus();
   } catch (error) {
     setAuthMessage(error.message);
+  }
+});
+
+if (patientVerifyForm) patientVerifyForm.addEventListener("submit", async (event) => {
+  event.preventDefault();
+  setAuthMessage("");
+  try {
+    const data = await postJson("/auth/verify-email", { code: patientVerifyCode.value.trim() }, patientVerifyToken);
+    setPatientAuthenticated(data.user, data.access_token, data.refresh_token);
+  } catch (error) {
+    setAuthMessage("That code is invalid or has expired.");
+  }
+});
+
+if (patientVerifyResendBtn) patientVerifyResendBtn.addEventListener("click", async () => {
+  setAuthMessage("");
+  patientVerifyResendBtn.disabled = true;
+  try {
+    await postJson("/auth/resend-verification", {}, patientVerifyToken);
+    setAuthMessage("A new code has been sent.");
+  } catch (error) {
+    setAuthMessage(error.message);
+  } finally {
+    setTimeout(() => { patientVerifyResendBtn.disabled = false; }, 30000);
   }
 });
 
@@ -6165,7 +7160,7 @@ if (adminLoginForm) {
         email: document.querySelector("#adminLoginEmail").value.trim(),
         password: document.querySelector("#adminLoginPassword").value,
       });
-      setAdminAuthenticated({ email: data.email, name: data.name, role: data.role }, data.access_token);
+      setAdminAuthenticated({ email: data.email, name: data.name, role: data.role }, data.access_token, data.refresh_token);
     } catch (error) {
       setAdminAuthMessage(error.message);
     }
@@ -6253,13 +7248,13 @@ async function bootstrapSession() {
     initAdminTimeSelects();
     if (currentUser && accessToken) {
       const data = await authedJson("/auth/me");
-      setPatientAuthenticated(data.user, accessToken);
+      setPatientAuthenticated(data.user, accessToken, refreshToken);
       return;
     }
 
     if (currentAdmin && adminAccessToken) {
       const data = await adminAuthedJson("/admin/me");
-      setAdminAuthenticated(data.admin, adminAccessToken);
+      setAdminAuthenticated(data.admin, adminAccessToken, adminRefreshToken);
       return;
     }
 
@@ -6286,11 +7281,17 @@ if (!initDoctorInviteRouting()) {
   bootstrapSession();
 }
 setSidebarOpen(sidebarOpen);
+wireAllPasswordToggles();
 
 document.querySelectorAll("[data-nav]").forEach((button) => {
   if (button.dataset.nav === "records") {
     button.addEventListener("click", () => {
       void loadRecordsArchive();
+    });
+  }
+  if (button.dataset.nav === "appointments") {
+    button.addEventListener("click", () => {
+      void refreshAppointmentsPage();
     });
   }
 });

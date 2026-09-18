@@ -31,12 +31,21 @@
           <label>Email<input id="loginEmail" type="email" autocomplete="email" required /></label>
           <label>Password<input id="loginPassword" type="password" autocomplete="current-password" required /></label>
           <button type="submit">Login</button>
+          <p class="auth-error" id="loginLockoutCountdown" role="status"></p>
+          <button class="secondary" id="showForgotPasswordBtn" type="button">Forgot password?</button>
         </form>
         <form class="auth-form hidden" id="doctorMfaForm">
           <p class="form-hint" id="doctorMfaFormHint">Enter the 6-digit code from your authenticator app.</p>
           <label id="doctorMfaCodeLabel">Authentication code<input id="doctorMfaCode" inputmode="numeric" autocomplete="one-time-code" maxlength="64" required /></label>
           <button type="submit">Verify and continue</button>
           <button class="secondary" id="doctorMfaRecoveryToggle" type="button">Use a recovery code instead</button>
+        </form>
+
+        <form class="auth-form hidden" id="patientMfaForm">
+          <p class="form-hint">Enter the 6-digit code from your authenticator app, or one of your backup codes.</p>
+          <label>Authentication code<input id="patientMfaCode" inputmode="text" autocomplete="one-time-code" maxlength="64" required /></label>
+          <button type="submit">Verify and continue</button>
+          <button class="secondary" id="patientMfaBackBtn" type="button">Back to login</button>
         </form>
 
         <form class="auth-form hidden" id="signupForm">
@@ -73,10 +82,43 @@
           </section>
         </form>
 
+        <form class="auth-form hidden" id="patientVerifyForm">
+          <p class="form-hint" id="patientVerifyHint">Enter the 6-digit code we emailed you.</p>
+          <label>Verification code<input id="patientVerifyCode" inputmode="numeric" autocomplete="one-time-code" maxlength="6" required /></label>
+          <button type="submit">Verify and continue</button>
+          <button class="secondary" id="patientVerifyResendBtn" type="button">Resend code</button>
+        </form>
+
+        <form class="auth-form hidden" id="forgotPasswordStartForm">
+          <p class="form-hint">Enter your email or mobile number and we'll help you reset your password.</p>
+          <label>Email or mobile number<input id="forgotPasswordIdentifier" type="text" autocomplete="username" required /></label>
+          <button type="submit">Continue</button>
+          <button class="secondary" id="forgotPasswordStartBackBtn" type="button">Back to login</button>
+        </form>
+
+        <form class="auth-form hidden" id="forgotPasswordConfirmEmailForm">
+          <p class="form-hint" id="forgotPasswordConfirmEmailHint">Confirm the email address on this account.</p>
+          <label>Email<input id="forgotPasswordConfirmEmail" type="email" autocomplete="email" required /></label>
+          <button type="submit">Continue</button>
+          <button class="secondary" id="forgotPasswordConfirmEmailBackBtn" type="button">Back to login</button>
+        </form>
+
+        <form class="auth-form hidden" id="resetPasswordForm">
+          <p class="form-hint">Enter the code we emailed you and choose a new password.</p>
+          <label>Code<input id="resetPasswordCode" inputmode="numeric" autocomplete="one-time-code" maxlength="6" required /></label>
+          <label>New password<input id="resetPasswordNew" type="password" autocomplete="new-password" minlength="8" required /></label>
+          <label>Confirm new password<input id="resetPasswordConfirm" type="password" autocomplete="new-password" required /></label>
+          <button type="submit">Reset password</button>
+          <p class="form-hint" id="resetPasswordCountdown"></p>
+          <button class="secondary" id="resetPasswordResendBtn" type="button">Resend code</button>
+          <button class="secondary" id="resetPasswordBackBtn" type="button">Back to login</button>
+        </form>
 
         <p class="auth-error" id="authMessage" role="alert"></p>
       </div>
     </section>
+
+    <div class="app-toast hidden" id="appToast" role="status"></div>
 
     <!-- ═══════════════════════════════════════ DOCTOR ONBOARDING ═══════════════════════════════════════ -->
     <section class="auth-view hidden" id="doctorOnboardingView" aria-label="Doctor account setup">
@@ -1087,18 +1129,31 @@
                 <section class="admin-view-pane hidden" id="adminAuditPane">
                   <div class="admin-list-header">
                     <div>
-                      <div class="eyebrow-label">Doctor auth</div>
+                      <div class="eyebrow-label">Audit</div>
                       <h2 class="panel-title">Audit log</h2>
                     </div>
                     <span class="panel-note" id="adminAuditResultCount">0 entries</span>
                   </div>
                   <section class="panel admin-filter-panel" aria-label="Audit log filters">
                     <div class="admin-filter-grid">
-                      <label class="admin-field" for="adminAuditDoctorFilter">
+                      <label class="admin-field" for="adminAuditLogType">
+                        <span>Log type</span>
+                        <select id="adminAuditLogType">
+                          <option value="doctor">Doctor auth</option>
+                          <option value="patient">Patient auth</option>
+                          <option value="admin_actions">Admin actions on patients</option>
+                          <option value="login">Login attempts</option>
+                        </select>
+                      </label>
+                      <label class="admin-field" for="adminAuditDoctorFilter" id="adminAuditDoctorFilterField">
                         <span>Doctor</span>
                         <select id="adminAuditDoctorFilter">
                           <option value="">All doctors</option>
                         </select>
+                      </label>
+                      <label class="admin-field hidden" for="adminAuditIdentifierFilter" id="adminAuditIdentifierFilterField">
+                        <span id="adminAuditIdentifierLabel">Patient ID</span>
+                        <input id="adminAuditIdentifierFilter" type="text" />
                       </label>
                       <label class="admin-field" for="adminAuditStartDate">
                         <span>Start date</span>

@@ -4,6 +4,7 @@ RUN apt-get update && apt-get install -y \
     gcc \
     libpq-dev \
     poppler-utils \
+    tzdata \
     && rm -rf /var/lib/apt/lists/*
 
 WORKDIR /app

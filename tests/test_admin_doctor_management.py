@@ -94,7 +94,8 @@ def test_login_status_expired_lock_does_not_count_as_locked():
 
 def test_unlock_doctor_account_clears_lock_and_audits(monkeypatch):
     connection = _Connection(fetchone_by_marker={
-        "SELECT id, email, failed_login_attempts": ("account-1", "doctor@example.com", 5),
+        "SELECT id, email": ("account-1", "doctor@example.com"),
+        "SELECT failed_attempts": (5,),
     })
 
     @contextmanager
@@ -103,12 +104,13 @@ def test_unlock_doctor_account_clears_lock_and_audits(monkeypatch):
 
     monkeypatch.setattr(doctor_auth, "connect_db", fake_connect_db)
     monkeypatch.setattr(doctor_auth, "ensure_doctor_auth_schema", lambda conn: None)
+    monkeypatch.setattr(doctor_auth, "ensure_lockout_schema", lambda conn: None)
 
     doctor_auth.unlock_doctor_account("doctor-1", actor_email="Admin@Example.com")
 
-    update_call = next(call for call in connection.cursor_instance.calls if "UPDATE doctor_accounts" in call[0])
-    assert "failed_login_attempts = 0" in update_call[0]
-    assert "locked_until = NULL" in update_call[0]
+    # Lockout state lives in the shared login_lockouts table now, not on the account row.
+    delete_call = next(call for call in connection.cursor_instance.calls if "DELETE FROM login_lockouts" in call[0])
+    assert delete_call[1] == ("doctor@example.com",)
 
     audit_call = next(call for call in connection.cursor_instance.calls if "INSERT INTO doctor_auth_audit_log" in call[0])
     sql, params = audit_call

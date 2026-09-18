@@ -7,7 +7,7 @@ from app.db.connection import connect_db
 from app.services.passwords import hash_password, verify_password
 from app.services.tokens import create_access_token
 from app.services.account_registry import ensure_registry_schema, reserve_email
-from app.services.doctor_auth import LOCKOUT_DURATION, LOCKOUT_THRESHOLD
+from app.services.login_lockout import check_lockout, clear_lockout, ensure_lockout_schema, record_failure
 
 
 @dataclass(frozen=True)
@@ -36,7 +36,6 @@ def ensure_admin_schema(conn):
             );
             """
         )
-        cur.execute("ALTER TABLE admin_accounts ADD COLUMN IF NOT EXISTS failed_login_attempts INTEGER NOT NULL DEFAULT 0; ALTER TABLE admin_accounts ADD COLUMN IF NOT EXISTS locked_until TIMESTAMP;")
 
 
 def _normalise_email(email: str) -> str:
@@ -96,17 +95,18 @@ def authenticate_admin_with_lockout(email: str, password: str) -> dict | None:
     with connect_db() as conn:
         ensure_admin_schema(conn)
         with conn.cursor() as cur:
-            cur.execute("SELECT admin_id,email,password_hash,name,is_active,failed_login_attempts,locked_until FROM admin_accounts WHERE email=%s FOR UPDATE", (email,))
+            ensure_lockout_schema(conn)
+            check_lockout(cur, email)
+            cur.execute("SELECT admin_id,email,password_hash,name,is_active FROM admin_accounts WHERE email=%s FOR UPDATE", (email,))
             row=cur.fetchone()
-            if not row: return None
-            admin_id, db_email, password_hash, name, active, failures, locked_until = row
-            now=datetime.now()
-            if locked_until and locked_until > now: return None
-            if not active or not verify_password(password, password_hash):
-                failures=int(failures)+1; locked=now+LOCKOUT_DURATION if failures>=LOCKOUT_THRESHOLD else None
-                cur.execute("UPDATE admin_accounts SET failed_login_attempts=%s, locked_until=%s, updated_at=NOW() WHERE admin_id=%s", (failures,locked,admin_id))
+            if not row:
+                record_failure(cur, email)
                 return None
-            cur.execute("UPDATE admin_accounts SET failed_login_attempts=0, locked_until=NULL, updated_at=NOW() WHERE admin_id=%s", (admin_id,))
+            admin_id, db_email, password_hash, name, active = row
+            if not active or not verify_password(password, password_hash):
+                record_failure(cur, email)
+                return None
+            clear_lockout(cur, email)
     token=create_access_token(subject=str(admin_id), email=db_email, role="admin")
     return {"role":"admin","email":db_email,"name":name,"access_token":token,"token_type":"bearer","account_id":str(admin_id)}
 

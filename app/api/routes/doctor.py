@@ -5,6 +5,7 @@ from pydantic import BaseModel
 from app.api.dependencies import bearer_scheme, get_current_doctor
 from app.services.appointments import doctor_appointments, doctor_patient_detail, doctor_patients
 from app.services.consults import list_latest_consult_status_by_booking
+from app.services.login_lockout import AccountLockedError
 from app.services.doctor_auth import (
     authenticate_doctor_password, check_rate_limit, complete_invite, complete_mfa_challenge,
     issue_invite, start_mfa_enrollment, verify_mfa_enrollment,
@@ -94,6 +95,17 @@ def doctor_login(request: LoginRequest, http_request: Request):
     try:
         check_rate_limit("login", ip, request.email.strip().lower())
         account_id, doctor_id, email = authenticate_doctor_password(request.email, request.password)
+    except AccountLockedError as exc:
+        # Ahead of the PermissionError branch below, which AccountLockedError subclasses.
+        minutes = max(1, round(exc.retry_after_seconds / 60))
+        raise HTTPException(
+            status_code=423,
+            detail={
+                "message": f"Too many failed attempts. Try again in {minutes} minute{'s' if minutes != 1 else ''}.",
+                "retry_after_seconds": exc.retry_after_seconds,
+            },
+            headers={"Retry-After": str(exc.retry_after_seconds)},
+        )
     except PermissionError as exc:
         if str(exc).startswith("Too many"):
             raise HTTPException(status_code=429, detail=str(exc), headers={"Retry-After": "300"})

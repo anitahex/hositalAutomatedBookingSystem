@@ -1,6 +1,14 @@
 services:
   postgres:
     image: postgres:15-alpine
+    # appointment_slots/appointment_bookings/chat_messages all store naive TIMESTAMP
+    # values authored as India-local (IST) clock times (see appointment_slots.csv and
+    # app/agents/appointment_booker.py's IST labeling). Without this, Postgres's session
+    # `timezone` GUC defaults to UTC, so NOW() renders ~5.5 hours behind real IST
+    # wall-clock when cast into those naive columns — which made already-passed morning
+    # slots still appear bookable in the afternoon. Postgres bundles its own IANA
+    # timezone database, so this needs no OS package on this image.
+    command: ["postgres", "-c", "timezone=Asia/Kolkata"]
     env_file:
       - .env
     environment:
@@ -38,6 +46,10 @@ services:
       QDRANT_MODE: remote
       QDRANT_URL: http://qdrant:6333
       CHECKPOINT_DB_PATH: /app/data/checkpoints.sqlite
+      # Keeps Python's naive date.today()/datetime.now() (used by appointments.py's
+      # booking-window checks) in agreement with postgres's now-IST NOW() above —
+      # see that service's comment for why this pairing matters.
+      TZ: Asia/Kolkata
     ports:
       # Served directly on :8010 — this is the app's public URL
       # (http://<host>:8010/). It deliberately does NOT use the host's nginx: that

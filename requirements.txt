@@ -47,3 +47,4 @@ websockets
 pytest
 pyotp
 cryptography
+freezegun

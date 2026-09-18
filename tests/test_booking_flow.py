@@ -375,17 +375,39 @@ def test_extract_requested_date_from_text_patterns():
     assert extract("5") is None
 
 
+def _bookable_date_phrase():
+    """A non-Sunday date inside the booking window, as both an ISO string and the
+    natural phrasing a patient would type.
+
+    Computed per run rather than hardcoded: these tests used to say "11 september" /
+    "2026-09-11", which stopped exercising the re-slot path entirely once that date
+    fell outside BOOKING_WINDOW_DAYS of today — a bare day+month rolls forward to the
+    *next* occurrence, i.e. nearly a year out, so the booker correctly diverted to the
+    date picker and the assertions failed for a reason that had nothing to do with the
+    behaviour under test.
+    """
+    from datetime import date, timedelta
+
+    today = date.today()
+    for offset in range(1, appointment_booker.BOOKING_WINDOW_DAYS + 1):
+        candidate = today + timedelta(days=offset)
+        if candidate.weekday() != 6:  # closed on Sundays
+            return candidate.isoformat(), f"{candidate.day} {candidate.strftime('%B').lower()}"
+    raise AssertionError("no non-Sunday date inside the booking window")
+
+
 def test_booker_reslots_same_doctor_for_extracted_date(monkeypatch):
     seen = {}
+    target_iso, target_phrase = _bookable_date_phrase()
 
     def fake_slots_on_date(doctor_id, requested_date, limit):
         seen["doctor_id"] = doctor_id
         seen["requested_date"] = requested_date
         return [
             {
-                "slot_id": "slot-sep-11",
-                "start_time": "2026-09-11T09:00:00",
-                "end_time": "2026-09-11T09:30:00",
+                "slot_id": "slot-target",
+                "start_time": f"{target_iso}T09:00:00",
+                "end_time": f"{target_iso}T09:30:00",
                 "doctor_name": "Dr. Amit Vyas",
             }
         ]
@@ -395,7 +417,7 @@ def test_booker_reslots_same_doctor_for_extracted_date(monkeypatch):
     state = appointment_booker.appointment_booker_node(
         {
             "awaiting": "slot_selection",
-            "user_input": "can i book for 11 september ?",
+            "user_input": f"can i book for {target_phrase} ?",
             "selected_doctor_id": "doc-amit",
             "selected_doctor_name": "Dr. Amit Vyas",
             "doctor_options": [{"doctor_id": "doc-amit", "doctor_name": "Dr. Amit Vyas"}],
@@ -405,13 +427,14 @@ def test_booker_reslots_same_doctor_for_extracted_date(monkeypatch):
 
     assert state["awaiting"] == "slot_selection"
     assert seen["doctor_id"] == "doc-amit"
-    assert seen["requested_date"] == "2026-09-11"
-    assert state["slot_options"][0]["slot_id"] == "slot-sep-11"
+    assert seen["requested_date"] == target_iso
+    assert state["slot_options"][0]["slot_id"] == "slot-target"
     assert "Dr. Amit Vyas" in state["final_response"]
 
 
 def test_booker_researches_doctors_for_extracted_date_when_none_selected_yet(monkeypatch):
     seen = {}
+    target_iso, target_phrase = _bookable_date_phrase()
 
     def fake_doctors_on_date(department, requested_date, limit):
         seen["department"] = department
@@ -421,14 +444,14 @@ def test_booker_researches_doctors_for_extracted_date_when_none_selected_yet(mon
                 "doctor_id": "doc-1",
                 "doctor_name": "Dr. A",
                 "experience_years": 10,
-                "next_available_time": "2026-09-11T09:00:00",
+                "next_available_time": f"{target_iso}T09:00:00",
                 "available_slot_count": 3,
             },
             {
                 "doctor_id": "doc-2",
                 "doctor_name": "Dr. B",
                 "experience_years": 5,
-                "next_available_time": "2026-09-11T10:00:00",
+                "next_available_time": f"{target_iso}T10:00:00",
                 "available_slot_count": 2,
             },
         ]
@@ -438,7 +461,7 @@ def test_booker_researches_doctors_for_extracted_date_when_none_selected_yet(mon
     state = appointment_booker.appointment_booker_node(
         {
             "awaiting": "doctor_selection",
-            "user_input": "can i book for 11 september ?",
+            "user_input": f"can i book for {target_phrase} ?",
             "target_department": "Cardiology",
             "doctor_options": [{"doctor_id": "doc-old", "doctor_name": "Dr. Old"}],
         }
@@ -446,8 +469,8 @@ def test_booker_researches_doctors_for_extracted_date_when_none_selected_yet(mon
 
     assert state["awaiting"] == "doctor_selection"
     assert seen["department"] == "Cardiology"
-    assert seen["requested_date"] == "2026-09-11"
-    assert "2026-09-11" in state["final_response"]
+    assert seen["requested_date"] == target_iso
+    assert target_iso in state["final_response"]
 
 
 def test_booker_rejects_extracted_sunday_date_with_picker():

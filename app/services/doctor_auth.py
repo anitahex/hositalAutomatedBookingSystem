@@ -4,21 +4,22 @@ import hashlib
 import json
 import os
 import secrets
-import smtplib
-import time
-from collections import defaultdict, deque
 from datetime import date, datetime, timedelta, timezone
-from email.message import EmailMessage
-from threading import Lock
 from uuid import UUID
 
-import pyotp
-from cryptography.fernet import Fernet, InvalidToken
-
 from app.db.connection import connect_db
+from app.services.email import send_email
 from app.services.passwords import hash_password, verify_password
 from app.services.users import validate_password
 from app.services.account_registry import ensure_registry_schema, reserve_email
+from app.services.login_lockout import (
+    AccountLockedError,
+    check_lockout,
+    clear_lockout,
+    ensure_lockout_schema,
+    record_failure,
+)
+from app.services import totp
 
 
 class DoctorInviteEmailConfigError(RuntimeError):
@@ -30,14 +31,12 @@ class DoctorInviteEmailConfigError(RuntimeError):
 
 
 INVITE_TTL = timedelta(hours=48)
-LOCKOUT_THRESHOLD = 5
-LOCKOUT_DURATION = timedelta(minutes=30)
-TOTP_INTERVAL = 30
-_rate_lock = Lock()
-_rate_windows: dict[str, deque[float]] = defaultdict(deque)
 
 
 def ensure_doctor_auth_schema(conn) -> None:
+    # login_lockouts is owned by app/services/login_lockout.py but ensured here too:
+    # every doctor auth path and admin_management's doctor-list join both read it.
+    ensure_lockout_schema(conn)
     with conn.cursor() as cur:
         cur.execute("CREATE EXTENSION IF NOT EXISTS pgcrypto;")
         cur.execute("""
@@ -46,7 +45,7 @@ def ensure_doctor_auth_schema(conn) -> None:
                 email TEXT NOT NULL UNIQUE, hashed_password TEXT, totp_secret TEXT,
                 mfa_enabled BOOLEAN NOT NULL DEFAULT FALSE, recovery_codes TEXT[] NOT NULL DEFAULT ARRAY[]::TEXT[],
                 is_active BOOLEAN NOT NULL DEFAULT FALSE, invite_token_hash TEXT, invite_expires_at TIMESTAMP,
-                invite_consumed_at TIMESTAMP, failed_login_attempts INTEGER NOT NULL DEFAULT 0, locked_until TIMESTAMP,
+                invite_consumed_at TIMESTAMP,
                 last_login_at TIMESTAMP, last_totp_step BIGINT, created_at TIMESTAMP NOT NULL DEFAULT NOW(), updated_at TIMESTAMP NOT NULL DEFAULT NOW()
             );
             CREATE TABLE IF NOT EXISTS doctor_auth_audit_log (
@@ -73,18 +72,11 @@ def _audit(cur, action: str, doctor_id=None, email: str | None = None, **metadat
     )
 
 
-def _fernet() -> Fernet:
+def _fernet_key() -> str:
     key = os.getenv("DOCTOR_AUTH_ENCRYPTION_KEY", "").strip()
     if not key:
         raise RuntimeError("DOCTOR_AUTH_ENCRYPTION_KEY must be configured.")
-    return Fernet(key.encode("utf-8"))
-
-
-def _decrypt_totp(value: str) -> str:
-    try:
-        return _fernet().decrypt(value.encode("utf-8")).decode("utf-8")
-    except (InvalidToken, ValueError) as exc:
-        raise ValueError("The enrolled MFA factor is unavailable.") from exc
+    return key
 
 
 def _send_invite_email(email: str, token: str, *, reset: bool) -> str | None:
@@ -105,18 +97,17 @@ def _send_invite_email(email: str, token: str, *, reset: bool) -> str | None:
     sender = os.getenv("DOCTOR_AUTH_EMAIL_FROM", "").strip()
     if not host or not sender:
         raise DoctorInviteEmailConfigError("SMTP host and sender are required when doctor email delivery is enabled.")
-    message = EmailMessage()
-    message["Subject"] = "Reset your hospital doctor account password" if reset else "Set up your hospital doctor account"
-    message["From"] = sender
-    message["To"] = email
-    message.set_content(f"Use this one-time link within 48 hours: {link}")
-    port = int(os.getenv("DOCTOR_AUTH_SMTP_PORT", "587"))
-    with smtplib.SMTP(host, port, timeout=15) as smtp:
-        if os.getenv("DOCTOR_AUTH_SMTP_USE_TLS", "true").lower() == "true":
-            smtp.starttls()
-        if os.getenv("DOCTOR_AUTH_SMTP_USERNAME"):
-            smtp.login(os.environ["DOCTOR_AUTH_SMTP_USERNAME"], os.getenv("DOCTOR_AUTH_SMTP_PASSWORD", ""))
-        smtp.send_message(message)
+    send_email(
+        host=host,
+        port=int(os.getenv("DOCTOR_AUTH_SMTP_PORT", "587")),
+        use_tls=os.getenv("DOCTOR_AUTH_SMTP_USE_TLS", "true").lower() == "true",
+        username=os.getenv("DOCTOR_AUTH_SMTP_USERNAME"),
+        password=os.getenv("DOCTOR_AUTH_SMTP_PASSWORD", ""),
+        sender=sender,
+        to=email,
+        subject="Reset your hospital doctor account password" if reset else "Set up your hospital doctor account",
+        body=f"Use this one-time link within 48 hours: {link}",
+    )
     return None
 
 
@@ -201,15 +192,17 @@ def complete_invite(token: str, password: str) -> dict:
                 _audit(cur, "invite_completion_rejected_expired", doctor_id, email)
                 raise PermissionError("Invite token has expired.")
             cur.execute("""UPDATE doctor_accounts SET hashed_password = %s, is_active = TRUE,
-                invite_consumed_at = NOW(), failed_login_attempts = 0, locked_until = NULL, updated_at = NOW()
+                invite_consumed_at = NOW(), updated_at = NOW()
                 WHERE id = %s""", (hash_password(password), account_id))
+            ensure_lockout_schema(conn)
+            clear_lockout(cur, email)
             _audit(cur, "invite_completed", doctor_id, email)
     return {"doctor_id": str(doctor_id), "account_id": str(account_id), "email": email, "mfa_enabled": bool(mfa_enabled)}
 
 
 def start_mfa_enrollment(account_id: str) -> str:
-    secret = pyotp.random_base32()
-    encrypted = _fernet().encrypt(secret.encode("utf-8")).decode("utf-8")
+    secret = totp.generate_secret()
+    encrypted = totp.encrypt_secret(secret, _fernet_key())
     with connect_db() as conn:
         ensure_doctor_auth_schema(conn)
         with conn.cursor() as cur:
@@ -219,7 +212,7 @@ def start_mfa_enrollment(account_id: str) -> str:
                 raise PermissionError("MFA enrollment is not available.")
             cur.execute("UPDATE doctor_accounts SET totp_secret = %s, updated_at = NOW() WHERE id = %s", (encrypted, account_id))
             _audit(cur, "mfa_enrollment_started", row[0], row[1])
-            return pyotp.TOTP(secret, interval=TOTP_INTERVAL).provisioning_uri(name=row[1], issuer_name="Smart Hospital Portal")
+            return totp.provisioning_uri(secret, name=row[1])
 
 
 def verify_mfa_enrollment(account_id: str, code: str) -> list[str]:
@@ -230,11 +223,11 @@ def verify_mfa_enrollment(account_id: str, code: str) -> list[str]:
             row = cur.fetchone()
             if not row or not row[3] or row[4] or not row[2]:
                 raise PermissionError("MFA enrollment is not available.")
-            secret = _decrypt_totp(row[2])
-            if not pyotp.TOTP(secret, interval=TOTP_INTERVAL).verify(code, valid_window=1):
+            secret = totp.decrypt_secret(row[2], _fernet_key())
+            if totp.verify_totp(secret, code, None) is None:
                 _audit(cur, "mfa_enrollment_verification_failed", row[0], row[1])
                 raise PermissionError("Invalid MFA code.")
-            recovery_codes = [secrets.token_urlsafe(10) for _ in range(10)]
+            recovery_codes = totp.generate_backup_codes()
             hashes = [hash_password(value) for value in recovery_codes]
             cur.execute("UPDATE doctor_accounts SET mfa_enabled = TRUE, recovery_codes = %s, updated_at = NOW() WHERE id = %s", (hashes, account_id))
             _audit(cur, "mfa_enrolled", row[0], row[1])
@@ -245,30 +238,41 @@ def authenticate_doctor_password(email: str, password: str) -> tuple[str, str, s
     normalized = _email(email)
     with connect_db() as conn:
         ensure_doctor_auth_schema(conn)
-        with conn.cursor() as cur:
-            cur.execute("""SELECT id, doctor_id, email, hashed_password, is_active, mfa_enabled,
-                failed_login_attempts, locked_until FROM doctor_accounts WHERE email = %s FOR UPDATE""", (normalized,))
-            row = cur.fetchone()
-            if not row:
-                _audit(cur, "login_failed_unknown_email", None, normalized)
-                raise PermissionError("Invalid email or password.")
-            account_id, doctor_id, db_email, password_hash, active, mfa_enabled, failures, locked_until = row
-            now = datetime.now()
-            if locked_until and locked_until > now:
-                _audit(cur, "login_rejected_locked", doctor_id, db_email)
-                raise PermissionError("Invalid email or password.")
-            if not active or not password_hash or not verify_password(password, password_hash):
-                failures = int(failures) + 1
-                locked = now + LOCKOUT_DURATION if failures >= LOCKOUT_THRESHOLD else None
-                cur.execute("UPDATE doctor_accounts SET failed_login_attempts = %s, locked_until = %s, updated_at = NOW() WHERE id = %s", (failures, locked, account_id))
-                _audit(cur, "account_locked" if locked else "login_failed", doctor_id, db_email)
-                raise PermissionError("Invalid email or password.")
-            if not mfa_enabled:
-                _audit(cur, "login_rejected_mfa_not_enrolled", doctor_id, db_email)
-                raise PermissionError("MFA enrollment is required before login.")
-            cur.execute("UPDATE doctor_accounts SET failed_login_attempts = 0, locked_until = NULL, updated_at = NOW() WHERE id = %s", (account_id,))
-            _audit(cur, "password_verified_mfa_pending", doctor_id, db_email)
-            return str(account_id), str(doctor_id), db_email
+        ensure_lockout_schema(conn)
+        try:
+            with conn.cursor() as cur:
+                check_lockout(cur, normalized)
+                cur.execute("""SELECT id, doctor_id, email, hashed_password, is_active, mfa_enabled
+                    FROM doctor_accounts WHERE email = %s FOR UPDATE""", (normalized,))
+                row = cur.fetchone()
+                if not row:
+                    record_failure(cur, normalized)
+                    _audit(cur, "login_failed_unknown_email", None, normalized)
+                    raise PermissionError("Invalid email or password.")
+                account_id, doctor_id, db_email, password_hash, active, mfa_enabled = row
+                if not active or not password_hash or not verify_password(password, password_hash):
+                    record_failure(cur, normalized)
+                    _audit(cur, "login_failed", doctor_id, db_email)
+                    raise PermissionError("Invalid email or password.")
+                if not mfa_enabled:
+                    _audit(cur, "login_rejected_mfa_not_enrolled", doctor_id, db_email)
+                    raise PermissionError("MFA enrollment is required before login.")
+                clear_lockout(cur, normalized)
+                _audit(cur, "password_verified_mfa_pending", doctor_id, db_email)
+                return str(account_id), str(doctor_id), db_email
+        except AccountLockedError:
+            with conn.cursor() as cur:
+                _audit(cur, "login_rejected_locked", None, normalized)
+            conn.commit()
+            raise
+        except PermissionError:
+            # connect_db() rolls back on any exception, which would silently discard the
+            # failure counter and audit row written just above — the reason doctor
+            # lockout never actually engaged before. Commit the bookkeeping, then let
+            # the rejection propagate. Only our own control-flow exception is committed
+            # this way; a real database error still rolls back.
+            conn.commit()
+            raise
 
 
 def complete_mfa_challenge(account_id: str, code: str) -> tuple[str, str, str, bool]:
@@ -281,19 +285,17 @@ def complete_mfa_challenge(account_id: str, code: str) -> tuple[str, str, str, b
             if not row or not row[4] or not row[5] or not row[2]:
                 raise PermissionError("Invalid MFA challenge.")
             doctor_id, email, encrypted_secret, recovery_hashes, _, _, last_step = row
-            secret = _decrypt_totp(encrypted_secret)
-            step = int(time.time() // TOTP_INTERVAL)
-            totp = pyotp.TOTP(secret, interval=TOTP_INTERVAL)
-            if totp.verify(code, valid_window=1):
-                # Accept clock-skew neighbours, but permanently consume the actual matching interval.
-                matching_step = next((candidate for candidate in (step, step - 1, step + 1)
-                                      if totp.at(candidate * TOTP_INTERVAL) == code), None)
-                if matching_step is None or (last_step is not None and matching_step <= int(last_step)):
-                    _audit(cur, "mfa_challenge_rejected_replay", doctor_id, email)
-                    raise PermissionError("Invalid MFA code.")
+            secret = totp.decrypt_secret(encrypted_secret, _fernet_key())
+            try:
+                matching_step = totp.verify_totp(secret, code, last_step)
+            except totp.TotpReplayError:
+                _audit(cur, "mfa_challenge_rejected_replay", doctor_id, email)
+                raise PermissionError("Invalid MFA code.")
+            if matching_step is not None:
                 cur.execute("UPDATE doctor_accounts SET last_totp_step = %s, last_login_at = NOW(), updated_at = NOW() WHERE id = %s", (matching_step, account_id))
                 _audit(cur, "login_success", doctor_id, email)
                 return str(doctor_id), email, str(account_id), False
+            # else: not a valid TOTP code at all — fall through to recovery-code check.
             matched_hash = next((stored for stored in recovery_hashes if verify_password(code, stored)), None)
             if not matched_hash:
                 _audit(cur, "mfa_challenge_failed", doctor_id, email)
@@ -324,20 +326,21 @@ def unlock_doctor_account(doctor_id: str, *, actor_email: str) -> None:
         ensure_doctor_auth_schema(conn)
         with conn.cursor() as cur:
             cur.execute(
-                "SELECT id, email, failed_login_attempts FROM doctor_accounts WHERE doctor_id = %s FOR UPDATE",
+                "SELECT id, email FROM doctor_accounts WHERE doctor_id = %s FOR UPDATE",
                 (doctor_id,),
             )
             row = cur.fetchone()
             if not row:
                 raise ValueError("Doctor account not found.")
-            account_id, email, failures = row
-            cur.execute(
-                "UPDATE doctor_accounts SET failed_login_attempts = 0, locked_until = NULL, updated_at = NOW() WHERE id = %s",
-                (account_id,),
-            )
+            account_id, email = row
+            ensure_lockout_schema(conn)
+            cur.execute("SELECT failed_attempts FROM login_lockouts WHERE email = %s;", (_email(email),))
+            existing = cur.fetchone()
+            clear_lockout(cur, email)
             _audit(
                 cur, "account_unlocked_by_admin", doctor_id, email,
-                admin_email=_email(actor_email), had_failed_attempts=int(failures or 0),
+                admin_email=_email(actor_email),
+                had_failed_attempts=int(existing[0]) if existing else 0,
             )
         conn.commit()
 
@@ -396,14 +399,64 @@ def list_doctor_auth_audit_log(
     }
 
 
-def check_rate_limit(scope: str, ip: str, account_key: str) -> None:
-    limit = int(os.getenv("DOCTOR_AUTH_LOGIN_RATE_LIMIT" if scope == "login" else "DOCTOR_AUTH_MFA_RATE_LIMIT", "10"))
-    now = time.monotonic()
-    for key in (f"{scope}:ip:{ip}", f"{scope}:account:{account_key}"):
-        with _rate_lock:
-            window = _rate_windows[key]
-            while window and now - window[0] >= 300:
-                window.popleft()
-            if len(window) >= limit:
-                raise PermissionError("Too many authentication attempts. Please try again later.")
-            window.append(now)
+def ensure_rate_limit_schema(conn) -> None:
+    with conn.cursor() as cur:
+        cur.execute(
+            """
+            CREATE TABLE IF NOT EXISTS rate_limit_events (
+                id BIGSERIAL PRIMARY KEY,
+                rate_key TEXT NOT NULL,
+                occurred_at TIMESTAMP NOT NULL DEFAULT NOW()
+            );
+
+            CREATE INDEX IF NOT EXISTS idx_rate_limit_events_key_time ON rate_limit_events(rate_key, occurred_at);
+            """
+        )
+
+
+def check_rate_limit(scope: str, ip: str, account_key: str, *, limit: int | None = None, window_seconds: int = 300) -> None:
+    """limit/window_seconds are optional, additive overrides — every existing caller
+    (doctor login/MFA, email_verify_resend) omits them and gets today's exact
+    behavior (env-var-derived limit, 300s window) unchanged. New callers (password-
+    reset resend) pass both explicitly.
+
+    Postgres-backed sliding-window log (rate_limit_events) rather than the original
+    in-memory dict — the in-memory version is only correct for a single worker
+    process; every process would otherwise get its own independent counters.
+    pg_advisory_xact_lock(hashtext(key)) serializes concurrent checks on the SAME key
+    only (an improvement over the original's single global lock across every key),
+    closing the check-then-insert race a naive port would have."""
+    if limit is None:
+        limit = int(os.getenv("DOCTOR_AUTH_LOGIN_RATE_LIMIT" if scope == "login" else "DOCTOR_AUTH_MFA_RATE_LIMIT", "10"))
+
+    # Deliberately a SEPARATE, sequential (not nested) connect_db() call from the one
+    # below, fully committed before the advisory lock is ever requested. Combining
+    # ensure_rate_limit_schema's CREATE INDEX IF NOT EXISTS (a table-level lock) with
+    # pg_advisory_xact_lock in the SAME transaction reproduced the exact deadlock
+    # class already documented in app/db/connection.py's DANGER docstring — caught
+    # by this test's own concurrency test (a genuine `deadlock detected` from
+    # Postgres, not a flake). This is a hot path (every login/resend attempt), so the
+    # two lock kinds must never be held in the same transaction.
+    with connect_db() as conn:
+        ensure_rate_limit_schema(conn)
+
+    with connect_db() as conn:
+        try:
+            with conn.cursor() as cur:
+                for key in (f"{scope}:ip:{ip}", f"{scope}:account:{account_key}"):
+                    cur.execute("SELECT pg_advisory_xact_lock(hashtext(%s));", (key,))
+                    cur.execute(
+                        "DELETE FROM rate_limit_events WHERE rate_key = %s AND occurred_at < NOW() - (%s * INTERVAL '1 second');",
+                        (key, window_seconds),
+                    )
+                    cur.execute("SELECT COUNT(*) FROM rate_limit_events WHERE rate_key = %s;", (key,))
+                    if cur.fetchone()[0] >= limit:
+                        conn.commit()
+                        raise PermissionError("Too many authentication attempts. Please try again later.")
+                    cur.execute("INSERT INTO rate_limit_events (rate_key) VALUES (%s);", (key,))
+            conn.commit()
+        except PermissionError:
+            raise
+        except Exception:
+            conn.rollback()
+            raise

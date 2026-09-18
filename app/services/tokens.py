@@ -31,6 +31,12 @@ if not JWT_SECRET:
 
 JWT_EXP_SECONDS = int(os.getenv("JWT_EXP_SECONDS", str(60 * 60 * 24 * 7)))
 
+# Short-lived access token TTL for the refresh-token-backed patient/admin flows
+# (app/services/refresh_tokens.py). Deliberately NOT the module-wide JWT_EXP_SECONDS
+# default above — doctor sessions don't get refresh tokens, so shortening the global
+# default would leave doctors with no way to renew a session.
+ACCESS_TOKEN_TTL_SECONDS = 1800
+
 # For a genuine secret-rotation window only: set JWT_LEGACY_SECRET to the PREVIOUS
 # JWT_SECRET value while rotating, so tokens issued before the rotation still verify
 # until they naturally expire. Unlike the old behavior, nothing is accepted here
@@ -60,14 +66,21 @@ def create_access_token(
     if not token_subject:
         raise ValueError("A token subject is required.")
 
-    now = int(time.time())
+    # Sub-second precision matters for iat specifically: current_user compares it
+    # against users.password_changed_at (full Postgres timestamp precision) to
+    # invalidate sessions on a password change. Truncating iat to a whole second here
+    # made a token issued in the same wall-clock second as a password change
+    # ambiguous in BOTH directions depending on truncation — a real bug caught while
+    # testing change-password. exp still floors to a whole second (unchanged
+    # granularity for expiry, where sub-second precision has no value).
+    now = time.time()
     header = {"alg": "HS256", "typ": "JWT"}
     payload = {
         "sub": token_subject,
         "email": email,
         "role": role,
         "iat": now,
-        "exp": now + (expires_in_seconds or JWT_EXP_SECONDS),
+        "exp": int(now) + (expires_in_seconds or JWT_EXP_SECONDS),
         # Unique per-token id so a specific token can be revoked (see revoke_token/
         # is_token_revoked below) without needing a blacklist keyed on the raw token
         # string. Tokens issued before this field existed simply have no jti and can't
@@ -107,6 +120,26 @@ def create_doctor_mfa_pending_token(*, doctor_id: str, account_id: str, email: s
         role="doctor",
         expires_in_seconds=300,
         extra_claims={"token_kind": "doctor_mfa_pending", "aud": "doctor_mfa_challenge", "doctor_id": doctor_id, "account_id": account_id},
+    )
+
+
+def create_patient_email_pending_token(*, user_id: str, email: str) -> str:
+    return create_access_token(
+        subject=user_id,
+        email=email,
+        role="patient",
+        expires_in_seconds=600,
+        extra_claims={"token_kind": "patient_email_pending", "aud": "patient_email_verification"},
+    )
+
+
+def create_patient_mfa_pending_token(*, user_id: str, email: str) -> str:
+    return create_access_token(
+        subject=user_id,
+        email=email,
+        role="patient",
+        expires_in_seconds=300,
+        extra_claims={"token_kind": "patient_mfa_pending", "aud": "patient_mfa_challenge"},
     )
 
 
