@@ -10,6 +10,7 @@ premature abstraction").
 """
 import hashlib
 import hmac
+import logging
 import os
 import secrets
 import threading
@@ -27,6 +28,8 @@ OTP_TTL_MINUTES = 4
 RESEND_COOLDOWN_SECONDS = 240
 PURPOSE_PASSWORD_RESET = "password_reset"
 PURPOSE_CHANGE_PASSWORD = "change_password"
+
+logger = logging.getLogger(__name__)
 
 
 def ensure_password_reset_schema(conn) -> None:
@@ -106,6 +109,18 @@ def _send_otp_email(email: str, otp: str, purpose: str) -> None:
     )
 
 
+def _send_otp_email_safe(email: str, otp: str, purpose: str) -> None:
+    # Same rationale as email_verification.py's _send_verification_email_safe: this
+    # runs on a daemon thread with nothing left to propagate a failure to, so without
+    # explicit logging a broken SMTP send is indistinguishable from one that never ran.
+    try:
+        _send_otp_email(email, otp, purpose)
+    except Exception:
+        logger.exception("Failed to send %s OTP email to domain %s", purpose, email.rsplit("@", 1)[-1])
+    else:
+        logger.info("Sent %s OTP email to domain %s", purpose, email.rsplit("@", 1)[-1])
+
+
 def _send_security_notification(email: str, subject: str, body: str) -> None:
     """Best-effort — never raises. The password change has already committed by the
     time this is called; a bounced/failed notification must not undo it."""
@@ -164,7 +179,7 @@ def _issue_otp(email: str, purpose: str) -> None:
     # seconds, and the caller (a route the frontend is waiting on to move to the
     # next screen) has already durably persisted the OTP by this point — nothing
     # downstream needs to wait for the send itself to finish.
-    threading.Thread(target=_send_otp_email, args=(email, otp, purpose), daemon=True).start()
+    threading.Thread(target=_send_otp_email_safe, args=(email, otp, purpose), daemon=True).start()
 
 
 def _find_email_by_mobile(mobile_number: str) -> str | None:
