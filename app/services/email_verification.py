@@ -7,6 +7,7 @@ parallel set of email config.
 """
 import hashlib
 import hmac
+import logging
 import os
 import secrets
 import threading
@@ -18,6 +19,8 @@ from app.services.users import ensure_user_schema
 
 CODE_TTL = timedelta(minutes=10)
 MAX_ATTEMPTS = 5
+
+logger = logging.getLogger(__name__)
 
 
 def ensure_email_verification_schema(conn) -> None:
@@ -77,7 +80,21 @@ def generate_and_send_code(user_id: str, email: str) -> None:
     # Fire-and-forget — the code is already durably persisted above; the caller
     # (signup / resend-verification) shouldn't block on the real SMTP round-trip to
     # move the UI to the next screen.
-    threading.Thread(target=_send_verification_email, args=(email, code), daemon=True).start()
+    threading.Thread(target=_send_verification_email_safe, args=(email, code), daemon=True).start()
+
+
+def _send_verification_email_safe(email: str, code: str) -> None:
+    # Runs on a daemon thread with no caller left to propagate to, so a failure here
+    # would otherwise only surface as Python's default unhandled-thread-exception
+    # traceback on stderr — easy to miss and hard to tell apart from "nothing ran at
+    # all". Logging explicitly, with the email's domain (not the full address) as
+    # context, makes success/failure/never-ran distinguishable in `docker logs`.
+    try:
+        _send_verification_email(email, code)
+    except Exception:
+        logger.exception("Failed to send patient verification email to domain %s", email.rsplit("@", 1)[-1])
+    else:
+        logger.info("Sent patient verification email to domain %s", email.rsplit("@", 1)[-1])
 
 
 def _send_verification_email(email: str, code: str) -> None:
