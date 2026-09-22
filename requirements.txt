@@ -40,6 +40,9 @@ openai>=1.0
 azure-storage-blob>=12.0
 aiohttp
 
+# Gmail API transport for all outgoing mail (app/services/email.py)
+httpx
+
 # WebSocket support
 websockets
 

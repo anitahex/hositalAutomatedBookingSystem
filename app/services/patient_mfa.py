@@ -63,16 +63,10 @@ def _send_security_notification(email: str, subject: str, body: str) -> None:
         if os.getenv("PATIENT_AUTH_EMAIL_NO_SEND", "false").lower() == "true":
             print(f"[patient-mfa:no-send] {subject} -> {email}", flush=True)
             return
-        host = os.getenv("DOCTOR_AUTH_SMTP_HOST", "").strip()
         sender = os.getenv("DOCTOR_AUTH_EMAIL_FROM", "").strip()
-        if not host or not sender:
+        if not sender:
             return
         send_email(
-            host=host,
-            port=int(os.getenv("DOCTOR_AUTH_SMTP_PORT", "587")),
-            use_tls=os.getenv("DOCTOR_AUTH_SMTP_USE_TLS", "true").lower() == "true",
-            username=os.getenv("DOCTOR_AUTH_SMTP_USERNAME"),
-            password=os.getenv("DOCTOR_AUTH_SMTP_PASSWORD", ""),
             sender=sender,
             to=email,
             subject=subject,

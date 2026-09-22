@@ -93,16 +93,10 @@ def _send_invite_email(email: str, token: str, *, reset: bool) -> str | None:
         # isn't explicitly set to true, i.e. never when email is actually live.
         print(f"[doctor-invite:no-send] {'reset' if reset else 'invite'} link for {email}: {link}", flush=True)
         return link
-    host = os.getenv("DOCTOR_AUTH_SMTP_HOST", "").strip()
     sender = os.getenv("DOCTOR_AUTH_EMAIL_FROM", "").strip()
-    if not host or not sender:
-        raise DoctorInviteEmailConfigError("SMTP host and sender are required when doctor email delivery is enabled.")
+    if not sender:
+        raise DoctorInviteEmailConfigError("DOCTOR_AUTH_EMAIL_FROM is required when doctor email delivery is enabled.")
     send_email(
-        host=host,
-        port=int(os.getenv("DOCTOR_AUTH_SMTP_PORT", "587")),
-        use_tls=os.getenv("DOCTOR_AUTH_SMTP_USE_TLS", "true").lower() == "true",
-        username=os.getenv("DOCTOR_AUTH_SMTP_USERNAME"),
-        password=os.getenv("DOCTOR_AUTH_SMTP_PASSWORD", ""),
         sender=sender,
         to=email,
         subject="Reset your hospital doctor account password" if reset else "Set up your hospital doctor account",

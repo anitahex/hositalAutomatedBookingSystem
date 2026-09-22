@@ -1,9 +1,8 @@
 """Patient signup email verification — a 6-digit code, entered inline in the signup UI,
 that must be confirmed before an account is usable. Mirrors the doctor-invite flow's
 security conventions (only a hash of the secret is ever stored, single active
-code/token per account) and reuses its SMTP transport (DOCTOR_AUTH_SMTP_*,
-DOCTOR_AUTH_EMAIL_FROM, DOCTOR_AUTH_EMAIL_NO_SEND) rather than adding a second,
-parallel set of email config.
+code/token per account) and reuses its email transport (app/services/email.py,
+DOCTOR_AUTH_EMAIL_FROM) rather than adding a second, parallel set of email config.
 """
 import hashlib
 import hmac
@@ -99,9 +98,9 @@ def _send_verification_email_safe(email: str, code: str) -> None:
 
 def _send_verification_email(email: str, code: str) -> None:
     # Deliberately a SEPARATE flag from DOCTOR_AUTH_EMAIL_NO_SEND: the two flows share
-    # one SMTP transport (DOCTOR_AUTH_SMTP_*/DOCTOR_AUTH_EMAIL_FROM below) but need
-    # independent on/off switches — e.g. doctor invites still log-only for now while
-    # patient verification sends real email.
+    # one transport (app/services/email.py) but need independent on/off switches —
+    # e.g. doctor invites still log-only for now while patient verification sends
+    # real email.
     if os.getenv("PATIENT_AUTH_EMAIL_NO_SEND", "false").lower() == "true":
         # Same dev/test fallback convention as doctor_auth.py's _send_invite_email —
         # gated behind this flag so this only ever fires when email delivery is
@@ -109,17 +108,11 @@ def _send_verification_email(email: str, code: str) -> None:
         print(f"[patient-verify:no-send] code for {email}: {code}", flush=True)
         return
 
-    host = os.getenv("DOCTOR_AUTH_SMTP_HOST", "").strip()
     sender = os.getenv("DOCTOR_AUTH_EMAIL_FROM", "").strip()
-    if not host or not sender:
-        raise RuntimeError("SMTP host and sender are required when patient email delivery is enabled.")
+    if not sender:
+        raise RuntimeError("DOCTOR_AUTH_EMAIL_FROM is required when patient email delivery is enabled.")
 
     send_email(
-        host=host,
-        port=int(os.getenv("DOCTOR_AUTH_SMTP_PORT", "587")),
-        use_tls=os.getenv("DOCTOR_AUTH_SMTP_USE_TLS", "true").lower() == "true",
-        username=os.getenv("DOCTOR_AUTH_SMTP_USERNAME"),
-        password=os.getenv("DOCTOR_AUTH_SMTP_PASSWORD", ""),
         sender=sender,
         to=email,
         subject="Verify your hospital account email",
