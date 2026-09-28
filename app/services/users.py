@@ -12,6 +12,7 @@ from app.services.login_lockout import (
     ensure_lockout_schema,
     record_failure,
 )
+from app.db.schema_once import once_per_process
 
 
 PASSWORD_PATTERN = re.compile(
@@ -56,6 +57,7 @@ def normalize_mobile_number_india(value: str | None) -> str | None:
     return None
 
 
+@once_per_process
 def ensure_user_schema(conn):
     ensure_lockout_schema(conn)
     with conn.cursor() as cur:

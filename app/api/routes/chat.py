@@ -15,6 +15,7 @@ import websockets
 from websockets.exceptions import ConnectionClosed
 
 from app.api.dependencies import current_user
+from app.agents.document_followup import AWAITING_DOCUMENT_FOLLOW_UP
 from app.agents.graph import arun_patient_chat, initialise_hybrid_memory, run_patient_chat
 from app.agents.intake_utils import CRISIS_SAFETY_RESPONSE, looks_like_crisis_or_harm
 from app.services.appointments import upcoming_bookings_for_patient
@@ -23,6 +24,7 @@ from app.services.tokens import verify_access_token
 from app.services.document_pipeline import (
     ALLOWED_UPLOAD_MIME_TYPES,
     _extract_pdf_text,
+    extract_pdf_pages,
     extract_uploaded_document,
 )
 from app.services.blob_storage import (
@@ -35,11 +37,14 @@ from app.services.blob_storage import (
     summary_blob_path,
 )
 from app.services.document_catalog import (
+    PAGE_SOURCE_PDF_TEXT,
+    PAGE_SOURCE_VISION,
     consume_pending_upload,
     create_catalog_row,
     get_catalog_entry,
     mark_catalog_failed,
     list_user_documents,
+    save_document_pages,
     save_pending_upload,
     update_catalog_after_extraction,
 )
@@ -401,27 +406,98 @@ def _text_tokens(text: str):
         yield match.group(0)
 
 
+# Content keywords, used only when the analysis did not name a specialist itself.
+#
+# Pathology, Radiology, Gynecology and Urology were here and have been removed: none is a
+# department in this hospital, so each resolved to zero bookable doctors, and the first two
+# are the services that PRODUCED the document rather than ones that treat the patient. A
+# blood report matched "Pathology" on the word "cbc" — which is where the document came
+# from, not where the patient should go.
+_CONTENT_DEPT_KEYWORDS: list[tuple[str, list[str]]] = [
+    ("Orthopedics",      ["ortho", "spine", "lumbar", "fracture", "bone", "lba", "vertebra"]),
+    ("Cardiology",       ["cardio", "heart", "ecg", "hypertension", "coronary"]),
+    ("Neurology",        ["neuro", "brain", "nerve", "epilepsy", "stroke"]),
+    ("Endocrinology",    ["diabetes", "thyroid", "hba1c", "insulin"]),
+    ("Pulmonology",      ["lung", "asthma", "copd", "respiratory"]),
+    ("Gastroenterology", ["gastro", "liver", "bowel", "hepatitis"]),
+    ("Nephrology",       ["kidney", "renal", "creatinine", "dialysis"]),
+    ("Oncology",         ["cancer", "tumor", "malignant", "biopsy"]),
+    ("Dermatology",      ["skin", "rash", "eczema", "derma"]),
+    ("Psychiatry",       ["anxiety", "depression", "insomnia", "psychiatric", "mental health"]),
+    ("Hematology",       ["anaemia", "anemia", "leukemia", "clotting", "haemophilia"]),
+]
+
+
+def _extract_labelled_line(text: str, label: str) -> str | None:
+    """Pulls a '- **Label:** value' line out of the generated analysis.
+
+    The streaming prompt now asks for Referred By and Clinical History on every document
+    type, which is how this path sees a referral at all — it never calls the structured
+    extractor (that runs later, in the background ingestion pipeline). "Not stated" is
+    the prompt's own placeholder for absent and is treated as absent.
+    """
+    match = re.search(
+        rf"\*\*{re.escape(label)}:\*\*\s*(.+)",
+        text or "",
+        re.IGNORECASE,
+    )
+    if not match:
+        return None
+    value = match.group(1).strip().strip("*").strip()
+    if not value or value.lower().lstrip("[").rstrip("]").strip() in {
+        "not stated", "none", "n/a", "na", "unknown",
+    }:
+        return None
+    return value[:200]
+
+
+def _referring_department_from_text(text: str) -> str | None:
+    """The department named in a 'Referred By' line, if it names one.
+
+    "Dr. Sunita Panday, Psychiatry" -> Psychiatry. A name with no specialty yields None
+    rather than a guess — inferring a department from a doctor's name is exactly the kind
+    of invention this work exists to stop.
+    """
+    from app.services.appointments import match_department, routable_departments
+
+    referred_by = _extract_labelled_line(text, "Referred By")
+    if not referred_by:
+        return None
+    return match_department(referred_by, routable_departments())
+
+
 def _extract_dept_from_text(text: str) -> str:
-    m = re.search(r"###\s*Recommended Specialist\s*\n+\*{0,2}([A-Za-z /\-]+?)\*{0,2}\s*\n", text, re.IGNORECASE)
-    if m:
-        return m.group(1).strip()
-    lw = text.lower()
-    for dept, kws in [
-        ("Orthopedics",    ["ortho", "spine", "lumbar", "fracture", "bone", "lba", "vertebra"]),
-        ("Cardiology",     ["cardio", "heart", "ecg", "hypertension", "coronary"]),
-        ("Neurology",      ["neuro", "brain", "nerve", "epilepsy", "stroke"]),
-        ("Pathology",      ["blood report", "cbc", "haemoglobin", "rbc", "wbc", "platelet"]),
-        ("Radiology",      ["mri", "ct scan", "x-ray", "xray", "imaging", "ultrasound"]),
-        ("Endocrinology",  ["diabetes", "thyroid", "hba1c", "insulin"]),
-        ("Pulmonology",    ["lung", "asthma", "copd", "respiratory"]),
-        ("Gastroenterology", ["gastro", "liver", "bowel", "hepatitis"]),
-        ("Oncology",       ["cancer", "tumor", "malignant", "biopsy"]),
-        ("Dermatology",    ["skin", "rash", "eczema", "derma"]),
-        ("Gynecology",     ["gynae", "uterus", "ovary", "pregnancy"]),
-        ("Urology",        ["urology", "prostate", "bladder", "urinary"]),
-    ]:
-        if any(kw in lw for kw in kws):
-            return dept
+    """The department a patient should be offered after a document analysis.
+
+    Whatever the model named is UNTRUSTED and re-checked against the departments this
+    hospital actually staffs — the analysis prompt is free text, so "Pathology",
+    "Radiology" or a specialty we do not have could otherwise be written straight into
+    state as a bookable department.
+
+    Always returns a real department, falling back to General Physician. The return type
+    stays `str` so the single call site is unchanged; deciding to ASK instead of defaulting
+    belongs to the resolver, in the slice that removes the forced booking intent.
+    """
+    from app.services.appointments import match_department, routable_departments
+
+    routable = routable_departments()
+
+    match = re.search(
+        r"###\s*Recommended Specialist\s*\n+\*{0,2}([A-Za-z /\-]+?)\*{0,2}\s*\n",
+        text, re.IGNORECASE,
+    )
+    if match:
+        named = match_department(match.group(1).strip(), routable)
+        if named:
+            return named
+        # The model named something we cannot book. Fall through to the content keywords
+        # rather than trusting it.
+
+    lowered = text.lower()
+    allowed = set(routable)
+    for department, keywords in _CONTENT_DEPT_KEYWORDS:
+        if department in allowed and any(keyword in lowered for keyword in keywords):
+            return department
     return "General Physician"
 
 
@@ -475,6 +551,7 @@ async def chat_stream(request: Request, user: dict = Depends(current_user)):
             files = _doc_analysis_cache.pop(stream_cache_key, [])
             if files:
                 from app.inference.azure_client import gpt4o_stream_analysis
+                from app.services.appointments import routable_departments
 
                 yield _stream_event("start_response")
                 full_text = ""
@@ -506,6 +583,11 @@ async def chat_stream(request: Request, user: dict = Depends(current_user)):
                             file_bytes=file_bytes,
                             extracted_text=extracted,
                             user_question=payload["message"],
+                            # Constrains the visible "Recommended Specialist" to
+                            # departments the patient can actually book. The value is
+                            # re-validated by _extract_dept_from_text regardless — the
+                            # model's output is never trusted on its own.
+                            valid_departments=routable_departments(),
                         ):
                             yield _stream_event("token", token=token)
                             full_text += token
@@ -521,22 +603,43 @@ async def chat_stream(request: Request, user: dict = Depends(current_user)):
                 state = _append_user_message_to_state(state, payload["message"])
                 dept = _extract_dept_from_text(full_text)
                 doc_type = _extract_doctype_from_text(full_text)
+                # Parsed from the analysis the model just wrote, because the streaming
+                # path never calls the structured extractor. Keeping these means a later
+                # turn can reason about the document instead of re-reading 150 truncated
+                # characters of its own prose.
+                referring_doctor = _extract_labelled_line(full_text, "Referred By")
+                referring_department = _referring_department_from_text(full_text)
+                clinical_history = _extract_labelled_line(full_text, "Clinical History")
                 doc_log = list(state.get("analyzed_documents") or [])
                 for fp in files:
                     doc_log.append({
                         "file_name": fp.get("file_name") or "document",
                         "document_type": doc_type,
                         "department": dept,
+                        "referring_doctor": referring_doctor,
+                        "referring_department": referring_department,
+                        "clinical_history": clinical_history,
                         "summary": (full_text[:150] + "…") if len(full_text) > 150 else full_text,
                     })
                 history = list(state.get("conversation_history") or [])
                 history.append({"role": "assistant", "text": full_text})
+                # Uploading a document is not a request to be booked.
+                #
+                # This used to set active_intent="direct_booking" and a target_department
+                # in one assignment, before the patient had said anything — so the
+                # department guessed from the model's prose became the patient's own
+                # "request", stuck, and could not be talked out of. awaiting was set to
+                # "user_input", which no router consumes, so nothing could follow up either.
+                #
+                # Now: the analysis is offered, the department is remembered as a
+                # SUGGESTION, and the next turn asks what the document could not answer.
+                # awaiting is a value the supervisor actually routes.
                 state.update({
                     "final_response": full_text,
-                    "target_department": dept,
-                    "awaiting": "user_input",
-                    "active_intent": "direct_booking",
-                    "intent": "direct_booking",
+                    "suggested_department": dept,
+                    "awaiting": AWAITING_DOCUMENT_FOLLOW_UP,
+                    "active_intent": "document_review",
+                    "intent": "document_review",
                     "analyzed_documents": doc_log,
                     "conversation_history": history,
                     "messages": history[-6:],
@@ -1016,7 +1119,9 @@ async def _run_ingestion_pipeline(
     On any error: mark catalog failed, delete partial summary blob,
     broadcast WebSocket 'error' event.
     """
-    from app.inference.azure_client import gpt4o_structured_extraction
+    from app.inference.azure_client import (
+        gpt4o_structured_extraction, gpt4o_transcribe_document_image,
+    )
     from app.api.main import connection_manager
 
     logger.info("ingestion: starting document_id=%s vault=%s", document_id, vault_path)
@@ -1043,9 +1148,35 @@ async def _run_ingestion_pipeline(
         extracted_text: str | None = None
         if mime_type == "application/pdf":
             try:
-                extracted_text = _extract_pdf_text(file_bytes)
+                # Per page, then flattened for the extractor. The pages are stored so a
+                # summary sentence can cite one and still be verifiable against it months
+                # later, when the file is only in blob storage.
+                pdf_pages = extract_pdf_pages(file_bytes)
+                extracted_text = "\n\n".join(page["text"] for page in pdf_pages).strip() or None
+                try:
+                    save_document_pages(document_id, pdf_pages, PAGE_SOURCE_PDF_TEXT)
+                except Exception as exc:
+                    # Losing page text costs citation precision later; it must not cost
+                    # the patient their document, which is already stored by this point.
+                    logger.warning("ingestion: could not store page text: %s", exc)
             except Exception as exc:
                 logger.warning("ingestion: PDF text extraction failed: %s", exc)
+        elif mime_type.startswith("image/"):
+            # A photographed or scanned report has no text layer, so there is nothing for
+            # a summary to be verified against. Transcribing it gives the verifier a
+            # source of record — a weaker one, which is why it is stored under a different
+            # `source` and labelled in the UI, but far better than the alternative of
+            # showing an unverifiable summary or none at all.
+            try:
+                transcription = await gpt4o_transcribe_document_image(
+                    mime_type=mime_type, file_bytes=file_bytes
+                )
+                if transcription:
+                    save_document_pages(
+                        document_id, [{"page_no": 1, "text": transcription}], PAGE_SOURCE_VISION
+                    )
+            except Exception as exc:
+                logger.warning("ingestion: image transcription failed: %s", exc)
 
         # Step 2 — GPT-4o structured extraction (last GPT-4o call for this document)
         extraction = await gpt4o_structured_extraction(
@@ -1055,6 +1186,10 @@ async def _run_ingestion_pipeline(
         )
 
         # Step 3 — write summary JSON to blob
+        # referring_doctor / referring_department / body_region are carried through rather
+        # than dropped. The extractor has always produced them; discarding them here is
+        # what made a report that said "Referred by Dr Panday, Psychiatry" untraceable to
+        # that referral five minutes later.
         summary_payload = {
             "document_id": document_id,
             "user_id": user_id,
@@ -1063,6 +1198,9 @@ async def _run_ingestion_pipeline(
             "clinical_date": extraction["clinical_date"],
             "overall_impression": extraction["overall_impression"],
             "findings": extraction["findings"],
+            "referring_doctor": extraction.get("referring_doctor"),
+            "referring_department": extraction.get("referring_department"),
+            "body_region": extraction.get("body_region"),
         }
         await upload_json_blob(summary_path, summary_payload)
         logger.info("ingestion: summary written to blob — %s", summary_path)
@@ -1074,7 +1212,59 @@ async def _run_ingestion_pipeline(
             clinical_date=extraction["clinical_date"],
             findings_keys=list(extraction["findings"].keys()),
             ingestion_status="complete",
+            referring_doctor=extraction.get("referring_doctor"),
+            referring_department=extraction.get("referring_department"),
+            body_region=extraction.get("body_region"),
         )
+
+        # Step 4b — measurements and the clinician summary.
+        #
+        # Both are deliberately AFTER the catalog flips to 'complete': the document is
+        # already usable at this point, and neither of these may be allowed to hold it
+        # back or fail it. A document with no chips and no summary is a degraded record;
+        # a document stuck in 'processing' because a summary call timed out is a document
+        # the patient cannot see at all.
+        try:
+            from app.services.document_catalog import get_document_pages
+            from app.services.document_findings import apply_report_flags, flatten_findings, save_findings
+
+            # Re-classified with the flag and range the report printed beside each value,
+            # read from the page text stored in step 1 — the lab's own verdict first.
+            measurements = apply_report_flags(
+                flatten_findings(extraction["findings"]), get_document_pages(document_id)
+            )
+            save_findings(document_id, user_id, measurements, extraction["clinical_date"])
+        except Exception as exc:
+            logger.warning("ingestion: could not store measurements for %s: %s", document_id, exc)
+
+        try:
+            from app.services.document_catalog import get_document_pages
+            from app.services.document_grounding import summarise_document
+
+            # summarise_document verifies before storing, so nothing unverified can be
+            # persisted even if this call returns something odd.
+            await summarise_document(document_id, get_document_pages(document_id))
+        except Exception as exc:
+            logger.warning("ingestion: clinician summary failed for %s: %s", document_id, exc)
+
+        try:
+            from app.services.nutrition import prewarm_for_document
+
+            # Guidance for any result nobody has had before is written now, once, so the
+            # first doctor to open the nutritionist does not wait on it.
+            await prewarm_for_document(document_id)
+        except Exception as exc:
+            logger.warning("ingestion: nutrition guidance prewarm failed for %s: %s", document_id, exc)
+
+        # The document's results and medications are now on the record, so any cached
+        # at-a-glance card for this patient is out of date. Rebuilt in the background, so
+        # the next doctor to open the patient does not wait for it.
+        try:
+            from app.services.patient_overview import schedule_overview_refresh
+
+            schedule_overview_refresh(patient_id=user_id)
+        except Exception as exc:
+            logger.warning("ingestion: could not schedule overview refresh for %s: %s", document_id, exc)
 
         # Step 5 — notify connected clients
         await connection_manager.broadcast(

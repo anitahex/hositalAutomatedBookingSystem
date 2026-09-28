@@ -4,6 +4,10 @@
     <meta charset="utf-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1" />
     <title>Hospital Assistant</title>
+    <!-- Self-hosted typefaces for the doctor workspace. Served from this origin, so the
+         app makes no third-party request at page load and still renders on a restricted
+         or offline network. Regenerate with scripts/fetch_redesign_fonts.py. -->
+    <link rel="stylesheet" href="/static/vendor/fonts/fonts.css" />
     <link rel="stylesheet" href="/static/styles.css" />
   </head>
   <body>
@@ -39,6 +43,7 @@
           <label id="doctorMfaCodeLabel">Authentication code<input id="doctorMfaCode" inputmode="numeric" autocomplete="one-time-code" maxlength="64" required /></label>
           <button type="submit">Verify and continue</button>
           <button class="secondary" id="doctorMfaRecoveryToggle" type="button">Use a recovery code instead</button>
+          <button class="secondary" id="doctorMfaBackBtn" type="button">Back to login</button>
         </form>
 
         <form class="auth-form hidden" id="patientMfaForm">
@@ -172,121 +177,416 @@
 
     <!-- ═══════════════════════════════════════ DOCTOR DASHBOARD ═══════════════════════════════════════ -->
     <section class="hidden" id="doctorDashboardView" aria-label="Doctor workspace">
-      <div class="admin-shell">
-        <aside class="admin-sidebar" aria-label="Doctor navigation">
-          <div class="admin-sidebar-brand">
-            <div class="eyebrow-label text-primary">Doctor workspace</div>
-            <h1 class="page-title">Doctor Dashboard</h1>
-            <p class="page-subtitle">Your appointments and patients.</p>
+      <div class="doctor-ai">
+        <aside class="doctor-ai-side" aria-label="Doctor navigation">
+          <div class="doctor-ai-brand">
+            <div class="doctor-ai-brand-mark" aria-hidden="true">
+              <svg class="ai-i" viewBox="0 0 24 24"><path d="M12 3l1.9 5.1L19 10l-5.1 1.9L12 17l-1.9-5.1L5 10l5.1-1.9z"/><path d="M19 15l.8 2.2L22 18l-2.2.8L19 21l-.8-2.2L16 18l2.2-.8z"/></svg>
+            </div>
+            <div>
+              <div class="doctor-ai-brand-name">Doctor workspace</div>
+              <div class="doctor-ai-brand-sub">AI-assisted clinic</div>
+            </div>
           </div>
 
-          <nav class="admin-nav">
-            <button class="admin-nav-item is-active" data-doctor-view="overview" type="button" aria-current="page">
-              <span class="nav-icon" aria-hidden="true">
-                <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="3" y="3" width="7" height="7" rx="1"/><rect x="14" y="3" width="7" height="7" rx="1"/><rect x="14" y="14" width="7" height="7" rx="1"/><rect x="3" y="14" width="7" height="7" rx="1"/></svg>
-              </span>
-              <span class="nav-label">Overview</span>
+          <nav class="doctor-ai-nav">
+            <button class="doctor-ai-nav-item is-active" data-doctor-view="overview" type="button" aria-current="page">
+              <svg class="ai-i" viewBox="0 0 24 24" aria-hidden="true"><path d="M3 11l9-8 9 8"/><path d="M5 10v10h14V10"/></svg>
+              <span>Overview</span>
             </button>
-            <button class="admin-nav-item" data-doctor-view="upcoming" type="button">
-              <span class="nav-icon" aria-hidden="true">
-                <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M8 2v4M16 2v4M3 10h18M5 4h14a2 2 0 0 1 2 2v14a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V6a2 2 0 0 1 2-2z"/></svg>
-              </span>
-              <span class="nav-label">Upcoming</span>
+            <button class="doctor-ai-nav-item" data-doctor-view="reviews" type="button">
+              <svg class="ai-i" viewBox="0 0 24 24" aria-hidden="true"><path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"/><path d="M14 2v6h6"/><path d="m9 15 2 2 4-4"/></svg>
+              <span>Reviews</span>
+              <span class="doctor-ai-nav-count hidden" id="doctorReviewNavCount"></span>
             </button>
-            <button class="admin-nav-item" data-doctor-view="past" type="button">
-              <span class="nav-icon" aria-hidden="true">
-                <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="9"/><path d="M12 7v5l3 3"/></svg>
-              </span>
-              <span class="nav-label">Past</span>
+            <button class="doctor-ai-nav-item" data-doctor-view="upcoming" type="button">
+              <svg class="ai-i" viewBox="0 0 24 24" aria-hidden="true"><rect x="3" y="5" width="18" height="16" rx="2"/><path d="M3 10h18M8 3v4M16 3v4"/></svg>
+              <span>Upcoming</span>
             </button>
-            <button class="admin-nav-item" data-doctor-view="patients" type="button">
-              <span class="nav-icon" aria-hidden="true">
-                <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M17 21v-2a4 4 0 0 0-4-4H5a4 4 0 0 0-4 4v2"/><circle cx="9" cy="7" r="4"/><path d="M23 21v-2a4 4 0 0 0-3-3.87M16 3.13a4 4 0 0 1 0 7.75"/></svg>
-              </span>
-              <span class="nav-label">Patients</span>
+            <button class="doctor-ai-nav-item" data-doctor-view="past" type="button">
+              <svg class="ai-i" viewBox="0 0 24 24" aria-hidden="true"><circle cx="12" cy="12" r="9"/><path d="M12 7v5l3 2"/></svg>
+              <span>Past</span>
+            </button>
+            <button class="doctor-ai-nav-item" data-doctor-view="patients" type="button">
+              <svg class="ai-i" viewBox="0 0 24 24" aria-hidden="true"><circle cx="9" cy="8" r="4"/><path d="M2 21c0-4 3-7 7-7s7 3 7 7"/><path d="M17 4a4 4 0 010 8M22 21c0-3-2-5-4-6"/></svg>
+              <span>Patients</span>
             </button>
           </nav>
 
-          <div class="admin-sidebar-footer">
-            <button class="secondary admin-icon-button" id="doctorLogoutBtn" type="button">
-              <span class="admin-icon" aria-hidden="true">
-                <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M9 21H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h4"/><polyline points="16 17 21 12 16 7"/><line x1="21" y1="12" x2="9" y2="12"/></svg>
-              </span>
-              <span class="admin-action-label">Logout</span>
+          <!-- The one promise this whole workspace is built around. Deliberately worded as
+               a constraint on the software, not a reassurance about the model. -->
+          <div class="doctor-ai-side-card">
+            <strong>
+              <svg class="ai-i is-sm" viewBox="0 0 24 24" aria-hidden="true"><path d="M12 3l8 3v6c0 5-3.5 8-8 9-4.5-1-8-4-8-9V6z"/><path d="M9 12l2 2 4-4"/></svg>
+              AI drafts, you decide
+            </strong>
+            Nothing enters the record or reaches a patient until you sign it.
+          </div>
+
+          <div class="doctor-ai-me">
+            <div class="doctor-ai-avatar" id="doctorSidebarInitials" aria-hidden="true">--</div>
+            <div class="doctor-ai-grow">
+              <div class="doctor-ai-me-name" id="doctorSidebarName">&mdash;</div>
+              <div class="doctor-ai-me-dept" id="doctorSidebarDepartment">&mdash;</div>
+            </div>
+            <button class="doctor-ai-logout" id="doctorLogoutBtn" type="button" aria-label="Log out">
+              <svg class="ai-i" viewBox="0 0 24 24" aria-hidden="true"><path d="M15 4h4v16h-4M10 8l-4 4 4 4M6 12h10"/></svg>
             </button>
           </div>
         </aside>
 
-        <main class="admin-content">
-          <p class="auth-error hidden" id="doctorRecoveryLowNotice" role="status"></p>
+        <div class="doctor-ai-main">
+          <header class="doctor-ai-top">
+            <!-- Ask AI. Behind a default-OFF feature flag (see app.js DOCTOR_ASK_AI_ENABLED):
+                 answering questions across a doctor's patients safely needs
+                 authorization-filtered retrieval, per-doctor cost caps and source
+                 attribution on every claim, none of which exists yet. The UI is built so
+                 the shell is ready; it is not wired to any backend. -->
+            <label class="doctor-ai-ask hidden" id="doctorAskAiBar" for="doctorAskAiInput">
+              <svg class="ai-i" viewBox="0 0 24 24" aria-hidden="true"><path d="M12 3l1.9 5.1L19 10l-5.1 1.9L12 17l-1.9-5.1L5 10l5.1-1.9z"/></svg>
+              <span class="sr-only">Ask AI about your patients, notes or documents</span>
+              <input id="doctorAskAiInput" type="text" placeholder="Ask AI about a patient, note or document&hellip;" />
+              <span class="doctor-ai-kbd" aria-hidden="true">Ctrl K</span>
+            </label>
+            <span class="doctor-ai-chip" id="doctorTodayChip">
+              <svg class="ai-i is-sm" viewBox="0 0 24 24" aria-hidden="true"><rect x="3" y="5" width="18" height="16" rx="2"/><path d="M3 10h18M8 3v4M16 3v4"/></svg>
+              <span id="doctorTodayChipText"></span>
+            </span>
+          </header>
+
+        <main class="doctor-ai-content">
+          <!-- Dismissed with a real button: it used to be a clickable <p>, which a keyboard
+               user could never reach. -->
+          <div class="auth-error hidden doctor-dismissable" id="doctorRecoveryLowNotice" role="status">
+            <span id="doctorRecoveryLowNoticeText"></span>
+            <button class="doctor-ai-btn is-ghost is-sm" id="doctorRecoveryLowNoticeDismiss" type="button">Dismiss</button>
+          </div>
 
           <section class="admin-view-pane" id="doctorOverviewPane">
-            <header class="admin-content-header">
-              <div>
-                <div class="eyebrow-label text-primary">Overview</div>
-                <h2 class="page-title">Today at a glance</h2>
+            <div class="doctor-ai-between" style="align-items: flex-end;">
+              <div class="doctor-ai-stack">
+                <div class="ai-eyebrow is-primary" id="doctorOverviewDate"></div>
+                <h2 class="ai-h1" id="doctorOverviewGreeting">Your workspace</h2>
+                <p class="ai-muted" id="doctorOverviewSubhead">Loading what AI did while you were away&hellip;</p>
               </div>
-            </header>
-            <div class="admin-stats">
-              <article class="admin-stat-card">
-                <div class="admin-stat-label">Today's appointments</div>
-                <strong class="admin-stat-value" id="doctorStatToday">0</strong>
+              <!-- Opens the top-ranked pending item directly; disabled when the queue is empty. -->
+              <button class="doctor-ai-btn" id="doctorStartReviewBtn" type="button" disabled>
+                <svg class="ai-i" viewBox="0 0 24 24" aria-hidden="true"><path d="M12 3l1.9 5.1L19 10l-5.1 1.9L12 17l-1.9-5.1L5 10l5.1-1.9z"/></svg>
+                <span data-start-review-label>Start AI review</span>
+              </button>
+            </div>
+
+            <!-- AI activity summary. Every figure is rendered from /doctor/ai/activity-summary;
+                 there are no placeholder numbers in this markup by design. -->
+            <section class="doctor-ai-hero" aria-labelledby="doctorActivityHeadline">
+              <div class="doctor-ai-hero-inner">
+                <div class="doctor-ai-stack">
+                  <span class="doctor-ai-chip is-ai" style="align-self: flex-start;" id="doctorActivityWindow">
+                    <svg class="ai-i is-sm" viewBox="0 0 24 24" aria-hidden="true"><path d="M12 3l1.9 5.1L19 10l-5.1 1.9L12 17l-1.9-5.1L5 10l5.1-1.9z"/></svg>
+                    <span id="doctorActivityWindowText">AI activity</span>
+                  </span>
+                  <h3 class="ai-display" style="font-size: 24px; font-weight: 700;" id="doctorActivityHeadline">&nbsp;</h3>
+                  <!-- Which period the counts cover. "Since last visit" falls back to 24
+                       hours when the previous login is too recent to be a real visit, and
+                       the chip above says which one was actually applied. -->
+                  <div class="doctor-window-toggle" role="group" aria-label="AI activity period">
+                    <button type="button" data-activity-window="last_visit" class="is-active" aria-pressed="true">Since last visit</button>
+                    <button type="button" data-activity-window="24h" aria-pressed="false">24 hours</button>
+                    <button type="button" data-activity-window="7d" aria-pressed="false">7 days</button>
+                  </div>
+                </div>
+                <div class="doctor-ai-tiles" id="doctorActivityTiles"></div>
+                <!-- What is behind a tile. Each tile is a disclosure button controlling this
+                     one region; the list is built from the same predicate as the tile's
+                     number (doctor_ai_activity.get_activity_items), so they reconcile. -->
+                <div class="doctor-ai-drill hidden" id="doctorActivityDrill" role="region" aria-labelledby="doctorActivityDrillTitle">
+                  <div class="doctor-ai-drill-head">
+                    <div>
+                      <h4 class="doctor-ai-drill-title" id="doctorActivityDrillTitle"></h4>
+                      <p class="doctor-ai-drill-sub" id="doctorActivityDrillSub"></p>
+                    </div>
+                    <button type="button" class="doctor-ai-drill-close" id="doctorActivityDrillClose" aria-label="Close details">
+                      <svg viewBox="0 0 24 24" width="16" height="16" aria-hidden="true"><path d="M6 6l12 12M18 6L6 18" stroke="currentColor" stroke-width="2" stroke-linecap="round"/></svg>
+                    </button>
+                  </div>
+                  <div class="doctor-ai-drill-list" id="doctorActivityDrillList"></div>
+                </div>
+              </div>
+              <p class="doctor-updated-at" data-doctor-updated aria-live="polite"></p>
+            </section>
+
+            <div class="doctor-ai-split">
+              <section class="doctor-ai-card doctor-ai-pad doctor-ai-stack" style="gap: 14px;" aria-labelledby="doctorNextActionsTitle">
+                <div class="doctor-ai-between">
+                  <div>
+                    <div class="ai-eyebrow is-primary">Prioritised by AI</div>
+                    <h3 class="ai-h2" id="doctorNextActionsTitle">Your next actions</h3>
+                  </div>
+                  <button class="doctor-ai-btn is-ghost is-sm" id="doctorOverviewReviewsBtn" type="button">See all</button>
+                </div>
+                <!-- Ranking is deterministic and rule-based (blocked, then most flags, then
+                     oldest waiting, then undrafted) — see app/services/doctor_workspace.py
+                     rank_pending_items. It orders DOCUMENTATION work, never clinical urgency. -->
+                <div class="doctor-ai-list" id="doctorOverviewReviews"></div>
+                <div class="doctor-ai-guard" style="margin-top: auto;">
+                  <svg class="ai-i is-sm" viewBox="0 0 24 24" aria-hidden="true"><path d="M12 3l8 3v6c0 5-3.5 8-8 9-4.5-1-8-4-8-9V6z"/><path d="M9 12l2 2 4-4"/></svg>
+                  Every item above is an AI draft. It joins the record only when you sign it.
+                </div>
+              </section>
+
+              <div class="doctor-ai-stack" style="gap: 20px;">
+                <section class="doctor-ai-card doctor-ai-pad doctor-ai-stack" style="gap: 12px;" aria-labelledby="doctorTodayTitle">
+                  <div class="doctor-ai-between">
+                    <h3 class="ai-h2" id="doctorTodayTitle">Today</h3>
+                    <span class="ai-mono ai-muted" id="doctorTodayScheduleCount"></span>
+                  </div>
+                  <div class="doctor-ai-list" id="doctorTodaySchedule"></div>
+                </section>
+
+                <section class="doctor-ai-card doctor-ai-pad doctor-ai-stack" style="gap: 6px;" aria-labelledby="doctorActivityLogTitle">
+                  <div class="doctor-ai-between">
+                    <h3 class="ai-h2" id="doctorActivityLogTitle">AI activity log</h3>
+                    <!-- Was a static chip that looked like a link and did nothing. -->
+                    <button class="doctor-ai-btn is-ghost is-sm" id="doctorActivityLogToggle" type="button"
+                            aria-controls="doctorActivityLog" aria-expanded="false">Full audit</button>
+                  </div>
+                  <div class="doctor-ai-feed" id="doctorActivityLog"></div>
+                </section>
+              </div>
+            </div>
+
+            <!-- Stat counters. Kept from the previous overview (they remain the fastest read
+                 of "what needs me"), restyled and still clickable through to their queues. -->
+            <div class="doctor-ai-lanes" aria-label="Workload summary">
+              <article class="doctor-ai-card doctor-ai-pad">
+                <div class="ai-eyebrow">Today's appointments</div>
+                <strong class="ai-big" id="doctorStatToday">0</strong>
               </article>
+              <button class="doctor-ai-card doctor-ai-pad" id="doctorStatReviewsCard" type="button" style="text-align: left; cursor: pointer;">
+                <div class="ai-eyebrow">Awaiting your review</div>
+                <strong class="ai-big" id="doctorStatReviews">0</strong>
+              </button>
+              <button class="doctor-ai-card doctor-ai-pad" id="doctorStatAttentionCard" type="button" style="text-align: left; cursor: pointer;">
+                <div class="ai-eyebrow">Needs attention</div>
+                <strong class="ai-big" id="doctorStatAttention">0</strong>
+              </button>
             </div>
-            <div class="doctor-profile-grid">
-              <div class="admin-field"><span>Name</span><strong id="doctorProfileName">—</strong></div>
-              <div class="admin-field"><span>Department</span><strong id="doctorProfileDepartment">—</strong></div>
-              <div class="admin-field"><span>Experience</span><strong id="doctorProfileExperience">—</strong></div>
-              <div class="admin-field"><span>MFA status</span><strong id="doctorProfileMfaStatus">—</strong></div>
+
+            <section class="doctor-ai-card doctor-ai-pad" aria-labelledby="doctorProfileTitle">
+              <h3 class="ai-h2" id="doctorProfileTitle" style="margin-bottom: 12px;">Your account</h3>
+              <div class="doctor-profile-grid">
+                <div class="admin-field"><span>Name</span><strong id="doctorProfileName">&mdash;</strong></div>
+                <div class="admin-field"><span>Department</span><strong id="doctorProfileDepartment">&mdash;</strong></div>
+                <div class="admin-field"><span>Experience</span><strong id="doctorProfileExperience">&mdash;</strong></div>
+                <div class="admin-field"><span>MFA status</span><strong id="doctorProfileMfaStatus">&mdash;</strong></div>
+              </div>
+            </section>
+          </section>
+
+          <section class="admin-view-pane hidden" id="doctorReviewsPane">
+            <div class="doctor-ai-between">
+              <div class="doctor-ai-stack">
+                <div class="ai-eyebrow is-primary">Clinical documentation</div>
+                <h2 class="ai-h1">AI review inbox</h2>
+              </div>
+              <div class="doctor-ai-stack" style="align-items: flex-end; gap: 2px;">
+                <span class="ai-mono ai-muted" id="doctorReviewsCount">0 items</span>
+                <span class="doctor-updated-at" data-doctor-updated aria-live="polite"></span>
+              </div>
             </div>
+
+            <div class="doctor-ai-guard">
+              <svg class="ai-i is-sm" viewBox="0 0 24 24" aria-hidden="true"><path d="M12 3l8 3v6c0 5-3.5 8-8 9-4.5-1-8-4-8-9V6z"/><path d="M9 12l2 2 4-4"/></svg>
+              Every note below was drafted by AI from a consultation transcript. Nothing here is
+              part of the clinical record until you review and sign it.
+            </div>
+
+            <div class="doctor-ai-between" style="flex-wrap: wrap; gap: 12px;">
+              <div class="doctor-ai-tabs" role="tablist" aria-label="Review queue">
+                <button class="doctor-ai-tab is-active" data-review-scope="pending" type="button" role="tab" aria-selected="true">Pending</button>
+                <button class="doctor-ai-tab" data-review-scope="completed" type="button" role="tab" aria-selected="false">Signed</button>
+              </div>
+              <div class="doctor-ai-row">
+                <!-- Bulk drafting is rate limited and idempotent server-side: it only ever
+                     selects consults with no note at all, so a double-click cannot
+                     double-draft or overwrite a draft already being edited. -->
+                <button class="doctor-ai-btn is-soft is-sm hidden" id="doctorDraftAllBtn" type="button">
+                  <svg class="ai-i is-sm" viewBox="0 0 24 24" aria-hidden="true"><path d="M12 3l1.9 5.1L19 10l-5.1 1.9L12 17l-1.9-5.1L5 10l5.1-1.9z"/></svg>
+                  <span id="doctorDraftAllLabel">Draft all missing notes</span>
+                </button>
+                <label class="sr-only" for="doctorReviewSearchInput">Search reviews by patient name</label>
+                <input class="doctor-patient-search-input" id="doctorReviewSearchInput" type="search"
+                       placeholder="Search by patient name" aria-label="Search reviews by patient name" />
+              </div>
+            </div>
+
+            <p class="auth-error hidden" id="doctorDraftAllMessage" role="status"></p>
+
+            <!-- Three lanes for the pending scope; the Signed tab renders a flat list into
+                 #doctorReviewsList instead, since history has no triage lanes. -->
+            <div class="doctor-ai-lanes hidden" id="doctorReviewLanes">
+              <section class="doctor-ai-stack" style="gap: 10px;" aria-labelledby="doctorLaneQuickTitle">
+                <div class="doctor-ai-between">
+                  <h3 class="ai-h3" id="doctorLaneQuickTitle">Quick review</h3>
+                  <span class="doctor-ai-chip is-ok" id="doctorLaneQuickCount">0</span>
+                </div>
+                <div class="doctor-ai-list" id="doctorLaneQuick"></div>
+              </section>
+              <section class="doctor-ai-stack" style="gap: 10px;" aria-labelledby="doctorLaneAttentionTitle">
+                <div class="doctor-ai-between">
+                  <h3 class="ai-h3" id="doctorLaneAttentionTitle">Needs attention</h3>
+                  <span class="doctor-ai-chip is-bad" id="doctorLaneAttentionCount">0</span>
+                </div>
+                <div class="doctor-ai-list" id="doctorLaneAttention"></div>
+              </section>
+              <section class="doctor-ai-stack" style="gap: 10px;" aria-labelledby="doctorLaneNotDraftedTitle">
+                <div class="doctor-ai-between">
+                  <h3 class="ai-h3" id="doctorLaneNotDraftedTitle">Not drafted yet</h3>
+                  <span class="doctor-ai-chip" id="doctorLaneNotDraftedCount">0</span>
+                </div>
+                <div class="doctor-ai-list" id="doctorLaneNotDrafted"></div>
+              </section>
+            </div>
+
+            <div class="doctor-ai-list" id="doctorReviewsList"></div>
           </section>
 
           <section class="admin-view-pane hidden" id="doctorUpcomingPane">
-            <div class="admin-list-header">
-              <div>
-                <div class="eyebrow-label">Schedule</div>
-                <h2 class="panel-title">Upcoming appointments</h2>
+            <div class="doctor-ai-between">
+              <div class="doctor-ai-stack">
+                <div class="ai-eyebrow is-primary">Schedule</div>
+                <h2 class="ai-h1">Upcoming appointments</h2>
               </div>
-              <span class="panel-note" id="doctorUpcomingCount">0 appointments</span>
+              <span class="ai-mono ai-muted" id="doctorUpcomingCount">0 appointments</span>
             </div>
-            <div class="admin-inline-list" id="doctorUpcomingList"></div>
+            <div class="doctor-ai-list" id="doctorUpcomingList"></div>
           </section>
 
           <section class="admin-view-pane hidden" id="doctorPastPane">
-            <div class="admin-list-header">
-              <div>
-                <div class="eyebrow-label">Schedule</div>
-                <h2 class="panel-title">Past appointments</h2>
+            <div class="doctor-ai-between">
+              <div class="doctor-ai-stack">
+                <div class="ai-eyebrow is-primary">Schedule</div>
+                <h2 class="ai-h1">Past appointments</h2>
               </div>
-              <span class="panel-note" id="doctorPastCount">0 appointments</span>
+              <span class="ai-mono ai-muted" id="doctorPastCount">0 appointments</span>
             </div>
-            <div class="admin-inline-list" id="doctorPastList"></div>
+            <div class="doctor-ai-list" id="doctorPastList"></div>
           </section>
 
           <section class="admin-view-pane hidden" id="doctorPatientsPane">
-            <div class="admin-list-header">
-              <div>
-                <div class="eyebrow-label">Patients</div>
-                <h2 class="panel-title">Your patients</h2>
+            <div class="doctor-ai-between">
+              <div class="doctor-ai-stack">
+                <div class="ai-eyebrow is-primary">Patients</div>
+                <h2 class="ai-h1">Your patients</h2>
               </div>
-              <span class="panel-note" id="doctorPatientsCount">0 patients</span>
+              <span class="ai-mono ai-muted" id="doctorPatientsCount">0 patients</span>
             </div>
+            <label class="sr-only" for="doctorPatientSearchInput">Search patients by name, email or phone</label>
             <input class="doctor-patient-search-input" id="doctorPatientSearchInput" type="search"
                    placeholder="Search patients by name, email, or phone..." />
-            <div class="admin-inline-list" id="doctorPatientsList"></div>
+            <div class="doctor-ai-list" id="doctorPatientsList"></div>
           </section>
 
           <section class="admin-view-pane hidden" id="doctorPatientDetailPane">
-            <div class="admin-list-header">
-              <div>
-                <div class="eyebrow-label">Patient</div>
-                <h2 class="panel-title" id="doctorPatientDetailName">Patient</h2>
+            <div class="doctor-ai-between">
+              <div class="doctor-ai-stack">
+                <div class="ai-eyebrow is-primary">Patient</div>
+                <h2 class="ai-h1" id="doctorPatientDetailName">Patient</h2>
               </div>
-              <button class="secondary compact" id="doctorPatientDetailBackBtn" type="button">Back to patients</button>
+              <button class="doctor-ai-btn is-ghost is-sm" id="doctorPatientDetailBackBtn" type="button">Back to patients</button>
             </div>
+            <!-- Patient-reported free text, surfaced up here because it is the one thing on
+                 this screen a clinician must not miss. Deliberately NOT rendered as a
+                 structured "severe allergy" pill: patient_profiles.health_issues is an
+                 unvalidated free-text field, and styling it as a coded allergy record would
+                 misrepresent what the data actually is. -->
+            <div class="doctor-patient-alert hidden" id="doctorPatientAlert">
+              <div class="doctor-patient-alert-label">Patient-reported health issues</div>
+              <div class="doctor-patient-alert-body" id="doctorPatientAlertBody"></div>
+              <div class="panel-note">Free text entered by the patient — not a verified clinical record.</div>
+            </div>
+
+
+            <!-- At a glance. Facts are gathered by code and the model only phrases them;
+                 if that phrasing fails verification the plain fact list is rendered
+                 instead, and the header says which one is being shown. -->
+            <section class="doctor-ai-card doctor-ai-pad doctor-ai-stack hidden"
+                     id="doctorOverviewBlock" style="gap: 10px;"
+                     aria-labelledby="doctorOverviewTitle">
+              <div class="doctor-ai-between">
+                <div>
+                  <div class="ai-eyebrow is-primary">At a glance</div>
+                  <h3 class="ai-h2" id="doctorOverviewTitle">Patient overview</h3>
+                </div>
+                <div class="doctor-ai-stack" style="align-items: flex-end; gap: 2px;">
+                  <span class="doctor-ai-chip is-ai" id="doctorOverviewMode">AI drafted</span>
+                  <span class="doctor-updated-at" id="doctorOverviewUpdated"></span>
+                </div>
+              </div>
+              <div class="doctor-ai-stack" id="doctorOverviewLines" style="gap: 8px;"></div>
+              <p class="doctor-ai-guard" id="doctorOverviewNote"></p>
+            </section>
+
             <div class="doctor-profile-grid" id="doctorPatientDetailFields"></div>
-            <h3>Visit history with you</h3>
-            <div class="admin-inline-list" id="doctorPatientDetailVisits"></div>
+
+            <div class="doctor-review-tabs" id="doctorPatientTabs">
+              <button class="secondary compact is-active" data-patient-tab="history" type="button">Visit history</button>
+              <button class="secondary compact" data-patient-tab="timeline" type="button">Full timeline</button>
+              <button class="secondary compact" data-patient-tab="documents" type="button">Documents</button>
+            </div>
+
+            <!-- Every encounter, across all doctors. "Visit history" above is this
+                 doctor's own appointments; this is the whole hospital's record for the
+                 patient, which is why opening it is audited. -->
+            <div class="hidden" id="doctorPatientTabTimeline">
+              <div class="doctor-ai-guard">
+                <svg class="ai-i is-sm" viewBox="0 0 24 24" aria-hidden="true"><path d="M12 3l8 3v6c0 5-3.5 8-8 9-4.5-1-8-4-8-9V6z"/><path d="M9 12l2 2 4-4"/></svg>
+                Every encounter this patient has had, with any doctor. Opening this is
+                recorded in the audit log.
+              </div>
+
+              <div class="doctor-timeline-filters" role="group" aria-label="Timeline filters">
+                <label for="doctorTimelineDepartment">Department
+                  <select id="doctorTimelineDepartment"><option value="">All</option></select>
+                </label>
+                <label for="doctorTimelineDoctor">Doctor
+                  <select id="doctorTimelineDoctor"><option value="">All</option></select>
+                </label>
+                <label for="doctorTimelineDocType">Document type
+                  <select id="doctorTimelineDocType"><option value="">Any</option></select>
+                </label>
+                <label for="doctorTimelineFrom">From
+                  <input type="date" id="doctorTimelineFrom">
+                </label>
+                <label for="doctorTimelineTo">To
+                  <input type="date" id="doctorTimelineTo">
+                </label>
+                <button type="button" class="secondary compact" id="doctorTimelineClear">Clear</button>
+              </div>
+
+              <p class="panel-note" id="doctorTimelineCount"></p>
+              <div class="admin-inline-list" id="doctorTimelineList"></div>
+              <button type="button" class="secondary compact hidden" id="doctorTimelineMore">Show older</button>
+            </div>
+
+            <div id="doctorPatientTabHistory">
+              <div class="admin-inline-list" id="doctorPatientDetailVisits"></div>
+            </div>
+
+            <div class="hidden" id="doctorPatientTabDocuments">
+              <div class="admin-list-header">
+                <h3 class="panel-title">Documents uploaded by this patient</h3>
+                <span class="panel-note" id="doctorPatientDocumentsCount"></span>
+              </div>
+              <p class="panel-note">
+                Uploaded by the patient and summarised automatically. Each summary says whether a
+                doctor treating this patient has verified it against the original, or reported it
+                inaccurate. Open a document to verify it yourself, and check the original before
+                acting on anything.
+              </p>
+              <p class="auth-error hidden" id="doctorPatientDocumentsMessage"></p>
+              <div class="admin-inline-list" id="doctorPatientDocumentsList"></div>
+            </div>
           </section>
 
           <section class="admin-view-pane hidden" id="doctorAppointmentDetailPane">
@@ -298,6 +598,24 @@
               <button class="secondary compact" id="doctorAppointmentDetailBackBtn" type="button">Back</button>
             </div>
             <div class="doctor-profile-grid" id="doctorAppointmentDetailFields"></div>
+
+            <!-- The visit brief: what this doctor needs for THIS appointment — why the patient
+                 booked, what changed since this doctor last saw them, and their last plan.
+                 Built from the record by app/services/visit_brief.py; nothing in it is
+                 generated. Replaces the "Before this visit" booking-context block, whose
+                 content is now its first section. -->
+            <section class="doctor-ai-card doctor-ai-pad doctor-ai-stack hidden"
+                     id="doctorVisitBriefBlock" style="gap: 12px; margin-bottom: 14px;"
+                     aria-labelledby="doctorVisitBriefTitle">
+              <div class="doctor-ai-between">
+                <div>
+                  <div class="ai-eyebrow is-primary">Before this visit</div>
+                  <h3 class="ai-h2" id="doctorVisitBriefTitle">Visit brief</h3>
+                </div>
+                <span class="doctor-ai-chip">From the record</span>
+              </div>
+              <div class="doctor-visit-brief" id="doctorVisitBriefBody"></div>
+            </section>
 
             <div class="admin-list-header">
               <div>
@@ -370,9 +688,23 @@
 
               <p class="auth-error hidden" id="doctorNoteMessage"></p>
               <p class="panel-note hidden" id="doctorNoteFallbackNotice"></p>
+              <p class="panel-note hidden" id="doctorNoteProvenance"></p>
+
+              <div class="hidden" id="doctorNoteEmptyState">
+                <p class="panel-note">
+                  No clinical note yet. Generating one drafts it from this consultation's transcript —
+                  the AI produces a starting point, and you edit, review and sign it before any of it
+                  becomes part of the record or reaches the patient.
+                </p>
+              </div>
 
               <div class="form-actions" id="doctorNoteGenerateRow">
                 <button id="doctorNoteGenerateBtn" type="button">Generate Clinical Note</button>
+                <div class="doctor-note-style-toggle" id="doctorNoteStyleToggle">
+                  <span class="panel-note">Detail level</span>
+                  <button class="secondary compact is-active" data-note-style="concise" type="button">Concise</button>
+                  <button class="secondary compact" data-note-style="detailed" type="button">Detailed</button>
+                </div>
               </div>
               <div class="hidden" id="doctorNoteGenerateConfirm">
                 <p class="panel-note">This replaces the existing note with a freshly generated one. Any unsaved edits will be lost.</p>
@@ -383,12 +715,63 @@
               </div>
 
               <div class="hidden" id="doctorNoteDraftBlock">
-                <div id="doctorNoteFieldsContainer"></div>
+                <!-- Verification progress. A review-workflow aid, NOT a second signature:
+                     it does not gate signing. Unresolved flags warn at the confirmation
+                     step; a blocked (stale) note stays unsignable regardless, enforced in
+                     soap_notes.sign_soap_note rather than here. -->
+                <div class="doctor-ai-card doctor-ai-pad doctor-ai-stack" style="gap: 10px; margin-bottom: 14px;">
+                  <div class="doctor-ai-between">
+                    <h4 class="ai-h3" id="doctorNoteVerifyLabel">0 of 4 sections verified</h4>
+                    <span class="ai-mono ai-muted">Your review</span>
+                  </div>
+                  <div class="doctor-ai-progress-track" role="progressbar"
+                       id="doctorNoteVerifyBar"
+                       aria-valuemin="0" aria-valuemax="4" aria-valuenow="0"
+                       aria-labelledby="doctorNoteVerifyLabel">
+                    <div class="doctor-ai-progress-fill" id="doctorNoteVerifyFill" style="width: 0%;"></div>
+                  </div>
+                </div>
+
+                <div class="doctor-ai-split">
+                  <div id="doctorNoteFieldsContainer"></div>
+
+                  <!-- AI assistant panel: provenance, controls, and the checks the model
+                       itself flagged. Everything here is recorded fact about how this
+                       draft was produced — nothing on this panel is a new inference. -->
+                  <aside class="doctor-ai-card doctor-ai-pad doctor-ai-stack" style="gap: 14px;"
+                         aria-labelledby="doctorNoteAssistantTitle">
+                    <div class="doctor-ai-stack">
+                      <div class="ai-eyebrow is-primary">AI assistant</div>
+                      <h4 class="ai-h2" id="doctorNoteAssistantTitle">How this draft was made</h4>
+                    </div>
+                    <dl class="doctor-ai-stack ai-mono" id="doctorNoteProvenanceList" style="gap: 8px; margin: 0;"></dl>
+                    <div class="doctor-ai-stack" style="gap: 8px;">
+                      <h5 class="ai-h3">Suggested checks</h5>
+                      <div class="doctor-ai-stack" id="doctorNoteSuggestedChecks" style="gap: 6px;"></div>
+                    </div>
+                    <div class="doctor-ai-stack" style="gap: 8px;">
+                      <label class="ai-h3" for="doctorNoteAskInput">Ask about this consultation</label>
+                      <textarea class="clinical-note-textarea" id="doctorNoteAskInput" rows="2"
+                                placeholder="Not available yet" disabled
+                                aria-describedby="doctorNoteAskNote"></textarea>
+                      <!-- Disabled rather than hidden, and labelled: the control is part of
+                           the designed screen, but answering questions over a consultation
+                           needs retrieval that is scoped and source-attributed, which does
+                           not exist yet. A box that silently did nothing would be worse. -->
+                      <p class="ai-mono ai-muted" id="doctorNoteAskNote">
+                        Not available yet — answers must cite their source before this can be used clinically.
+                      </p>
+                    </div>
+                  </aside>
+                </div>
                 <div class="form-actions">
                   <button class="secondary compact" type="button" id="doctorNoteSaveBtn">Save changes</button>
                   <button type="button" id="doctorNoteSignBtn">Sign note</button>
                 </div>
                 <div class="hidden" id="doctorNoteSignConfirm">
+                  <!-- Names what is still flagged or unverified. A warning, never a block
+                       (plan D4) — the doctor decides, not the model. -->
+                  <p class="auth-error hidden" id="doctorNoteSignWarning" role="status"></p>
                   <p class="panel-note">Signing is permanent — the note becomes read-only and can no longer be edited. This cannot be undone.</p>
                   <div class="form-actions">
                     <button type="button" id="doctorNoteSignConfirmBtn">Yes, sign</button>
@@ -403,7 +786,30 @@
                   <button class="secondary compact" id="doctorNoteCopyBtn" type="button">Copy note</button>
                 </div>
                 <div id="doctorNoteSignedFieldsContainer"></div>
+
+                <p class="panel-note hidden" id="doctorNoteSharedNotice"></p>
+                <div class="form-actions hidden" id="doctorNoteShareRow">
+                  <button class="secondary compact" type="button" id="doctorNoteShareBtn">Share with patient</button>
+                </div>
+                <div class="hidden" id="doctorNoteShareConfirm">
+                  <p class="panel-note">This makes the signed note visible to the patient in their appointment history. It cannot be withdrawn.</p>
+                  <div class="form-actions">
+                    <button type="button" id="doctorNoteShareConfirmBtn">Yes, share it</button>
+                    <button class="secondary" type="button" id="doctorNoteShareCancelBtn">Cancel</button>
+                  </div>
+                </div>
+
+                <!-- Audit trail: AI drafted -> you signed -> shared with patient, each with
+                     its timestamp. Rendered from the note's own recorded timestamps, so it
+                     states only what actually happened. -->
+                <div class="doctor-ai-card doctor-ai-pad doctor-ai-stack" style="gap: 10px; margin: 14px 0;">
+                  <h3 class="ai-h2">Audit trail</h3>
+                  <div class="doctor-ai-feed" id="doctorNoteAuditTrail"></div>
+                </div>
+
                 <h3 class="panel-title">Addenda</h3>
+                <!-- anchor:addenda -->
+
                 <div class="admin-inline-list" id="doctorNoteAddendaList"></div>
                 <div class="form-actions" id="doctorNoteAddendumRow">
                   <button class="secondary compact" type="button" id="doctorNoteAddAddendumBtn">Add addendum</button>
@@ -414,6 +820,73 @@
                     <button type="button" id="doctorNoteAddendumSaveBtn">Save addendum</button>
                     <button class="secondary" type="button" id="doctorNoteAddendumCancelBtn">Cancel</button>
                   </div>
+                </div>
+              </div>
+            </div>
+
+            <!-- Prescription / care plan / referral.
+                 These are DOCTOR-AUTHORED records, not AI output: nothing here is generated,
+                 suggested or validated by a model. There is no formulary, no dose checking and
+                 no interaction checking anywhere in this application, so this is a place to
+                 record and approve what the clinician decided — not clinical decision support,
+                 and not a transmissible prescription. -->
+            <div class="hidden" id="doctorClinicalItemsBlock">
+              <div class="admin-list-header">
+                <div>
+                  <div class="eyebrow-label">Clinical actions</div>
+                  <h3 class="panel-title">Prescription, care plan &amp; referral</h3>
+                </div>
+              </div>
+              <p class="panel-note">
+                Authored by you, not by AI. This application performs no dose, formulary or
+                interaction checking — nothing you write here is validated.
+              </p>
+
+              <div class="doctor-review-tabs" id="doctorClinicalItemTabs">
+                <button class="secondary compact is-active" data-clinical-item="prescription" type="button">Prescription</button>
+                <button class="secondary compact" data-clinical-item="care_plan" type="button">Care plan</button>
+                <button class="secondary compact" data-clinical-item="referral" type="button">Referral</button>
+              </div>
+
+              <!-- The patient's own reported issues, repeated here because this is the
+                   screen where a prescription gets written. Free text the patient typed —
+                   NOT a verified allergy record, and nothing in this application checks a
+                   prescription against it. -->
+              <div class="doctor-patient-alert hidden" id="doctorClinicalItemAllergyAlert">
+                <div class="doctor-patient-alert-label">Patient-reported health issues</div>
+                <div class="doctor-patient-alert-body" id="doctorClinicalItemAllergyBody"></div>
+                <div class="panel-note">
+                  Free text entered by the patient — not a verified clinical record, and not
+                  cross-checked against anything you write below.
+                </div>
+              </div>
+
+              <p class="auth-error hidden" id="doctorClinicalItemMessage"></p>
+              <span class="admin-status-pill hidden" id="doctorClinicalItemStatus"></span>
+
+              <div class="form-actions hidden" id="doctorInsertFromPlanRow">
+                <!-- Copies the medication lines out of the SIGNED note's Plan so they do not
+                     have to be retyped. It is a copy, not a suggestion: nothing is
+                     validated, corrected or completed, and the notice above still applies. -->
+                <button class="doctor-ai-btn is-ghost is-sm" type="button" id="doctorInsertFromPlanBtn">
+                  Insert from plan
+                </button>
+                <span class="panel-note">Copies the plan's medication lines. Nothing is checked or corrected.</span>
+              </div>
+
+              <label class="sr-only" for="doctorClinicalItemText">Clinical record text</label>
+              <textarea class="clinical-note-textarea" id="doctorClinicalItemText" rows="5"
+                        placeholder="Record what you decided during this consultation..."></textarea>
+
+              <div class="form-actions" id="doctorClinicalItemActions">
+                <button class="secondary compact" type="button" id="doctorClinicalItemSaveBtn">Save draft</button>
+                <button type="button" id="doctorClinicalItemApproveBtn">Approve</button>
+              </div>
+              <div class="hidden" id="doctorClinicalItemApproveConfirm">
+                <p class="panel-note">Approving locks this record. It becomes read-only and cannot be edited afterwards.</p>
+                <div class="form-actions">
+                  <button type="button" id="doctorClinicalItemApproveConfirmBtn">Yes, approve</button>
+                  <button class="secondary" type="button" id="doctorClinicalItemApproveCancelBtn">Cancel</button>
                 </div>
               </div>
             </div>
@@ -432,7 +905,8 @@
             </div>
           </section>
         </main>
-      </div>
+        </div><!-- .doctor-ai-main -->
+      </div><!-- .doctor-ai -->
     </section>
 
     <!-- ═══════════════════════════════════════ WORKSPACE ═══════════════════════════════════════ -->
@@ -1204,6 +1678,54 @@
         <p>This care conversation has ended. Start a new chat to discuss new symptoms or appointments.</p>
         <button id="startNewChatBtn" type="button">Start new chat</button>
       </section>
+    </div>
+
+    <!-- Document viewer. A full-screen overlay so the document gets the whole window,
+         with its verified summary beside it. Rendered into a <canvas> from bytes fetched
+         through the authenticated API — the browser never navigates to document content,
+         so no inline-rendering path is created (document_catalog._content_type_for
+         records why that matters). -->
+    <div class="doctor-viewer hidden" id="doctorViewer" role="dialog" aria-modal="true"
+         aria-labelledby="doctorViewerTitle">
+      <div class="doctor-viewer-bar">
+        <div class="doctor-viewer-titles">
+          <strong id="doctorViewerTitle">Document</strong>
+          <span class="admin-inline-meta" id="doctorViewerMeta"></span>
+        </div>
+        <div class="doctor-viewer-tools" role="group" aria-label="Document controls">
+          <button type="button" class="secondary compact" id="doctorViewerPrev" aria-label="Previous page">&#8249;</button>
+          <span class="admin-inline-meta" id="doctorViewerPage" aria-live="polite">&ndash;</span>
+          <button type="button" class="secondary compact" id="doctorViewerNext" aria-label="Next page">&#8250;</button>
+          <button type="button" class="secondary compact" id="doctorViewerZoomOut" aria-label="Zoom out">&#8722;</button>
+          <button type="button" class="secondary compact" id="doctorViewerZoomIn" aria-label="Zoom in">+</button>
+          <button type="button" class="secondary compact" id="doctorViewerRotate" aria-label="Rotate 90 degrees">&#8635;</button>
+          <!-- Brightness/contrast are here for X-rays and photographed films, where the
+               useful detail often sits outside the range a screen shows well. Applied as
+               a CSS filter for display only: the stored file is never altered, and the
+               controls are labelled so an adjusted view is not mistaken for the original. -->
+          <label class="doctor-viewer-slider" for="doctorViewerBrightness">
+            <span>Brightness</span>
+            <input type="range" id="doctorViewerBrightness" min="50" max="200" value="100">
+          </label>
+          <label class="doctor-viewer-slider" for="doctorViewerContrast">
+            <span>Contrast</span>
+            <input type="range" id="doctorViewerContrast" min="50" max="250" value="100">
+          </label>
+          <button type="button" class="secondary compact" id="doctorViewerReset">Reset view</button>
+          <button type="button" class="secondary compact" id="doctorViewerDownload">Download original</button>
+          <button type="button" class="secondary compact" id="doctorViewerClose" aria-label="Close document viewer">Close</button>
+        </div>
+      </div>
+      <div class="doctor-viewer-body">
+        <div class="doctor-viewer-stage" id="doctorViewerStage" tabindex="0">
+          <p class="panel-note" id="doctorViewerStatus">Loading document&hellip;</p>
+          <canvas id="doctorViewerCanvas"></canvas>
+        </div>
+        <aside class="doctor-viewer-side" aria-label="Document summary">
+          <div class="ai-eyebrow is-primary">Summary</div>
+          <div id="doctorViewerSummary"></div>
+        </aside>
+      </div>
     </div>
 
     <script src="/static/vendor/qrcode.js"></script>

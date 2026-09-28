@@ -1,0 +1,1034 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>Doctor workspace render harness</title>
+<style>html,body{margin:0;padding:0}#frame{width:1280px;height:1400px;border:0;display:block}#out{font:12px monospace;white-space:pre-wrap;padding:8px}</style>
+</head>
+<body>
+<!--
+  TEMPORARY verification harness. Not application code and not served in production —
+  created for the redesign's render/accessibility checks and deleted afterwards.
+
+  It loads the real index.html in an iframe, reveals the doctor workspace, and injects
+  FIXTURE data so the screens can be rendered and audited without a live login. The
+  fixtures exist only to exercise the rendering path; no figure here is claimed to be
+  real data, and nothing in the application ships with them.
+
+  ?pane=overview|reviews  selects which pane to show.
+  ?axe=1                  runs axe-core inside the frame and writes results to #out.
+  ?drill=<tile>           clicks that activity tile and waits for its list to render.
+  ?escape=1               (with drill) presses Escape inside the open list.
+  ?glowprobe=<sel,...>    distance of each element from the hero's radial glow, for
+                          contrast axe cannot compute through the gradient.
+  ?overflow=1             reports anything in the hero wider than its box.
+  ?scrollto=<sel>         scrolls an element to the top before a screenshot.
+-->
+<iframe id="frame" src="/static/index.html"></iframe>
+<div id="out">BOOTING</div>
+<script src="/static/_axe.js"></script>
+<script>
+const params = new URLSearchParams(location.search);
+// ?w= narrows the frame itself, so the app's own media queries fire at that width
+// rather than the page merely being clipped.
+const frameWidth = params.get("w");
+if (frameWidth) document.getElementById("frame").style.width = frameWidth + "px";
+// ?vh=1 sizes the frame to the real viewport, so 100vh inside it means what it means in
+// the deployed app. Without this the frame is a fixed 1400px tall and anything the app
+// positions against 100vh (the sticky sidebar) is measured against the wrong height.
+if (params.get("vh") === "1") document.getElementById("frame").style.height = "100vh";
+const pane = params.get("pane") || "overview";
+const runAxe = params.get("axe") === "1";
+const out = document.getElementById("out");
+
+// Same calendar day the app uses (renderDoctorTodaySchedule filters on _istToday()).
+const IST_TODAY = new Intl.DateTimeFormat("en-CA", { timeZone: "Asia/Kolkata" }).format(new Date());
+
+const FIXTURES = {
+  doctor: { doctor_id: "d1", name: "Ajit Singh Narula", department: "Nephrology",
+            experience_years: 12, mfa_enabled: true, account_id: "a1" },
+  summary: {
+    window_requested: "last_visit",
+    window: "last_visit",
+    window_is_fallback: false,
+    counts: { notes_drafted: 3, documents_summarized: 2, fields_flagged: 3,
+              notes_blocked: 1, awaiting_signature: 4 },
+    headline: "3 notes drafted and 2 documents summarised. 4 items wait on your sign-off.",
+  },
+  // The SIGNED tab's rows — deliberately different from the pending fixture, so a view
+  // that wrongly reads whichever tab was last open shows the wrong thing visibly.
+  reviewsCompleted: {
+    reviews: [
+      { consultation_id: "c7", booking_id: "b7", patient_id: "p3", patient_name: "Signed Only",
+        department: "Nephrology", appointment_start: "2026-09-10T10:00:00",
+        consult_ended_at: "2026-09-10T10:30:00", item_type: "signed", note_status: "signed",
+        signed_at: "2026-09-10T11:00:00" },
+    ],
+    counts: { pending: 4, not_generated: 1, draft: 2, stale: 1, low_quality_transcript: 1 },
+    ranked_consultation_ids: [],
+  },
+  log: { events: [
+    { action: "consult_soap_note_generated", label: "Drafted a clinical note", is_ai: true,
+      occurred_at: "2026-09-22T19:12:00", detail: { style: "detailed", ai_model: "gpt-4o-mini" },
+      consultation_id: "c1", openable: true, booking_id: "b1", patient_id: "p1",
+      patient_name: "Anit Rao", department: "Nephrology", appointment_start: "2026-09-21T13:00:00",
+      consult_status: "transcript_ready", consult_ended_at: "2026-09-21T13:30:00" },
+    { action: "consult_soap_note_held_back", label: "Held a note back for regeneration",
+      is_ai: true, occurred_at: "2026-09-22T16:04:00",
+      detail: { reason: "transcript_labels_corrected" }, consultation_id: "c2" },
+    { action: "consult_soap_note_signed", label: "You reviewed and signed the note",
+      is_ai: false, occurred_at: "2026-09-22T15:40:00", detail: {}, consultation_id: "c3" },
+  ] },
+  reviews: {
+    reviews: [
+      { consultation_id: "c1", booking_id: "b1", patient_id: "p1", patient_name: "Anit Rao",
+        department: "Nephrology", appointment_start: "2026-09-21T13:00:00",
+        consult_ended_at: "2026-09-21T13:30:00", item_type: "draft", note_status: "draft",
+        generated_at: "2026-09-21T13:35:00", is_stale: false, is_edited: false,
+        low_quality_transcript: false, low_confidence_fields: 2,
+        lane: "quick_review", ai_explanation: "2 sections flagged where the transcript support was thin.",
+        confidence_flags: { subjective: false, objective: true, assessment: true, plan: false },
+        field_citations: { subjective: "…", objective: "", assessment: "", plan: "…" } },
+      { consultation_id: "c2", booking_id: "b2", patient_id: "p1", patient_name: "Anit Rao",
+        department: "Nephrology", appointment_start: "2026-09-21T16:00:00",
+        consult_ended_at: "2026-09-21T16:30:00", item_type: "stale", note_status: "stale",
+        generated_at: "2026-09-21T16:35:00", is_stale: true, is_edited: false,
+        low_quality_transcript: false, low_confidence_fields: 0,
+        lane: "needs_attention",
+        ai_explanation: "Transcript labels changed after this draft was written — regenerate before signing." },
+      { consultation_id: "c3", booking_id: "b3", patient_id: "p2", patient_name: "Priya Menon",
+        department: "Nephrology", appointment_start: "2026-09-20T11:30:00",
+        consult_ended_at: "2026-09-20T12:00:00", item_type: "draft", note_status: "draft",
+        generated_at: "2026-09-20T12:05:00", is_stale: false, is_edited: true,
+        low_quality_transcript: true, low_confidence_fields: 1,
+        lane: "needs_attention",
+        ai_explanation: "Drafted from a lower-quality transcript — check it against the recording." },
+      { consultation_id: "c4", booking_id: "b4", patient_id: "p1", patient_name: "Anit Rao",
+        department: "Nephrology", appointment_start: "2026-09-21T19:00:00",
+        consult_ended_at: "2026-09-21T19:30:00", item_type: "not_generated", note_status: null,
+        is_stale: false, is_edited: false, low_quality_transcript: false,
+        low_confidence_fields: 0, lane: "not_drafted",
+        ai_explanation: "Transcript captured, ready to draft." },
+    ],
+    counts: { pending: 4, not_generated: 1, draft: 2, stale: 1, low_quality_transcript: 1 },
+    ranked_consultation_ids: ["c2", "c3", "c1", "c4"],
+  },
+  transcript: { segments: [
+    { speaker: "doctor", text: "What brings you in today?", start_ms: 0, end_ms: 2400 },
+    { speaker: "patient", text: "I have been feeling anxious and I cannot sleep.", start_ms: 2400, end_ms: 6100 },
+    { speaker: "doctor", text: "How long has that been going on?", start_ms: 6100, end_ms: 8000 },
+    { speaker: "patient", text: "About two weeks now.", start_ms: 8000, end_ms: 9800 },
+  ], transcript_type: "batch", low_quality: false },
+  clinicalItem: { item: null, medications: [], allergies: [] },
+  // A visit brief carrying every kind of row, including the awkward ones: a department
+  // disagreement, a restricted psychiatry note, a document uploaded twice.
+  brief: {
+    booking_id: "b1", patient_id: "p1", patient_name: "Anit Rao", department: "Nephrology",
+    appointment_start: "2026-09-28T09:00:00", appointment_status: "booked",
+    why: {
+      // Synthetic, in the booking assistant's real markdown format, with an injection
+      // attempt that must render as literal text.
+      booking_note: "## PRE-APPOINTMENT CLINICAL SUMMARY\n\n**Patient:** Test Patient, 40 | **Date:** 2026-09-28\n\n**Chief Complaint:** Swelling in both ankles for a week, worse in the evening.\n\n**History:**\n- Duration: 7 days | Onset: gradual\n- Associated: mild breathlessness on stairs\n\n**Recommended Department:** Nephrology\n\n**Home Care Recommendations:**\n1. Keep the legs raised when sitting\n2. Reduce salt\n\n**Injection check:** <img src=x onerror=window.__pwned=1> and <b>not bold</b>",
+      label: "Patient reports", recorded: true,
+      chosen_department: "Nephrology", suggested_department: "Cardiology",
+      department_match_reason: "ankle swelling can be cardiac",
+      messages: 14, documents_brought: 1,
+    },
+    since: {
+      first_visit: false, boundary: "2026-09-12T11:00:00", lookback_days: null,
+      documents: [
+        { document_id: "d1", original_filename: "Lab_Report_20Sep2026.pdf", document_type: "blood_report",
+          clinical_date: "2026-09-20", uploaded_at: "2026-09-22T08:00:00",
+          summary_verification: "partial", content_type: "application/pdf", copies: 2 },
+      ],
+      abnormal: [
+        { name: "Vitamin D", value: 13.8, unit: "ng/mL", flag: "low", clinical_date: "2026-09-20", document_id: "d1" },
+        { name: "hs-CRP", value: 3.6, unit: "mg/L", flag: "high", clinical_date: "2026-09-20", document_id: "d1" },
+      ],
+      colleague_notes: [
+        { consultation_id: "c8", signed_at: "2026-09-24T12:00:00", doctor_name: "Dr. Mihir Thanvi",
+          department: "Orthopedics", restricted: false, summary: "Lumbar spondylosis; physiotherapy advised." },
+        { consultation_id: "c9", signed_at: "2026-09-23T16:00:00", doctor_name: "Dr. Sunita Panday",
+          department: "Psychiatry", restricted: true, summary: null },
+      ],
+      colleague_prescriptions: [
+        { content: "Tab Gabapentin 100 mg BD", restricted: false, approved_at: "2026-09-24T12:05:00",
+          doctor_name: "Dr. Mihir Thanvi", department: "Orthopedics" },
+      ],
+    },
+    last_plan: {
+      consultation_id: "c3", signed_at: "2026-09-12T11:00:00",
+      plan: "Restrict salt; repeat renal panel in two weeks.",
+      approved_items: [{ kind: "prescription", content: "Tab Furosemide 20 mg OD" }],
+    },
+    has_documents: true,
+  },
+  // What /appointments/{id}/nutrition returns, with a kidney conflict so the caution shows.
+  nutrition: {
+    items: [{
+      kind: "finding", term: "Vitamin D", direction: "low",
+      because: [{ printed_name: "Vitamin D, 25-Hydroxy (Total)", value_text: "13.8 ng/mL", flag: "low",
+                  document_type: "blood_report", clinical_date: "2026-09-20", page_no: 2, document_id: "d1" }],
+      nutrient_focus: "Vitamin D, with calcium to use it well.",
+      veg_foods: ["Fortified milk", "Curd", "Paneer", "Ragi"], non_veg_foods: ["Salmon", "Sardines", "Egg yolk"],
+      limit: [], note: "Pair with calcium-rich foods.",
+    }, {
+      kind: "symptom", term: "constipation", direction: "present", because: [{ symptom: "constipation" }],
+      nutrient_focus: "Fibre and fluids.", veg_foods: ["Oats", "Papaya", "Whole wheat"],
+      non_veg_foods: ["Oats", "Papaya"], limit: ["Refined flour"], note: "",
+    }],
+    cautions: ["Kidney results are abnormal — agree any diet change with a renal dietitian. High-potassium and high-protein foods have been left out."],
+    unavailable: [], excluded_documents: 1, prompt_version: "nutrition-v1",
+  },
+  // Drill-down rows behind each activity tile (?drill=<tile>). Each set includes the
+  // awkward case: a discarded consult's note, which is listed but must NOT be a button.
+  items: (() => {
+    const base = { consultation_id: "c1", booking_id: "b1", patient_id: "p1",
+      patient_name: "Anit Rao", department: "Nephrology",
+      appointment_start: "2026-09-21T13:00:00", consult_status: "transcript_ready",
+      consult_ended_at: "2026-09-21T13:30:00", note_status: "draft", openable: true };
+    const discarded = { ...base, consultation_id: "c9", booking_id: "b9",
+      patient_name: "Priya Menon", consult_status: "discarded", openable: false };
+    const wrap = (tile, items) => ({ tile, window_requested: "last_visit",
+      window: "last_visit", window_start: "2026-09-21T09:00:00", items, truncated: false });
+    return {
+      notes_drafted: wrap("notes_drafted", [
+        { ...base, occurred_at: "2026-09-22T19:12:00", style: "detailed" },
+        { ...base, occurred_at: "2026-09-22T11:02:00", style: "concise", note_status: "signed" },
+        { ...discarded, occurred_at: "2026-09-22T09:40:00", style: "concise" },
+      ]),
+      documents_summarized: wrap("documents_summarized", [
+        { document_id: "d1", original_filename: "Lab_Report_20Sep2026.pdf",
+          document_type: "lab_report", clinical_date: "2026-09-20",
+          uploaded_at: "2026-09-22T08:00:00", content_type: "application/pdf",
+          patient_id: "p1", patient_name: "Anit Rao", summary_verification: "partial", openable: true },
+        { document_id: "d2", original_filename: "prescription-photo.png",
+          document_type: "prescription", clinical_date: null,
+          uploaded_at: "2026-09-22T07:00:00", content_type: "image/png",
+          patient_id: "p1", patient_name: "Anit Rao", summary_verification: "failed", openable: true },
+      ]),
+      fields_flagged: wrap("fields_flagged", [
+        { ...base, occurred_at: "2026-09-22T19:12:00", flagged_sections: ["objective", "assessment"] },
+        { ...base, consultation_id: "c3", patient_name: "Priya Menon",
+          occurred_at: "2026-09-21T12:05:00", flagged_sections: ["plan"] },
+      ]),
+      notes_blocked: wrap("notes_blocked", [
+        { ...base, consultation_id: "c2", note_status: "stale", occurred_at: "2026-09-21T16:35:00" },
+      ]),
+    };
+  })(),
+  // The real incident: the assistant proposed Endocrinology off a cortisol result and the
+  // patient insisted on Psychiatry. The panel must make that visible, not average it out.
+  bookingContext: {
+    recorded: true,
+    context: {
+      booking_id: "b1", patient_id: "p1",
+      transcript_message_count: 24,
+      suggested_department: "Endocrinology",
+      chosen_department: "Psychiatry",
+      department_match_source: "document_findings",
+      department_match_reason: "raised morning cortisol on the blood report",
+      document_ids: ["d1", "d2"],
+      ai_summary: {}, ai_summary_status: "pending",
+    },
+  },
+  patient: {
+    patient_id: "p1", patient_name: "Anit Rao", name: "Anit Rao", age: 27,
+    email: "anit@example.com", mobile_number: "9999999999", blood_group: "B+",
+    health_issues: "Vitamin B12 deficiency. Occasional anxiety.",
+    visits: [{ booking_id: "b1", start_time: "2026-09-21T13:00:00",
+               department: "Nephrology", status: "completed",
+               consult_id: "c1", consult_status: "transcript_ready", note_status: "draft",
+               consult_ended_at: "2026-09-21T13:30:00" }],
+  },
+  appointments: { appointments: [
+    { booking_id: "b1", patient_id: "p1", patient_name: "Anit Rao", department: "Nephrology",
+      start_time: IST_TODAY + "T09:00:00", status: "completed",
+      consult_id: "c1", consult_status: "transcript_ready",
+      consult_started_at: null, consult_ended_at: null },
+    { booking_id: "b9", patient_id: "p2", patient_name: "Priya Menon", department: "Nephrology",
+      start_time: IST_TODAY + "T14:30:00", status: "booked",
+      consult_id: null, consult_status: null, consult_started_at: null, consult_ended_at: null },
+  ] },
+};
+
+// Declared out here, above the fetch interception that serves them, so the interceptor
+// closure cannot reach them in their temporal dead zone.
+const NOTE = {
+  id: "note-1", consultation_id: "c1", status: "draft",
+  subjective: "Patient reports anxiety and difficulty sleeping for several days.",
+  objective: "BP 130/80. Alert, oriented. No acute distress.",
+  assessment: "Likely stress-related insomnia. Raised morning cortisol on recent labs.",
+  plan: ["- Sleep hygiene advice", "- Amlodipine 5 mg once daily", "- Review in 2 weeks"].join(String.fromCharCode(10)),
+  field_citations: { subjective: ["I have been feeling anxious"], objective: [],
+                     assessment: [], plan: ["review in two weeks"] },
+  confidence_flags: { subjective: false, objective: true, assessment: true, plan: false },
+  generated_at: "2026-09-22T19:12:00", edited_at: null, signed_at: null,
+  shared_with_patient_at: null, source_transcript_type: "batch",
+  ai_model: "gpt-4o-mini", ai_prompt_version: "v1-concise", addenda: [],
+};
+const SIGNED = { ...NOTE, status: "signed", signed_at: "2026-09-23T10:05:00",
+  shared_with_patient_at: "2026-09-23T10:11:00",
+  addenda: [{ id: "a1", content: "Patient called; tolerating medication well.",
+              added_by: "d1", created_at: "2026-09-23T12:00:00" }] };
+
+document.getElementById("frame").addEventListener("load", async () => {
+  const frame = document.getElementById("frame");
+  const win = frame.contentWindow;
+  const doc = frame.contentDocument;
+
+  try {
+    // Every request the app makes, in order, with its method and body — so a flow can be
+    // checked for WHAT it sent and in WHICH order (save before sign), not just what painted.
+    win.__requests = [];
+    // ?fail=clinical-put makes the clinical-item save fail, to prove approve stops.
+    const failures = (params.get("fail") || "").split(",").filter(Boolean);
+    const reply = (body, status = 200) => ({
+      ok: status < 400, status, json: async () => body, text: async () => JSON.stringify(body),
+    });
+
+    // Intercept the workspace's own fetches so render paths run exactly as they do in
+    // production, just against fixtures instead of a live API.
+    win.fetch = async (url, options = {}) => {
+      const u = String(url);
+      const method = String(options.method || "GET").toUpperCase();
+      win.__requests.push({ method, url: u, body: options.body || null });
+      if (failures.includes("clinical-put") && method === "PUT" && u.includes("/clinical-items/")) {
+        return reply({ detail: "Simulated save failure" }, 500);
+      }
+      // ?race=1: two patients whose overview cards arrive in the WRONG order — A's is slow
+      // (as a card needing the model is), B's instant (as a cached one is).
+      const race = params.get("race") === "1" && u.match(/\/doctor\/patients\/(p[AB])(\/[a-z-]+)?$/);
+      if (race) {
+        const who = race[1], sub = race[2] || "";
+        if (sub === "/overview") {
+          if (who === "pA") await new Promise((r) => win.setTimeout(r, 600));
+          return reply({ mode: "structured", reason: "", facts: [], lines: [
+            { heading: "Diagnoses", items: [{ text: `DIAGNOSIS OF PATIENT ${who.slice(1)}`, label: null }] },
+          ] });
+        }
+        if (sub === "") {
+          return reply({ patient_id: who, patient_name: `Patient ${who.slice(1)}`,
+                         name: `Patient ${who.slice(1)}`, visits: [] });
+        }
+        return reply({});
+      }
+      let body = {};
+      if (u.includes("/doctor/me")) body = { doctor: FIXTURES.doctor };
+      else if (u.includes("activity-items")) {
+        body = FIXTURES.items[new URL(u, location.href).searchParams.get("tile")] || {};
+      }
+      else if (u.includes("activity-summary")) body = FIXTURES.summary;
+      else if (u.includes("activity-log")) body = FIXTURES.log;
+      else if (u.includes("/doctor/reviews")) {
+        body = u.includes("scope=completed") ? FIXTURES.reviewsCompleted : FIXTURES.reviews;
+      }
+      else if (u.endsWith("/doctor/patients/p1")) body = FIXTURES.patient;
+      // BEFORE the /doctor/appointments branch: the context URL is
+      // /doctor/appointments/{id}/context and would otherwise be shadowed by it.
+      else if (u.includes("/context")) body = FIXTURES.bookingContext;
+      // BEFORE the /doctor/appointments branch too: /doctor/appointments/{id}/brief.
+      else if (u.includes("/brief")) body = FIXTURES.brief;
+      else if (u.includes("/nutrition")) body = FIXTURES.nutrition;
+      else if (u.includes("/doctor/appointments")) body = FIXTURES.appointments;
+      // The note must come from HERE, not from a renderNoteDraft() call in this harness.
+      // loadSoapNote() assigns the app's own module-level doctorCurrentNote and then
+      // re-renders; a direct render call is overwritten by that async continuation, which
+      // left the SOAP fields empty and meant axe was auditing a blank note.
+      else if (u.includes("/soap/verified-sections")) body = { sections: [] };
+      else if (u.includes("/soap")) body = pane === "signed" ? SIGNED : NOTE;
+      else if (u.includes("/transcript")) body = FIXTURES.transcript;
+      else if (u.includes("/clinical-item")) body = FIXTURES.clinicalItem;
+      else if (u.includes("/patient/")) body = FIXTURES.patient;
+      return reply(body);
+    };
+
+    // Only the TOP-LEVEL view sections — the workspace's own panes contain nested
+    // <section> elements (hero, cards, lanes) that must stay visible.
+    doc.querySelectorAll("body > section").forEach((s) => s.classList.add("hidden"));
+    const dash = doc.querySelector("#doctorDashboardView");
+    dash.classList.remove("hidden");
+    dash.querySelectorAll(".doctor-ai-side, .doctor-ai-main, .doctor-ai").forEach(
+      (el) => el.classList.remove("hidden"));
+
+    // The workspace's state lives in top-level `let` bindings, which a classic script
+    // does NOT expose on window — assigning win.doctorReviewsCache would create a
+    // separate property the app never reads. So the real loader functions are driven
+    // instead, and they populate their own state from the intercepted fetch above. That
+    // also means these screenshots exercise the genuine load path, not a shortcut.
+    win.renderDoctorDashboard(FIXTURES.doctor);
+    await win.loadDoctorReviews();
+    await win.loadDoctorAppointments("upcoming");
+    await win.loadDoctorAiActivity();
+    win.showDoctorView(pane);
+
+    // ?drill=<tile> opens that tile's list by CLICKING it — the real handler, not a direct
+    // render — and waits for rows. "Loading…" is itself a message element, so readiness is
+    // "rows exist, or a message that is not the loading one".
+    const drill = params.get("drill");
+    if (drill) {
+      const tile = doc.querySelector(`[data-activity-tile="${drill}"]`);
+      if (!tile) throw new Error("no activity tile for " + drill);
+      tile.click();
+      const ready = () => {
+        const list = doc.querySelector("#doctorActivityDrillList");
+        if (!list) return false;
+        if (list.querySelector(".doctor-ai-drill-row")) return true;
+        const msg = list.querySelector(".doctor-ai-drill-message");
+        return Boolean(msg && msg.textContent !== "Loading…");
+      };
+      for (let i = 0; i < 40 && !ready(); i++) await new Promise((r) => win.setTimeout(r, 50));
+      if (!ready()) throw new Error("the drill-down never rendered for " + drill);
+
+      // ?escape=1 presses Escape from inside the open list, the keyboard way out. The
+      // panel must close AND focus must land back on the tile that opened it.
+      if (params.get("escape") === "1") {
+        const row = doc.querySelector("#doctorActivityDrillList button") || doc.querySelector("#doctorActivityDrillClose");
+        row.focus();
+        row.dispatchEvent(new win.KeyboardEvent("keydown", { key: "Escape", bubbles: true }));
+      }
+    }
+
+
+  // ── Screens inside the appointment-detail pane (verification-report.md 7.4) ──
+  if (pane === 'note' || pane === 'signed' || pane === 'clinical' || pane === 'patient') {
+    const appt = { booking_id:'b1', patient_id:'p1', patient_name:'Anit Rao',
+      department:'Nephrology', start_time:'2026-09-21T13:00:00', status:'completed',
+      booking_note:null, consult_id:'c1', consult_status:'transcript_ready',
+      consult_started_at:null, consult_ended_at:'2026-09-21T13:30:00' };
+
+    if (pane === 'patient') {
+      win.renderDoctorPatientDetail({
+        patient_id:'p1', patient_name:'Anit Rao', name:'Anit Rao', age:27,
+        email:'anit@example.com', mobile_number:'9999999999', blood_group:'B+',
+        health_issues:'Vitamin B12 deficiency. Occasional anxiety.',
+        visits:[{booking_id:'b1',start_time:'2026-09-21T13:00:00',department:'Nephrology',status:'completed'}]
+      });
+      // (The patient-page brief was retired in review phase 3; the visit brief lives on
+      // the appointment and the Today card.)
+      doc.querySelector('#doctorPatientDetailPane').classList.remove('hidden');
+      doc.querySelector('#doctorPatientsPane').classList.add('hidden');
+    } else {
+      // showDoctorAppointmentDetail kicks off loadSoapNote/loadConsultTranscript without
+      // awaiting them. Rendering the note here directly would be overwritten when those
+      // settle, so the note is served by the fetch stub above and we simply wait for the
+      // app to finish its own load — which also means these screens exercise the real
+      // path rather than a shortcut.
+      win.showDoctorAppointmentDetail(appt, 'past');
+      // doctorCurrentNote is a module-level `let`, which a classic script does NOT put on
+      // window, so readiness is read from the DOM: wait until the fixture's own text has
+      // actually been rendered. A marker only this fixture contains, so a stale or empty
+      // render cannot satisfy it.
+      const MARK = "stress-related insomnia";
+      const rendered = () => {
+        const pane_ = doc.querySelector('#doctorAppointmentDetailPane');
+        if (!pane_) return false;
+        if (pane_.textContent.includes(MARK)) return true;
+        return [...pane_.querySelectorAll("textarea")].some((t) => t.value.includes(MARK));
+      };
+      for (let i = 0; i < 40 && !rendered(); i++) {
+        await new Promise((r) => win.setTimeout(r, 50));
+      }
+      if (!rendered()) throw new Error("the note never rendered — the /soap stub or the detail flow changed");
+      doc.querySelector('#doctorConsultNoteBlock').classList.remove('hidden');
+      if (pane === 'clinical') {
+        doc.querySelector('#doctorClinicalItemsBlock').classList.remove('hidden');
+        doc.querySelector('#doctorInsertFromPlanRow').classList.remove('hidden');
+        const alert = doc.querySelector('#doctorClinicalItemAllergyAlert');
+        alert.classList.remove('hidden');
+        doc.querySelector('#doctorClinicalItemAllergyBody').textContent = 'Vitamin B12 deficiency. Occasional anxiety.';
+      }
+    }
+  }
+
+    const sleep = (ms) => new Promise((r) => win.setTimeout(r, ms));
+    const sent = () => win.__requests.map((r, i) => `${i}:${r.method} ${r.url.replace(/^.*\/doctor/, "")}`);
+
+    // ?signflow=1 (with pane=note): type into the draft, press Mark verified, then sign.
+    // Proves: the typed text survives the re-render, the sign dialog says it will save,
+    // and the PATCH carrying the edit is sent BEFORE the sign.
+    if (params.get("signflow") === "1") {
+      const EDIT = "EDITED BY THE DOCTOR BEFORE SIGNING";
+      const field = () => doc.querySelector('#doctorNoteFieldsContainer textarea[data-field="assessment"]');
+      field().value = EDIT;
+      field().dispatchEvent(new win.Event("input", { bubbles: true }));
+      const verify = [...doc.querySelectorAll("#doctorNoteFieldsContainer button")]
+        .find((b) => b.textContent.trim() === "Mark verified");
+      verify.click();
+      await sleep(300);
+      const keptAfterVerify = field().value === EDIT;
+      win.__requests.length = 0;
+      doc.querySelector("#doctorNoteSignBtn").click();
+      const warning = doc.querySelector("#doctorNoteSignWarning").textContent;
+      doc.querySelector("#doctorNoteSignConfirmBtn").click();
+      await sleep(500);
+      const patch = win.__requests.findIndex((r) => r.method === "PATCH" && /\/soap$/.test(r.url));
+      const sign = win.__requests.findIndex((r) => r.method === "POST" && /\/soap\/sign$/.test(r.url));
+      const patchBody = patch >= 0 ? win.__requests[patch].body || "" : "";
+      out.textContent = "SIGNFLOW_DONE"
+        + `\nkept_after_verify=${keptAfterVerify}`
+        + `\nwarning="${warning}"`
+        + `\npatch_index=${patch} sign_index=${sign} saved_before_sign=${patch >= 0 && sign > patch}`
+        + `\npatch_carries_edit=${patchBody.includes(EDIT)}`
+        + `\nrequests=${sent().join(" | ")}`;
+      return;
+    }
+
+    // ?approveflow=1&fail=clinical-put (with pane=clinical): the save fails; approve must stop.
+    if (params.get("approveflow") === "1") {
+      const box = doc.querySelector("#doctorClinicalItemText");
+      box.disabled = false;
+      box.value = "Tab Amlodipine 5 mg OD";
+      win.__requests.length = 0;
+      doc.querySelector("#doctorClinicalItemApproveBtn").click();
+      doc.querySelector("#doctorClinicalItemApproveConfirmBtn").click();
+      await sleep(500);
+      const approved = win.__requests.some((r) => /\/approve$/.test(r.url));
+      out.textContent = "APPROVEFLOW_DONE"
+        + `\napprove_requested=${approved}`
+        + `\nmessage="${doc.querySelector("#doctorClinicalItemMessage").textContent}"`
+        + `\nrequests=${sent().join(" | ")}`;
+      return;
+    }
+
+    // ?flow=... — review phase 2. Each clicks the real controls and reports what is visible.
+    const visible = (sel) => {
+      const el = doc.querySelector(sel);
+      return Boolean(el) && win.getComputedStyle(el).display !== "none" && !el.closest(".hidden");
+    };
+    const flow = params.get("flow");
+    // ?openbrief=1 opens the first Today brief and then FALLS THROUGH, so axe or a
+    // screenshot sees the screen with it open.
+    if (params.get("openbrief") === "1") {
+      doc.querySelector("#doctorTodaySchedule [aria-controls^='doctorTodayBrief-']")?.click();
+      await sleep(400);
+    }
+    if (flow === "reviewsopen") {
+      win.showDoctorView("reviews");
+      await sleep(400);
+      const card = doc.querySelector("#doctorReviewLanes .doctor-ai-item.is-clickable .doctor-ai-item-title");
+      card.click();
+      await sleep(300);
+      out.textContent = "FLOW_DONE reviewsopen"
+        + `\nreviews_pane_visible=${visible("#doctorReviewsPane")}`
+        + `\nappointment_visible=${visible("#doctorAppointmentDetailPane")}`;
+      return;
+    }
+    if (flow === "signedtab") {
+      win.showDoctorView("reviews");
+      await sleep(300);
+      doc.querySelector('[data-review-scope="completed"]').click();
+      await sleep(400);
+      const signedSelected = doc.querySelector('[data-review-scope="completed"]').getAttribute("aria-selected");
+      doc.querySelector('[data-doctor-view="overview"]').click();
+      await sleep(600);
+      const cards = [...doc.querySelectorAll("#doctorOverviewReviews .doctor-ai-item-title")]
+        .map((t) => t.textContent.split(" · ")[0]);
+      out.textContent = "FLOW_DONE signedtab"
+        + `\nsigned_tab_aria_selected=${signedSelected}`
+        + `\nnext_actions=${JSON.stringify(cards)}`
+        + `\nempty_text="${(doc.querySelector("#doctorOverviewReviews .doctor-ai-empty")?.textContent || "")}"`;
+      return;
+    }
+    if (flow === "startreview") {
+      const btn = doc.querySelector("#doctorStartReviewBtn");
+      const state = `disabled=${btn.disabled} label="${btn.textContent.trim()}"`;
+      btn.click();
+      await sleep(300);
+      const fields = doc.querySelector("#doctorAppointmentDetailFields")?.textContent.replace(/\s+/g, " ") || "";
+      out.textContent = "FLOW_DONE startreview"
+        + `\nbutton ${state}`
+        + `\nappointment_visible=${visible("#doctorAppointmentDetailPane")}`
+        + `\nopened="${fields.slice(0, 80)}"`;
+      return;
+    }
+    if (flow === "logtoggle") {
+      const toggle = doc.querySelector("#doctorActivityLogToggle");
+      const rowButtons = doc.querySelectorAll("#doctorActivityLog button.doctor-ai-feed-row").length;
+      const rowsBefore = doc.querySelectorAll("#doctorActivityLog .doctor-ai-feed-row").length;
+      toggle.click();
+      await sleep(300);
+      const expanded = toggle.getAttribute("aria-expanded");
+      const label = toggle.textContent;
+      const limitAsked = win.__requests.filter((r) => r.url.includes("activity-log")).pop()?.url || "";
+      doc.querySelector("#doctorActivityLog button.doctor-ai-feed-row").click();
+      await sleep(300);
+      out.textContent = "FLOW_DONE logtoggle"
+        + `\nrows=${rowsBefore} openable_rows_as_buttons=${rowButtons}`
+        + `\nafter_toggle expanded=${expanded} label="${label}" request="${limitAsked.replace(/^.*activity-log/, "activity-log")}"`
+        + `\nrow_opened_appointment=${visible("#doctorAppointmentDetailPane")}`;
+      return;
+    }
+    if (flow === "visit") {
+      await win.loadDoctorPatientDetail("p1");
+      await sleep(300);
+      const card = doc.querySelector("#doctorPatientDetailVisits button.doctor-visit-card");
+      const text = (card?.textContent || "").replace(/\s+/g, " ").trim();
+      card.click();
+      await sleep(300);
+      const opened = visible("#doctorAppointmentDetailPane");
+      doc.querySelector("#doctorAppointmentDetailBackBtn").click();
+      await sleep(200);
+      out.textContent = "FLOW_DONE visit"
+        + `\nvisit_card="${text}"`
+        + `\nopened_appointment=${opened}`
+        + `\nback_to_patient_page=${visible("#doctorPatientDetailPane")} appointment_hidden=${!visible("#doctorAppointmentDetailPane")}`;
+      return;
+    }
+
+    if (flow === "todaybrief") {
+      const toggle = doc.querySelector("#doctorTodaySchedule [aria-controls^='doctorTodayBrief-']");
+      toggle.click();
+      await sleep(400);
+      const panel = doc.getElementById(toggle.getAttribute("aria-controls"));
+      const briefFetches = () => win.__requests.filter((r) => r.url.includes("/brief")).length;
+      const fetchedOnOpen = briefFetches();
+      const headings = [...(panel?.querySelectorAll(".doctor-brief-heading") || [])].map((h) => h.textContent);
+      const rows = [...(panel?.querySelectorAll(".doctor-brief-row") || [])].map((r) => r.textContent.replace(/\s+/g, " ").trim());
+      // A refresh redraws Today; the open brief must be repainted, not refetched.
+      win.renderDoctorOverviewReviews();
+      await sleep(200);
+      const stillOpen = Boolean(doc.getElementById(toggle.getAttribute("aria-controls")));
+      const fetchedAfterRedraw = briefFetches();
+      const expanded = doc.querySelector(`[aria-controls="${toggle.getAttribute("aria-controls")}"]`).getAttribute("aria-expanded");
+      out.textContent = "FLOW_DONE todaybrief"
+        + `\nexpanded=${expanded} panel_visible=${visible("#" + toggle.getAttribute("aria-controls"))}`
+        + `\nfetches_on_open=${fetchedOnOpen} after_redraw=${fetchedAfterRedraw} still_open=${stillOpen}`
+        + `\nheadings=${JSON.stringify(headings)}`
+        + `\nrows=${JSON.stringify(rows)}`;
+      return;
+    }
+    if (flow === "appointmentbrief") {
+      const appt = { booking_id: "b1", patient_id: "p1", patient_name: "Anit Rao", department: "Nephrology",
+        start_time: "2026-09-28T09:00:00", status: "booked", consult_id: null };
+      win.showDoctorAppointmentDetail(appt, "overview");
+      await sleep(400);
+      const body = doc.querySelector("#doctorVisitBriefBody");
+      out.textContent = "FLOW_DONE appointmentbrief"
+        + `\nblock_visible=${visible("#doctorVisitBriefBlock")}`
+        + `\nheadings=${JSON.stringify([...body.querySelectorAll(".doctor-brief-heading")].map((h) => h.textContent))}`
+        + `\nold_booking_block_present=${Boolean(doc.querySelector("#doctorBookingContextBlock"))}`
+        + `\npatient_page_brief_present=${Boolean(doc.querySelector("#doctorPatientBriefBlock"))}`;
+      body.querySelector(".doctor-nutrition-toggle")?.click();
+      await sleep(300);
+      out.textContent += `\nnutrition_items=${body.querySelectorAll(".doctor-nutrition-item").length}`
+        + `\nnutrition_cautions=${JSON.stringify([...body.querySelectorAll(".doctor-nutrition-caution")].map((c) => c.textContent))}`
+        + `\nreview_chip=${JSON.stringify(body.querySelector(".doctor-review-chip")?.textContent || null)}`;
+      if (params.get("axe") !== "1") return;
+    }
+
+    // ?race=1: open patient A, then immediately patient B. A's overview arrives last.
+    if (params.get("race") === "1") {
+      win.loadDoctorPatientDetail("pA");
+      await sleep(20);
+      win.loadDoctorPatientDetail("pB");
+      await sleep(1200);
+      out.textContent = "RACE_DONE"
+        + `\nheader="${(doc.querySelector("#doctorPatientDetailName")?.textContent || "").trim()}"`
+        + `\ncard="${doc.querySelector("#doctorOverviewLines").textContent.replace(/\s+/g, " ").trim()}"`;
+      return;
+    }
+
+    // ?clinical=1 renders the document clinician view from a REAL captured API payload
+    // (_clinical.json), so the summary, citations and abnormal chips are checked against
+    // what the server actually returns rather than a hand-written fixture.
+    if (params.get("clinical") === "1") {
+      const payload = await (await fetch("/static/_clinical.json")).json();
+      doc.querySelectorAll("body > section").forEach((el) => el.classList.add("hidden"));
+      const host = doc.querySelector("#doctorPatientDocumentsList");
+      doc.querySelector("#doctorDashboardView")?.classList.remove("hidden");
+      doc.querySelector("#doctorPatientsPane")?.classList.remove("hidden");
+      doc.querySelector("#doctorPatientDetailPane")?.classList.remove("hidden");
+      doc.querySelector("#doctorPatientTabDocuments")?.classList.remove("hidden");
+      const box = doc.createElement("div");
+      box.className = "panel-note clinical-note-citation-box";
+      box.id = "clinicalRender";
+      host.replaceChildren(box);
+      win.renderDocumentClinical(box, payload);
+      // Fall through when a probe was asked for, so inspect/contrast can examine what
+      // was just rendered rather than returning before they run.
+      if (!runAxe && !params.get("inspect") && !params.get("contrast")) {
+        out.textContent = "RENDER_OK pane=clinical-view";
+        return;
+      }
+    }
+
+    // ?overview=phrased|structured renders the at-a-glance card in each of its two
+    // modes. Both must be reachable: the fallback is what a doctor sees whenever the
+    // model's phrasing fails verification, so it has to be verified too.
+    const overviewMode = params.get("overview");
+    if (overviewMode) {
+      const nativeFetch = window.fetch.bind(window);
+      const file = overviewMode === "structured" ? "_overview_fallback" : "_overview";
+      win.fetch = async (url, options) => {
+        const u = String(url);
+        if (u.includes("/overview")) return nativeFetch("/static/" + file + ".json");
+        if (/\/doctor\/patients\/p1$/.test(u)) return reply(FIXTURES.patient);
+        return reply({});
+      };
+      doc.querySelectorAll("body > section").forEach((el) => el.classList.add("hidden"));
+      doc.querySelector("#doctorDashboardView")?.classList.remove("hidden");
+      // Opened the way a doctor opens a patient. Calling loadDoctorOverview("p1") directly
+      // no longer paints anything: with no patient open, its answer belongs to nobody, and
+      // the late-response guard (rightly) discards it.
+      await win.loadDoctorPatientDetail("p1");
+      for (let i = 0; i < 40 && doc.querySelector("#doctorOverviewMode").textContent === "Loading…"; i++) {
+        await new Promise((r) => win.setTimeout(r, 50));
+      }
+      if (!runAxe && !params.get("inspect") && !params.get("contrast")) {
+        out.textContent = "OVERVIEW_OK mode=" + doc.querySelector("#doctorOverviewMode").textContent
+          + " lines=" + doc.querySelectorAll("#doctorOverviewLines p").length
+          + " note=" + JSON.stringify(doc.querySelector("#doctorOverviewNote").textContent.slice(0, 70));
+        return;
+      }
+    }
+
+    // ?timeline=1 renders the cross-doctor timeline from a fixture that includes a
+    // RESTRICTED encounter, an encounter with no signed note, and a cancelled one — the
+    // three states that must look different from each other.
+    if (params.get("timeline") === "1") {
+      const nativeFetch = window.fetch.bind(window);
+      // ?filtersfail=1: the first filters request fails, as it did under the deadlocks;
+      // opening the tab must fetch them again.
+      let filterCalls = 0;
+      win.fetch = async (url, options) => {
+        const u = String(url);
+        if (u.includes("/timeline/filters")) {
+          filterCalls += 1;
+          if (params.get("filtersfail") === "1" && filterCalls === 1) {
+            return new Response(JSON.stringify({ detail: "boom" }), { status: 500 });
+          }
+          return nativeFetch("data:application/json," + encodeURIComponent(JSON.stringify({
+            departments: ["Cardiology", "Nephrology", "Psychiatry"],
+            doctors: [{doctor_id: "d1", name: "Dr. Ajit Singh Narula"}],
+            document_types: ["blood_report", "mri_report", "xray_report", "prescription", "sleep_study_report"],
+            // Which document types each department/doctor's visits hold (narrowTimelineFilters).
+            facets: [
+              { department: "Cardiology", doctor_id: "dc", doctor_name: "Dr. Cardio", document_types: ["xray_report"] },
+              { department: "Nephrology", doctor_id: "d1", doctor_name: "Dr. Ajit Singh Narula", document_types: ["mri_report", "prescription"] },
+              { department: "Psychiatry", doctor_id: "dp", doctor_name: "Dr. Psych", document_types: [] },
+            ],
+            unlinked_document_types: ["blood_report", "sleep_study_report"],
+          })));
+        }
+        if (u.includes("/timeline")) return nativeFetch("/static/_timeline.json");
+        if (u.includes("/doctor/patients/")) {
+          return nativeFetch("data:application/json," + encodeURIComponent(JSON.stringify(FIXTURES.patient)));
+        }
+        return nativeFetch(url, options);
+      };
+      doc.querySelectorAll("body > section").forEach((el) => el.classList.add("hidden"));
+      doc.querySelector("#doctorDashboardView")?.classList.remove("hidden");
+      doc.querySelector("#doctorPatientDetailPane")?.classList.remove("hidden");
+      // Driven through the REAL patient-open path. timelineState is a module-level
+      // const, which a classic script does not expose on window, so it cannot be set
+      // from here — and going through loadDoctorPatientDetail is better verification
+      // anyway, because it exercises the wiring rather than bypassing it.
+      await win.loadDoctorPatientDetail("p1");
+      await new Promise((r) => win.setTimeout(r, 300));
+      const filtersBeforeTab = doc.querySelectorAll("#doctorTimelineDocType option").length - 1;
+      // ?cascade=1: pick a department, then a doctor, and report what each dropdown offers.
+      const optionsOf = (id) => [...doc.querySelectorAll(`${id} option`)].slice(1).map((o) => o.textContent);
+      const choose = (id, value) => {
+        const select = doc.querySelector(id);
+        select.value = value;
+        select.dispatchEvent(new Event("change"));
+      };
+      if (params.get("cascade") === "1") {
+        const steps = { all: { doctors: optionsOf("#doctorTimelineDoctor"), types: optionsOf("#doctorTimelineDocType") } };
+        choose("#doctorTimelineDocType", "blood_report");
+        choose("#doctorTimelineDepartment", "Nephrology");
+        steps.nephrology = { doctors: optionsOf("#doctorTimelineDoctor"), types: optionsOf("#doctorTimelineDocType"),
+                             typeKept: doc.querySelector("#doctorTimelineDocType").value };
+        choose("#doctorTimelineDepartment", "Psychiatry");
+        steps.psychiatry = { doctors: optionsOf("#doctorTimelineDoctor"), types: optionsOf("#doctorTimelineDocType") };
+        choose("#doctorTimelineDepartment", "");
+        choose("#doctorTimelineDoctor", "dc");
+        steps.cardioDoctor = { types: optionsOf("#doctorTimelineDocType") };
+        out.textContent = "CASCADE " + JSON.stringify(steps);
+        return;
+      }
+      win.setDoctorPatientTab("timeline");
+      await new Promise((r) => win.setTimeout(r, 400));
+      [...doc.querySelectorAll("#doctorTimelineList details")].slice(0, 2)
+        .forEach((el) => { el.open = true; });
+      const docEntry = doc.querySelector(".doctor-timeline-document");
+      if (params.get("scrolldoc") === "1") docEntry?.scrollIntoView({ block: "center" });
+      if (!runAxe && !params.get("inspect") && !params.get("contrast")) {
+        out.textContent = "TIMELINE_OK rows=" + doc.querySelectorAll("#doctorTimelineList details").length
+          + " docEntry=" + JSON.stringify(docEntry ? docEntry.textContent.replace(/\s+/g, " ").trim() : null)
+          + " restricted=" + doc.querySelectorAll("#doctorTimelineList .is-warn").length
+          + " count=" + JSON.stringify(doc.querySelector("#doctorTimelineCount").textContent)
+          + " filterCalls=" + filterCalls + " typesBeforeTab=" + filtersBeforeTab
+          + " departments=" + (doc.querySelectorAll("#doctorTimelineDepartment option").length - 1)
+          + " doctors=" + (doc.querySelectorAll("#doctorTimelineDoctor option").length - 1)
+          + " types=" + JSON.stringify([...doc.querySelectorAll("#doctorTimelineDocType option")].slice(1)
+            .map((o) => o.textContent + "=" + o.value))
+          + " cards=" + JSON.stringify([...doc.querySelectorAll("#doctorPatientDetailPane .admin-inline-card .admin-inline-meta")]
+            .map((el) => el.textContent).slice(0, 4));
+        return;
+      }
+    }
+
+    // ?viewer=1 opens the document viewer on a REAL PDF pulled from storage, with the
+    // real captured clinical payload beside it. The app's own fetch is intercepted so the
+    // authenticated file route resolves to that PDF without a live doctor session.
+    if (params.get("viewer") === "1") {
+      // The PARENT page's native fetch, not win.fetch — win.fetch is already the fixture
+      // stub installed above, which returns a plain object with no .blob(). The viewer
+      // needs a real Response.
+      const nativeFetch = window.fetch.bind(window);
+      win.fetch = async (url, options) => {
+        const u = String(url);
+        if (u.includes("/file")) {
+          const k = params.get("kind");
+          // "unknown" serves IMAGE bytes with an unrecognised content type — the real
+          // hazard, since that is what a file with no usable extension produces.
+          return nativeFetch((k === "image" || k === "unknown") ? "/static/_sample.png" : "/static/_sample.pdf");
+        }
+        if (u.includes("/clinical")) {
+          // ?review=verified|flagged|mine loads the fixture with that review state.
+          const review = params.get("review");
+          return nativeFetch(review ? `/static/_clinical_${review}.json` : "/static/_clinical.json");
+        }
+        if (u.includes("/nutrition")) return nativeFetch("/static/_nutrition.json");
+        // ?reviewflow=1: the POST a click on "Mark verified" makes, answered as the server would.
+        if (u.includes("/review")) {
+          win.__reviewPosted = JSON.parse(options.body);
+          return new Response(JSON.stringify({ document_id: "d1", review: {
+            status: "verified", mine: "verified", flagged_by: [],
+            verified_by: [{ name: "Dr. Mihir Thanvi", department: "Orthopedics", at: "2026-09-28T10:00:00", is_me: true }],
+          } }), { status: 200, headers: { "Content-Type": "application/json" } });
+        }
+        return nativeFetch(url, options);
+      };
+      if (params.get("reviewflow") === "1") win.confirm = () => true;
+      doc.querySelectorAll("body > section").forEach((el) => el.classList.add("hidden"));
+      await win.openDoctorDocumentViewer("p1", {
+        document_id: "d1",
+        original_filename: "Lab_Report_Anit_Kumar_20Sep2026.pdf",
+        document_type: "blood_report",
+        clinical_date: "2026-09-20",
+        // ?kind=image exercises the image branch; ?kind=unknown exercises what happens
+        // when the stored file has an extension the type allowlist does not recognise.
+        content_type: params.get("kind") === "image" ? "image/png"
+                    : params.get("kind") === "unknown" ? "application/octet-stream"
+                    : "application/pdf",
+      });
+      if (params.get("reviewflow") === "1") {
+        await new Promise((r) => win.setTimeout(r, 600));
+        [...doc.querySelectorAll(".doctor-review-actions button")].find((b) => b.textContent === "Mark verified")?.click();
+        await new Promise((r) => win.setTimeout(r, 400));
+      }
+      // ?nutrition=veg|non_veg opens the AI nutritionist and picks that diet.
+      if (params.get("nutrition")) {
+        await new Promise((r) => win.setTimeout(r, 600));
+        doc.querySelector(".doctor-nutrition-toggle")?.click();
+        await new Promise((r) => win.setTimeout(r, 500));
+        if (params.get("nutrition") === "non_veg") {
+          [...doc.querySelectorAll(".doctor-nutrition-diet")].find((b) => b.textContent === "Non-vegetarian")?.click();
+          await new Promise((r) => win.setTimeout(r, 200));
+        }
+        doc.querySelector(".doctor-nutrition")?.scrollIntoView();
+      }
+      // Polled by CDP in REAL time — --virtual-time-budget fast-forwards timers and
+      // breaks PDF.js's worker handshake, so it cannot be used to verify this.
+      win.__viewerPoll = win.setInterval(() => {
+        const canvas = doc.querySelector("#doctorViewerCanvas");
+        const status = doc.querySelector("#doctorViewerStatus")?.textContent || "";
+        out.textContent = "VIEWER canvas=" + canvas.width + "x" + canvas.height
+          + " page=" + (doc.querySelector("#doctorViewerPage")?.textContent || "")
+          + " abnormal=" + doc.querySelectorAll(".doctor-abnormal-list li").length
+          + " groups=" + JSON.stringify([...doc.querySelectorAll("#doctorViewerSummary > .admin-inline-meta")].map((el) => el.textContent))
+          + " heading=" + JSON.stringify(doc.querySelector(".doctor-abnormal-heading")?.textContent || "")
+          + " sentences=" + doc.querySelectorAll("#doctorViewerSummary .clinical-note-line").length
+          + " incomplete=" + Boolean(doc.querySelector(".doctor-completeness-warn"))
+          + " review=" + JSON.stringify((doc.querySelector(".doctor-review-block")?.textContent || "").replace(/\s+/g, " ").trim())
+          + " posted=" + JSON.stringify(win.__reviewPosted || null)
+          + " nutrition=" + JSON.stringify({
+            items: doc.querySelectorAll(".doctor-nutrition-item").length,
+            pressed: doc.querySelector(".doctor-nutrition-diet[aria-pressed='true']")?.textContent || null,
+            first: (doc.querySelector(".doctor-nutrition-item")?.textContent || "").replace(/\s+/g, " ").slice(0, 400),
+          })
+          + " status=" + JSON.stringify(status);
+      }, 300);
+      if (!runAxe && !params.get("inspect") && !params.get("contrast")) return;
+    }
+
+    // ?inspect=<selector,selector> reports each element's text, hidden state and key
+    // attributes — the frame's DOM is not in --dump-dom, so this is how frame state is
+    // read back.
+    const inspect = params.get("inspect");
+    if (inspect) {
+      const rows = inspect.split(",").map((sel) => {
+        const els = [...doc.querySelectorAll(sel.trim())];
+        if (!els.length) return sel.trim() + " -> NOT FOUND";
+        return els.map((el, i) => {
+          const cs = win.getComputedStyle(el);
+          const text = (el.textContent || "").trim().replace(/\s+/g, " ").slice(0, 90);
+          return `${sel.trim()}[${i}] <${el.tagName.toLowerCase()}> vis=${cs.display !== "none" && cs.visibility !== "hidden"}`
+            + ` active=${el.classList.contains("is-active")}`
+            + ` pressed=${el.getAttribute("aria-pressed")}`
+            + ` expanded=${el.getAttribute("aria-expanded")}`
+            + ` focused=${doc.activeElement === el}`
+            + ` text="${text}"`;
+        }).join("\n");
+      });
+      out.textContent = "INSPECT_DONE pane=" + pane + "\n" + rows.join("\n");
+      return;
+    }
+
+    // ?scrollto=<selector> brings an element to the top of the frame before a screenshot —
+    // at narrow widths the stacked sidebar pushes the content below the fold.
+    const scrollTo = params.get("scrollto");
+    if (scrollTo) doc.querySelector(scrollTo)?.scrollIntoView({ block: "start" });
+
+    // ?overflow=1 reports any element in the hero wider than its box — the layout failure
+    // a narrow screen produces and a screenshot at desktop width cannot show.
+    if (params.get("overflow") === "1") {
+      const hero = doc.querySelector(".doctor-ai-hero");
+      const bad = [...hero.querySelectorAll("*")].filter((el) => el.scrollWidth > el.clientWidth + 1
+        && win.getComputedStyle(el).overflowX !== "auto" && win.getComputedStyle(el).overflowX !== "scroll"
+        && el.clientWidth > 0);
+      const hr = hero.getBoundingClientRect();
+      const escaping = [...hero.querySelectorAll(".doctor-ai-drill-row, .doctor-ai-tile")].filter((el) => {
+        const r = el.getBoundingClientRect(); return r.right > hr.right + 0.5 || r.left < hr.left - 0.5;
+      });
+      out.textContent = `OVERFLOW_DONE hero=${Math.round(hr.width)} overflowing=${bad.length} escaping=${escaping.length}\n`
+        + bad.slice(0, 10).map((el) => `${el.className || el.tagName} scroll=${el.scrollWidth} client=${el.clientWidth}`).join("\n");
+      return;
+    }
+
+    // ?glowprobe=<selector,...> reports, for each element, how close it comes to the centre
+    // of the hero's radial glow (.doctor-ai-hero::after). axe cannot see through that
+    // gradient, so contrast on the hero is computed from this geometry instead: the glow's
+    // opacity at the element's nearest point is what actually sits behind its text.
+    const glowSel = params.get("glowprobe");
+    if (glowSel) {
+      const hero = doc.querySelector(".doctor-ai-hero");
+      const hr = hero.getBoundingClientRect();
+      const after = win.getComputedStyle(hero, "::after");
+      const gw = parseFloat(after.width), gh = parseFloat(after.height);
+      const gRight = parseFloat(after.right), gTop = parseFloat(after.top);
+      // closest-side of a square box is half its side.
+      const cx = hr.right - gRight - gw / 2, cy = hr.top + gTop + gh / 2, radius = Math.min(gw, gh) / 2;
+      const rows = glowSel.split(",").flatMap((sel) =>
+        [...doc.querySelectorAll(sel.trim())].map((el, i) => {
+          const r = el.getBoundingClientRect();
+          const nx = Math.max(r.left, Math.min(cx, r.right)), ny = Math.max(r.top, Math.min(cy, r.bottom));
+          const d = Math.hypot(nx - cx, ny - cy);
+          return `${sel.trim()}[${i}] nearest=${d.toFixed(1)} radius=${radius} t=${Math.min(1, d / radius).toFixed(3)}`;
+        }));
+      out.textContent = `GLOW_DONE hero=${Math.round(hr.width)}x${Math.round(hr.height)} centre=(${Math.round(cx - hr.left)},${Math.round(cy - hr.top)})\n` + rows.join("\n");
+      return;
+    }
+
+    // ?contrast=<selector,selector> resolves fg/bg and the ratio by hand, for elements
+    // axe returns as "incomplete" because it cannot compute their background.
+    const manual = params.get("contrast");
+    if (manual) {
+      const lin = (c) => { c /= 255; return c <= 0.03928 ? c / 12.92 : Math.pow((c + 0.055) / 1.055, 2.4); };
+      const lum = (rgb) => { const [r, g, b] = rgb; return 0.2126 * lin(r) + 0.7152 * lin(g) + 0.0722 * lin(b); };
+      // Chrome serialises color-mix() as `color(srgb 0.86 0.15 0.15 / 0.06)` — 0-1
+      // components, not 0-255 — so a naive number-scrape reads it 255x too dark and
+      // drops the alpha. Both forms are handled, and alpha is returned, not ignored.
+      const parse = (s) => {
+        const n = (s.match(/[\d.]+(?=%?)/g) || []).map(Number);
+        const srgb = s.indexOf("color(") === 0;
+        const rgb = srgb ? n.slice(0, 3).map((v) => v * 255) : n.slice(0, 3);
+        const a = n.length > 3 ? n[3] : 1;
+        return { rgb, a };
+      };
+      // Composite translucent backgrounds over their ancestors the way the browser
+      // paints them, instead of skipping to the first opaque one.
+      const bgOf = (el) => {
+        const stack = [];
+        for (let n = el; n && n.nodeType === 1; n = n.parentElement) {
+          const cs = win.getComputedStyle(n);
+          if (cs.backgroundImage && cs.backgroundImage !== "none") return { rgb: null, why: "background-image on " + (n.id || n.tagName) };
+          const c = parse(cs.backgroundColor);
+          if (c.a > 0) stack.push(c);
+          if (c.a >= 1) break;
+        }
+        let out = [255, 255, 255];
+        for (let i = stack.length - 1; i >= 0; i--) {
+          const { rgb, a } = stack[i];
+          out = out.map((base, k) => rgb[k] * a + base * (1 - a));
+        }
+        return { rgb: out };
+      };
+      const rows = manual.split(",").map((sel) => {
+        const el = doc.querySelector(sel.trim());
+        if (!el) return sel + " -> NOT FOUND";
+        const cs = win.getComputedStyle(el);
+        const px = parseFloat(cs.fontSize), wt = Number(cs.fontWeight) || 400;
+        const bg = bgOf(el);
+        const round = (a) => a.map((v) => Math.round(v)).join(",");
+        if (!bg.rgb) return sel.trim() + " UNDECIDABLE (" + bg.why + ")";
+        const fg = parse(cs.color).rgb;
+        const lf = lum(fg), lb = lum(bg.rgb);
+        const ratio = (Math.max(lf, lb) + 0.05) / (Math.min(lf, lb) + 0.05);
+        const large = px >= 24 || (px >= 18.66 && wt >= 700);
+        const need = large ? 3 : 4.5;
+        return sel.trim() + " fg=rgb(" + round(fg) + ") bg=rgb(" + round(bg.rgb) + ") "
+          + px + "px/" + wt + " ratio=" + ratio.toFixed(2) + " need=" + need
+          + (ratio >= need ? " OK" : " FAIL");
+      });
+      out.textContent = "CONTRAST_DONE pane=" + pane + "\n" + rows.join("\n");
+      return;
+    }
+
+    if (runAxe) {
+      // axe must run inside the frame's OWN document — it rejects an element that
+      // belongs to a different document, so the library is injected into the frame
+      // rather than called from the parent.
+      await new Promise((resolve, reject) => {
+        const s = doc.createElement("script");
+        s.src = "/static/_axe.js";
+        s.onload = resolve;
+        s.onerror = () => reject(new Error("could not load axe into the frame"));
+        doc.head.appendChild(s);
+      });
+      // The viewer is a dialog outside the dashboard; audit it on its own, and stop its
+      // status poll so the result is not overwritten.
+      if (win.__viewerPoll) win.clearInterval(win.__viewerPoll);
+      const axeRoot = params.get("viewer") === "1" ? "#doctorViewer" : "#doctorDashboardView";
+      const results = await win.axe.run(doc.querySelector(axeRoot), {
+        runOnly: { type: "tag", values: ["wcag2a", "wcag2aa", "wcag21a", "wcag21aa"] },
+      });
+      const lines = [];
+      results.violations.forEach((v) => {
+        lines.push(`${v.impact || "n/a"}\t${v.id}\t(${v.nodes.length})\t${v.help}`);
+        v.nodes.forEach((n) => {
+          lines.push("   TARGET: " + JSON.stringify(n.target));
+          (n.any || []).forEach((a) => lines.push("   WHY: " + a.message));
+        });
+      });
+      // Report the colour-contrast rule's OWN status, not just the violation count. A
+      // count of zero also happens when the rule never ran (incomplete/inapplicable),
+      // so the count alone cannot tell a fix from a skip.
+      const cc = results.passes.filter((r) => r.id === "color-contrast");
+      const status =
+        results.violations.some((r) => r.id === "color-contrast") ? "VIOLATED"
+        : cc.length ? "PASSED nodes=" + cc[0].nodes.length
+        : results.incomplete.some((r) => r.id === "color-contrast") ? "INCOMPLETE"
+        : results.inapplicable.some((r) => r.id === "color-contrast") ? "INAPPLICABLE"
+        : "ABSENT";
+      out.textContent = "AXE_DONE pane=" + pane
+        + " violations=" + results.violations.length
+        + " passes=" + results.passes.length
+        + " CONTRAST_RULE=" + status
+        + "\nINCOMPLETE=" + results.incomplete.map(
+            (r) => r.id + "[" + r.nodes.length + "]:" + r.nodes.map(
+              (n) => String(n.target)).join(" | ")).join(" ;; ")
+        + "\n" + lines.join("\n");
+    } else {
+      out.textContent = "RENDER_OK pane=" + pane;
+    }
+  } catch (err) {
+    out.textContent = "HARNESS_ERROR: " + (err && err.stack ? err.stack : err);
+  }
+});
+</script>
+</body>
+</html>

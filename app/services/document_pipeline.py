@@ -40,6 +40,12 @@ ALLOWED_UPLOAD_MIME_TYPES = {
     "image/png",
 }
 
+# How many pages of a PDF are read for text. Previously an unnamed `[:12]` repeated in
+# three reader branches. Named because it is a real limit with a real consequence: a
+# discharge summary longer than this has no extracted text beyond page 12, so nothing
+# there can be summarised or cited. Raising it is a cost/latency decision, not a typo fix.
+PDF_TEXT_PAGE_LIMIT = 12
+
 MEDICAL_KEYWORDS = (
     "medical",
     "report",
@@ -81,40 +87,67 @@ def _to_data_url(mime_type: str, data: bytes) -> str:
     return f"data:{mime_type};base64,{encoded}"
 
 
+def extract_pdf_pages(upload_bytes: bytes) -> list[dict]:
+    """Per-page text: [{"page_no": 1, "text": "..."}, ...], 1-indexed.
+
+    Same three-library fallback chain and same page cap as _extract_pdf_text, which is now
+    a thin join over this — the loops already walked pages one at a time and threw the
+    page numbers away at the end.
+
+    Page numbers are needed because a grounded summary has to quote a specific page and
+    stay verifiable against it later. A flattened blob of text cannot support "this
+    sentence came from page 2", and cannot be re-checked once the file is only in storage.
+
+    Pages that yield no text are omitted rather than stored empty: an image-only page has
+    no text layer, and recording "" for it would make a scanned document look like a
+    document whose pages are genuinely blank.
+    """
+    pages: list[dict] = []
+
+    def _collect(reader):
+        """reader yields (page_no, text). Returns pages that actually had text."""
+        out = []
+        for page_no, text in reader():
+            text = (text or "").strip()
+            if text:
+                out.append({"page_no": page_no, "text": text})
+        return out
+
+    def _pypdf():
+        reader = PdfReader(io.BytesIO(upload_bytes))
+        for index, page in enumerate(reader.pages[:PDF_TEXT_PAGE_LIMIT], start=1):
+            yield index, page.extract_text()
+
+    def _pdfplumber():
+        with pdfplumber.open(io.BytesIO(upload_bytes)) as pdf:  # type: ignore[arg-type]
+            for index, page in enumerate(pdf.pages[:PDF_TEXT_PAGE_LIMIT], start=1):
+                yield index, page.extract_text()
+
+    def _fitz():
+        doc = fitz.open(stream=upload_bytes, filetype="pdf")  # type: ignore[attr-defined]
+        for index, page in enumerate(doc[:PDF_TEXT_PAGE_LIMIT], start=1):
+            yield index, page.get_text("text")
+
+    for available, reader in (
+        (PdfReader is not None, _pypdf),
+        (pdfplumber is not None, _pdfplumber),
+        (fitz is not None, _fitz),
+    ):
+        if not available or pages:
+            continue
+        try:
+            pages = _collect(reader)
+        except Exception:
+            pages = []
+
+    return pages
+
+
 def _extract_pdf_text(upload_bytes: bytes) -> str:
-    chunks: list[str] = []
-
-    if PdfReader is not None:
-        try:
-            reader = PdfReader(io.BytesIO(upload_bytes))
-            for page in reader.pages[:12]:
-                text = page.extract_text() or ""
-                if text.strip():
-                    chunks.append(text.strip())
-        except Exception:
-            chunks = []
-
-    if not chunks and pdfplumber is not None:
-        try:
-            with pdfplumber.open(io.BytesIO(upload_bytes)) as pdf:  # type: ignore[arg-type]
-                for page in pdf.pages[:12]:
-                    text = page.extract_text() or ""
-                    if text.strip():
-                        chunks.append(text.strip())
-        except Exception:
-            pass
-
-    if not chunks and fitz is not None:
-        try:
-            doc = fitz.open(stream=upload_bytes, filetype="pdf")  # type: ignore[attr-defined]
-            for page in doc[:12]:
-                text = page.get_text("text") or ""
-                if text.strip():
-                    chunks.append(text.strip())
-        except Exception:
-            pass
-
-    return "\n\n".join(chunks).strip()
+    """Unchanged contract: the whole document as one string, pages separated by a blank
+    line. Several call sites want exactly that. It is now expressed in terms of
+    extract_pdf_pages so the two can never disagree about what a document says."""
+    return "\n\n".join(page["text"] for page in extract_pdf_pages(upload_bytes)).strip()
 
 
 def _extract_pdf_images(upload_bytes: bytes) -> list[dict[str, str]]:

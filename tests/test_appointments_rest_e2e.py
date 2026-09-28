@@ -100,11 +100,15 @@ def test_upcoming_bookings_route_passes_authenticated_patient_id_and_hardcoded_l
         return [{"booking_id": "b1"}]
 
     monkeypatch.setattr(appointments_route, "upcoming_bookings_for_patient", fake_upcoming)
+    # Every booking now also carries visit_summary — the doctor-verified note, present
+    # only once a clinician signed it AND explicitly shared it. Stubbed here so this test
+    # stays about patient_id/limit scoping; test_soap_note_sharing.py owns that lookup.
+    monkeypatch.setattr(appointments_route, "list_shared_notes_for_patient", lambda patient_id, booking_ids: {})
 
     result = appointments_route.upcoming_bookings(user=_user("patient-9"))
 
     assert seen == {"patient_id": "patient-9", "limit": 30}
-    assert result == {"bookings": [{"booking_id": "b1"}]}
+    assert result == {"bookings": [{"booking_id": "b1", "visit_summary": None}]}
 
 
 def test_cancel_upcoming_booking_route_passes_authenticated_patient_id(monkeypatch):

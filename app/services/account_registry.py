@@ -3,9 +3,11 @@ from datetime import date, timedelta
 
 from app.db.connection import connect_db
 from app.services.passwords import hash_password, verify_password
+from app.db.schema_once import once_per_process
 
 _DUMMY = hash_password("not-a-real-password")
 
+@once_per_process
 def ensure_registry_schema(conn):
     with conn.cursor() as cur:
         cur.execute("""CREATE TABLE IF NOT EXISTS account_email_registry (email TEXT PRIMARY KEY, account_type TEXT NOT NULL CHECK (account_type IN ('patient','doctor','admin')), account_id UUID NOT NULL, created_at TIMESTAMP NOT NULL DEFAULT NOW());

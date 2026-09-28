@@ -11,10 +11,12 @@ import hashlib
 import secrets
 
 from app.db.connection import connect_db
+from app.db.schema_once import once_per_process
 
 REFRESH_TOKEN_TTL_DAYS = 30
 
 
+@once_per_process
 def ensure_refresh_token_schema(conn) -> None:
     with conn.cursor() as cur:
         cur.execute(

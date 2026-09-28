@@ -1,0 +1,69 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>Signed and shared</title>
+<script src="./support.js"></script>
+<link rel="stylesheet" href="ai-theme.css">
+</head>
+<body>
+<x-dc>
+<helmet>
+<link rel="preconnect" href="https://fonts.googleapis.com"><link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Bricolage+Grotesque:opsz,wght@12..96,600;12..96,700&amp;family=Geist:wght@400;500;600&amp;family=Geist+Mono:wght@400;500&amp;display=swap">
+<style>body{margin:0}</style>
+</helmet>
+<div style="width:1280px;height:960px;display:flex;flex-direction:column;background:var(--bg);">
+<header class="top" style="gap:14px;">
+  <a class="icon-btn" href="Reviews.dc.html" aria-label="Back to review inbox"><svg class="i" viewBox="0 0 24 24" aria-hidden="true"><path d="M19 12H5M11 6l-6 6 6 6"/></svg></a>
+  <div class="grow"><div class="row"><h1 class="h2">Anit Rao · signed note</h1><span class="chip ok"><svg class="i sm" viewBox="0 0 24 24" aria-hidden="true"><path d="M5 12l5 5L20 7"/></svg>Doctor verified</span></div><div class="meta">Nephrology · 21 Sep 2026, 7:00 pm</div></div>
+  <span class="chip ok"><svg class="i sm" viewBox="0 0 24 24" aria-hidden="true"><path d="M22 2L11 13"/><path d="M22 2l-7 20-4-9-9-4z"/></svg>Shared 22 Sep, 10:20 am</span>
+</header>
+<div style="flex-grow:1;min-height:0;display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:24px;padding:24px 28px;">
+
+  <div style="display:flex;flex-direction:column;gap:16px;min-width:0;">
+    <div class="eyebrow v">Doctor view</div>
+    <section class="card pad" style="display:flex;flex-direction:column;gap:4px;">
+      <div class="h3" style="margin-bottom:12px;">From AI draft to patient</div>
+      <div class="row" style="align-items:stretch;gap:14px;"><div style="display:flex;flex-direction:column;align-items:center;"><div class="item-ico " style="width:34px;height:34px;"><svg class="i sm" viewBox="0 0 24 24" aria-hidden="true"><path d="M12 3l1.9 5.1L19 10l-5.1 1.9L12 17l-1.9-5.1L5 10l5.1-1.9z"/><path d="M19 15l.8 2.2L22 18l-2.2.8L19 21l-.8-2.2L16 18l2.2-.8z"/></svg></div><div style="width:2px;flex-grow:1;background:var(--border-strong);margin:4px 0;"></div></div><div style="padding-bottom:14px;"><div class="title" style="font-size:14px;">AI drafted the note</div><div class="meta">21 Sep 2026, 7:12 pm · gpt-4o · soap-v1:detailed · every section cited</div></div></div>
+      <div class="row" style="align-items:stretch;gap:14px;"><div style="display:flex;flex-direction:column;align-items:center;"><div class="item-ico ok" style="width:34px;height:34px;"><svg class="i sm" viewBox="0 0 24 24" aria-hidden="true"><path d="M4 20h4L20 8l-4-4L4 16z"/></svg></div><div style="width:2px;flex-grow:1;background:var(--border-strong);margin:4px 0;"></div></div><div style="padding-bottom:14px;"><div class="title" style="font-size:14px;">You reviewed and signed it</div><div class="meta">21 Sep 2026 · locked as part of the record</div></div></div>
+      <div class="row" style="align-items:stretch;gap:14px;"><div style="display:flex;flex-direction:column;align-items:center;"><div class="item-ico ok" style="width:34px;height:34px;"><svg class="i sm" viewBox="0 0 24 24" aria-hidden="true"><path d="M22 2L11 13"/><path d="M22 2l-7 20-4-9-9-4z"/></svg></div></div><div style="padding-bottom:0px;"><div class="title" style="font-size:14px;">You shared it with the patient</div><div class="meta">22 Sep 2026, 10:20 am · cannot be withdrawn</div></div></div>
+    </section>
+    <div class="section">
+      <div class="between"><span class="h3">Assessment</span><span class="chip ok"><svg class="i sm" viewBox="0 0 24 24" aria-hidden="true"><path d="M5 12l5 5L20 7"/></svg>Cited · 2 quotes</span></div>
+      <p style="font-size:14px;line-height:1.6;">Migraine without aura, partially controlled on current abortive therapy. Blood pressure borderline elevated across the last three visits.</p>
+    </div>
+    <div class="section">
+      <div class="between"><span class="h3">Plan</span><span class="chip ok"><svg class="i sm" viewBox="0 0 24 24" aria-hidden="true"><path d="M5 12l5 5L20 7"/></svg>Cited · 1 quote</span></div>
+      <p style="font-size:14px;line-height:1.6;">Continue sumatriptan 50mg as needed, maximum 2 doses per 24 hours. Start a headache diary. Recheck blood pressure in two weeks.</p>
+    </div>
+    <div class="card pad" style="display:flex;flex-direction:column;gap:10px;">
+      <div class="eyebrow">Before sharing, you saw</div>
+      <p class="meta">This makes the signed note visible to the patient in their appointment history. It cannot be withdrawn.</p>
+      <div class="row"><button class="btn" type="button">Yes, share it</button><button class="btn ghost" type="button">Cancel</button></div>
+    </div>
+  </div>
+
+  <div style="display:flex;flex-direction:column;gap:16px;min-width:0;">
+    <div class="eyebrow v">What the patient sees</div>
+    <article class="card" style="padding:24px;display:flex;flex-direction:column;gap:16px;border-radius:24px;">
+      <div class="between"><div class="row"><div class="avatar" style="background:var(--secondary);color:var(--secondary-fg);">AN</div><div><div class="title">Dr. Ajit Singh Narula</div><div class="meta">Nephrology · 21 Sep 2026, 7:00 pm</div></div></div><span class="chip ok">Completed</span></div>
+      <div class="divider"></div>
+      <div><h2 class="h2">Your visit summary</h2><p class="meta">Reviewed and finalised by Dr. Ajit Singh Narula on 21/09/2026.</p></div>
+      <div style="display:flex;flex-direction:column;gap:4px;"><div class="h3" style="font-size:14px;">What you described</div><p style="font-size:14px;line-height:1.6;">Headaches have become less frequent since starting the new medication, now once or twice a week rather than daily, with some sensitivity to light in the afternoons.</p></div>
+      <div style="display:flex;flex-direction:column;gap:4px;"><div class="h3" style="font-size:14px;">What was observed</div><p style="font-size:14px;line-height:1.6;">Blood pressure 128/82. Neurological examination normal.</p></div>
+      <div style="display:flex;flex-direction:column;gap:4px;"><div class="h3" style="font-size:14px;">Assessment</div><p style="font-size:14px;line-height:1.6;">Migraine, improving on current treatment. Blood pressure slightly above the target range.</p></div>
+      <div style="display:flex;flex-direction:column;gap:4px;"><div class="h3" style="font-size:14px;">Plan</div><p style="font-size:14px;line-height:1.6;">Continue the medication as needed. Keep a headache diary. Blood pressure recheck in two weeks.</p></div>
+    </article>
+    <div class="guard"><svg class="i sm" viewBox="0 0 24 24" aria-hidden="true"><path d="M12 3l8 3v6c0 5-3.5 8-8 9-4.5-1-8-4-8-9V6z"/><path d="M9 12l2 2 4-4"/></svg>No citations, flags, transcript or model details reach the patient. A clinician has taken responsibility first.</div>
+  </div>
+
+</div>
+</div>
+</x-dc>
+<script type="text/x-dc" data-dc-script data-props='{"$preview":{"width":1280,"height":960}}'>
+class Component extends DCLogic {
+  renderVals() { return {}; }
+}
+</script>
+</body>
+</html>

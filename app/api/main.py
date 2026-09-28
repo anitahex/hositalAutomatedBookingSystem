@@ -9,7 +9,7 @@ from contextlib import asynccontextmanager
 from pathlib import Path
 from typing import Any
 
-from fastapi import FastAPI, WebSocket, WebSocketDisconnect
+from fastapi import FastAPI, Request, WebSocket, WebSocketDisconnect
 from fastapi.responses import FileResponse
 from fastapi.staticfiles import StaticFiles
 
@@ -22,6 +22,21 @@ logging.basicConfig(
     stream=sys.stdout,
     force=True,
 )
+
+# The Azure SDK's HTTP policy logs a full request AND response header block at INFO — about
+# 25 lines per call. Reading five document summaries buried the application's own logs in
+# ~250 lines of header dumps, which is how a working page load came to look like a fault.
+#
+# It also printed the storage URL and blob path of every read in plaintext, and those paths
+# contain the patient's id and their document ids. Raising these to WARNING keeps real
+# failures (they log at WARNING/ERROR) and stops routine reads from writing patient
+# identifiers into the container logs.
+for _noisy in (
+    "azure.core.pipeline.policies.http_logging_policy",
+    "azure.identity",
+    "azure.storage",
+):
+    logging.getLogger(_noisy).setLevel(logging.WARNING)
 
 logger = logging.getLogger(__name__)
 
@@ -109,9 +124,73 @@ async def _consult_retention_sweep_loop() -> None:
             logger.error("consult retention sweep failed: %s", exc)
 
 
+def _run_schema_checks_once() -> None:
+    """Runs every ensure_*_schema() once, before the server accepts a request.
+
+    They are wrapped to run once per process (app/db/schema_once.py). Running them here, in
+    their own committed transactions, means no request ever does: their DDL takes table
+    locks that deadlocked against concurrent reads whenever the doctor workspace loaded its
+    panels in parallel. Ordered so a table exists before anything that references it. One
+    failing is logged and skipped — it will simply run on first use instead.
+    """
+    from app.db.connection import connect_db
+    from app.services.account_registry import ensure_registry_schema
+    from app.services.admin_auth import ensure_admin_schema
+    from app.services.appointments import ensure_booking_schema
+    from app.services.booking_context import ensure_booking_context_schema
+    from app.services.chat_history import ensure_chat_history_schema
+    from app.services.clinical_items import ensure_clinical_items_schema
+    from app.services.consults import ensure_consult_schema
+    from app.services.doctor_auth import ensure_doctor_auth_schema, ensure_rate_limit_schema
+    from app.services.email_verification import ensure_email_verification_schema
+    from app.services.llm_usage import ensure_llm_usage_schema
+    from app.services.login_lockout import ensure_lockout_schema
+    from app.services.password_reset import ensure_password_reset_schema
+    from app.services.patient_mfa import (
+        ensure_admin_patient_actions_log_schema, ensure_mfa_schema, ensure_patient_auth_audit_schema,
+    )
+    from app.services.refresh_tokens import ensure_refresh_token_schema
+    from app.services.soap_notes import ensure_soap_schema
+    from app.services.soap_sections import ensure_section_verification_schema
+    from app.services.tokens import ensure_token_revocation_schema
+    from app.services.users import ensure_user_schema
+
+    ordered = (
+        ensure_user_schema, ensure_refresh_token_schema, ensure_token_revocation_schema,
+        ensure_email_verification_schema, ensure_password_reset_schema, ensure_lockout_schema,
+        ensure_mfa_schema, ensure_patient_auth_audit_schema, ensure_admin_patient_actions_log_schema,
+        ensure_admin_schema, ensure_booking_schema, ensure_doctor_auth_schema,
+        ensure_registry_schema, ensure_rate_limit_schema, ensure_chat_history_schema,
+        ensure_consult_schema, ensure_soap_schema, ensure_section_verification_schema,
+        ensure_clinical_items_schema, ensure_booking_context_schema, ensure_llm_usage_schema,
+    )
+    done = 0
+    with connect_db() as conn:
+        for ensure in ordered:
+            try:
+                ensure(conn)
+                conn.commit()
+                done += 1
+            except Exception as exc:
+                conn.rollback()
+                logger.error("startup: %s failed, will run on first use: %s", ensure.__name__, exc)
+    logger.info("startup: %d/%d schema checks run once; no request will run DDL", done, len(ordered))
+
+
 @asynccontextmanager
 async def lifespan(app: FastAPI):
+    # Cap how many sync request handlers run at once BELOW the database pool size, so a
+    # burst of requests queues for a thread (anyio waits) instead of exhausting the pool
+    # (psycopg2 raises). See app/db/connection.py for the measurements behind the numbers.
+    import anyio.to_thread
+    from app.db.connection import HANDLER_THREADS, POOL_MAX_CONNECTIONS
+
+    anyio.to_thread.current_default_thread_limiter().total_tokens = HANDLER_THREADS
+    logger.info("startup: %d request threads over a pool of %d connections",
+                HANDLER_THREADS, POOL_MAX_CONNECTIONS)
+
     _ensure_catalog_tables()
+    _run_schema_checks_once()
     _bootstrap_admin_account()
     _cleanup_stale_consult_audio_temp_files()
     sweep_task = asyncio.create_task(_consult_retention_sweep_loop())
@@ -121,6 +200,10 @@ async def lifespan(app: FastAPI):
         sweep_task.cancel()
         with contextlib.suppress(asyncio.CancelledError):
             await sweep_task
+        # The blob client is now shared for the life of the loop rather than rebuilt per
+        # operation (see blob_storage._shared_client), so it has to be closed here.
+        from app.services.blob_storage import close_blob_clients
+        await close_blob_clients()
         from app.db.connection import close_db_pool
         close_db_pool()
 
@@ -153,6 +236,23 @@ def health_check():
 
 
 _STATIC_DIR = Path(__file__).resolve().parent / "static"
+
+
+@app.middleware("http")
+async def revalidate_the_frontend(request: Request, call_next):
+    """The page and its static files are re-checked with the server on every load.
+
+    They were served with no Cache-Control, so browsers applied heuristic caching and kept
+    an old app.js for some time after a deploy — a doctor saw the previous version until a
+    hard refresh, and an old script calls routes a new backend may no longer have.
+    "no-cache" does not mean "download every time": the browser revalidates with the ETag
+    StaticFiles already sends, and an unchanged file costs a 304 with no body.
+    """
+    response = await call_next(request)
+    path = request.url.path
+    if path in ("/", "/doctor/set-password") or path.startswith("/static/"):
+        response.headers.setdefault("Cache-Control", "no-cache")
+    return response
 
 
 @app.get("/")

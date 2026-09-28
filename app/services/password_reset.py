@@ -23,6 +23,7 @@ from app.services.login_lockout import clear_lockout, ensure_lockout_schema
 from app.services.patient_mfa import _audit_patient, ensure_patient_auth_audit_schema
 from app.services.refresh_tokens import revoke_all_refresh_tokens
 from app.services.users import normalize_mobile_number_india, validate_password
+from app.db.schema_once import once_per_process
 
 OTP_TTL_MINUTES = 4
 RESEND_COOLDOWN_SECONDS = 240
@@ -32,6 +33,7 @@ PURPOSE_CHANGE_PASSWORD = "change_password"
 logger = logging.getLogger(__name__)
 
 
+@once_per_process
 def ensure_password_reset_schema(conn) -> None:
     with conn.cursor() as cur:
         cur.execute(

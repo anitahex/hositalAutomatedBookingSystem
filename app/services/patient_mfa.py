@@ -19,6 +19,7 @@ from app.services import totp
 from app.services.email import send_email
 from app.services.login_lockout import clear_lockout, ensure_lockout_schema
 from app.services.passwords import hash_password, verify_password
+from app.db.schema_once import once_per_process
 
 
 def _fernet_key() -> str:
@@ -28,6 +29,7 @@ def _fernet_key() -> str:
     return key
 
 
+@once_per_process
 def ensure_patient_auth_audit_schema(conn) -> None:
     with conn.cursor() as cur:
         cur.execute(
@@ -76,6 +78,7 @@ def _send_security_notification(email: str, subject: str, body: str) -> None:
         print(f"[patient-mfa:notify-failed] {subject} -> {email}: {exc}", flush=True)
 
 
+@once_per_process
 def ensure_mfa_schema(conn) -> None:
     with conn.cursor() as cur:
         cur.execute(
@@ -286,6 +289,7 @@ def regenerate_backup_codes(user_id: str, code: str) -> list[str]:
     return recovery_codes
 
 
+@once_per_process
 def ensure_admin_patient_actions_log_schema(conn) -> None:
     with conn.cursor() as cur:
         cur.execute(

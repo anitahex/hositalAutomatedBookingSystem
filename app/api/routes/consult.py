@@ -33,11 +33,19 @@ from app.services.consults import (
     start_consult,
     swap_all_speakers,
 )
+from app.agents.consult_documentation_graph import DEFAULT_SOAP_NOTE_STYLE, SOAP_NOTE_STYLES
+from app.services.clinical_items import (
+    ITEM_KINDS, approve_clinical_item, get_clinical_item, save_clinical_item,
+)
 from app.services.doctor_auth import get_doctor_profile
+from app.services.doctor_workspace import extract_plan_medication_lines
+from app.services.patient_overview import schedule_overview_refresh
+from app.services.soap_sections import list_verified_sections, set_section_verified
 from app.services.soap_notes import (
     add_addendum,
     generate_soap_note,
     get_soap_note,
+    share_soap_note,
     sign_soap_note,
     update_soap_note,
 )
@@ -80,6 +88,20 @@ class SoapNoteUpdateRequest(BaseModel):
 
 class AddendumRequest(BaseModel):
     content: str
+
+
+class SoapGenerateRequest(BaseModel):
+    style: str = DEFAULT_SOAP_NOTE_STYLE
+
+
+class ClinicalItemRequest(BaseModel):
+    content: str
+
+
+class SectionVerifyRequest(BaseModel):
+    # Defaults to marking rather than clearing, so a client that omits the body gets the
+    # action the button says it performs.
+    verified: bool = True
 
 
 def _error(exc: Exception, status: int = 400):
@@ -196,9 +218,18 @@ def correct_segment_route(
 
 
 @router.post("/{consultation_id}/soap/generate")
-async def generate_soap_note_route(consultation_id: str, doctor: dict = Depends(get_current_doctor)):
+async def generate_soap_note_route(
+    consultation_id: str,
+    request: SoapGenerateRequest | None = None,
+    doctor: dict = Depends(get_current_doctor),
+):
+    # Body is optional so an existing client that POSTs nothing keeps working and gets
+    # the concise default, unchanged from before this parameter existed.
+    style = (request.style if request else DEFAULT_SOAP_NOTE_STYLE).strip().lower()
+    if style not in SOAP_NOTE_STYLES:
+        raise HTTPException(status_code=400, detail=f"style must be one of {list(SOAP_NOTE_STYLES)}.")
     try:
-        note = await generate_soap_note(consultation_id, doctor["doctor_id"])
+        note = await generate_soap_note(consultation_id, doctor["doctor_id"], style)
     except ValueError as exc:
         _error(exc, 404 if "consult not found" in str(exc).lower() else 400)
     except PermissionError as exc:
@@ -237,7 +268,88 @@ def sign_soap_note_route(consultation_id: str, doctor: dict = Depends(get_curren
         _error(exc, 404)
     except PermissionError as exc:
         _error(exc, 409)
+    # A signed assessment is a new diagnosis on the patient's at-a-glance card; rebuild the
+    # cached cards now, off the request path, rather than on the next doctor's open.
+    schedule_overview_refresh(consultation_id=consultation_id)
     return note
+
+
+@router.post("/{consultation_id}/soap/share")
+def share_soap_note_route(consultation_id: str, doctor: dict = Depends(get_current_doctor)):
+    """Makes a signed note visible to the patient. One-way: there is no unshare route,
+    matching share_soap_note's own irreversibility."""
+    try:
+        note = share_soap_note(consultation_id, doctor["doctor_id"])
+    except ValueError as exc:
+        _error(exc, 404 if "not found" in str(exc).lower() or "no clinical note" in str(exc).lower() else 400)
+    except PermissionError as exc:
+        _error(exc, 409)
+    return note
+
+
+@router.get("/{consultation_id}/soap/plan-medications")
+def get_plan_medications_route(consultation_id: str, doctor: dict = Depends(get_current_doctor)):
+    """The medication-looking lines from this consult's SIGNED note Plan, for the
+    "Insert from plan" convenience on the clinical-actions tab.
+
+    SIGNED ONLY. An unsigned draft is AI output no clinician has accepted responsibility
+    for; copying it into a prescription field would launder model output into a clinical
+    action, which is exactly what this application must never do.
+
+    The parsing lives in doctor_workspace.extract_plan_medication_lines — server-side so
+    there is one tested implementation rather than a second one in the browser. It
+    validates nothing: no dose, formulary, interaction or allergy checking happens here or
+    anywhere else in this application.
+    """
+    note = get_soap_note(consultation_id, doctor["doctor_id"])
+    if not note:
+        raise HTTPException(status_code=404, detail="No clinical note found for this consult.")
+    if note.get("status") != "signed":
+        raise HTTPException(
+            status_code=409,
+            detail="Only a signed note's plan can be copied. Sign the note first.",
+        )
+    return {
+        "lines": extract_plan_medication_lines(note.get("plan")),
+        # Restated in the payload so a client cannot render these as validated content
+        # without also having been told they are not.
+        "validated": False,
+        "notice": "Copied verbatim from your signed plan. No dose, formulary or interaction checking is performed.",
+    }
+
+
+@router.get("/{consultation_id}/soap/sections")
+def get_verified_sections_route(consultation_id: str, doctor: dict = Depends(get_current_doctor)):
+    """Which of this note's four sections the doctor has marked as checked."""
+    try:
+        sections = list_verified_sections(consultation_id, doctor["doctor_id"])
+    except ValueError as exc:
+        _error(exc, 404)
+    return {"verified_sections": sections}
+
+
+@router.post("/{consultation_id}/soap/sections/{section}/verify")
+def verify_section_route(
+    consultation_id: str, section: str, request: SectionVerifyRequest,
+    doctor: dict = Depends(get_current_doctor),
+):
+    """Marks one SOAP section verified, or clears that mark.
+
+    A review-progress aid, NOT a second signature: it does not gate signing, and a blocked
+    ('stale') note stays unsignable regardless of what is recorded here — that rule lives
+    in soap_notes.sign_soap_note and nothing in this path touches it. Idempotent in both
+    directions. Rejected once the note is signed, since the signature is itself the record
+    of review by then.
+    """
+    try:
+        result = set_section_verified(
+            consultation_id, doctor["doctor_id"], section, request.verified,
+        )
+    except ValueError as exc:
+        _error(exc, 404 if "not found" in str(exc).lower() or "no clinical note" in str(exc).lower() else 400)
+    except PermissionError as exc:
+        _error(exc, 409)
+    return result
 
 
 @router.post("/{consultation_id}/soap/addendum")
@@ -251,6 +363,53 @@ def add_addendum_route(
     except PermissionError as exc:
         _error(exc, 409)
     return note
+
+
+def _validated_kind(kind: str) -> str:
+    normalized = (kind or "").strip().lower()
+    if normalized not in ITEM_KINDS:
+        raise HTTPException(status_code=400, detail=f"kind must be one of {list(ITEM_KINDS)}.")
+    return normalized
+
+
+@router.get("/{consultation_id}/clinical-items/{kind}")
+def get_clinical_item_route(
+    consultation_id: str, kind: str, doctor: dict = Depends(get_current_doctor),
+):
+    try:
+        return get_clinical_item(consultation_id, doctor["doctor_id"], _validated_kind(kind))
+    except ValueError as exc:
+        _error(exc, 404)
+
+
+@router.put("/{consultation_id}/clinical-items/{kind}")
+def save_clinical_item_route(
+    consultation_id: str, kind: str, request: ClinicalItemRequest,
+    doctor: dict = Depends(get_current_doctor),
+):
+    try:
+        return save_clinical_item(
+            consultation_id, doctor["doctor_id"], _validated_kind(kind), request.content
+        )
+    except ValueError as exc:
+        _error(exc, 404 if "not found" in str(exc).lower() else 400)
+    except PermissionError as exc:
+        _error(exc, 409)
+
+
+@router.post("/{consultation_id}/clinical-items/{kind}/approve")
+def approve_clinical_item_route(
+    consultation_id: str, kind: str, doctor: dict = Depends(get_current_doctor),
+):
+    try:
+        item = approve_clinical_item(consultation_id, doctor["doctor_id"], _validated_kind(kind))
+    except ValueError as exc:
+        _error(exc, 404 if "not found" in str(exc).lower() else 400)
+    except PermissionError as exc:
+        _error(exc, 409)
+    # An approved prescription is a medication on the at-a-glance card; see sign above.
+    schedule_overview_refresh(consultation_id=consultation_id)
+    return item
 
 
 def _authenticate_doctor_from_token(token: str | None) -> dict | None:

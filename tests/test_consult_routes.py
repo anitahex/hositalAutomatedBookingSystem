@@ -474,7 +474,7 @@ def test_correct_segment_route_409_when_note_already_signed(monkeypatch):
 def test_generate_soap_note_route_passes_authenticated_doctor_id_only(monkeypatch):
     seen = {}
 
-    async def fake_generate(consultation_id, doctor_id):
+    async def fake_generate(consultation_id, doctor_id, style="concise"):
         seen["consultation_id"] = consultation_id
         seen["doctor_id"] = doctor_id
         return {"status": "draft"}
@@ -488,7 +488,7 @@ def test_generate_soap_note_route_passes_authenticated_doctor_id_only(monkeypatc
 
 
 def test_generate_soap_note_route_404_when_consult_not_found(monkeypatch):
-    async def fake_generate(consultation_id, doctor_id):
+    async def fake_generate(consultation_id, doctor_id, style="concise"):
         raise ValueError("Consult not found.")
 
     monkeypatch.setattr(consult_route, "generate_soap_note", fake_generate)
@@ -499,7 +499,7 @@ def test_generate_soap_note_route_404_when_consult_not_found(monkeypatch):
 
 
 def test_generate_soap_note_route_400_when_transcript_not_ready(monkeypatch):
-    async def fake_generate(consultation_id, doctor_id):
+    async def fake_generate(consultation_id, doctor_id, style="concise"):
         raise ValueError("Transcript is not ready yet for this consult.")
 
     monkeypatch.setattr(consult_route, "generate_soap_note", fake_generate)
@@ -510,7 +510,7 @@ def test_generate_soap_note_route_400_when_transcript_not_ready(monkeypatch):
 
 
 def test_generate_soap_note_route_409_when_already_signed(monkeypatch):
-    async def fake_generate(consultation_id, doctor_id):
+    async def fake_generate(consultation_id, doctor_id, style="concise"):
         raise PermissionError("This clinical note has already been signed. Add an addendum instead of regenerating.")
 
     monkeypatch.setattr(consult_route, "generate_soap_note", fake_generate)
@@ -521,7 +521,7 @@ def test_generate_soap_note_route_409_when_already_signed(monkeypatch):
 
 
 def test_generate_soap_note_route_502_on_llm_parse_failure(monkeypatch):
-    async def fake_generate(consultation_id, doctor_id):
+    async def fake_generate(consultation_id, doctor_id, style="concise"):
         raise RuntimeError("Could not generate a structured clinical note from this transcript. Please try again.")
 
     monkeypatch.setattr(consult_route, "generate_soap_note", fake_generate)

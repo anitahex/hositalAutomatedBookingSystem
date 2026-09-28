@@ -66,6 +66,21 @@ class GraphState(TypedDict, total=False):
     questions_asked: Optional[list[str]]
     irrelevant_reply_streak: Optional[int]
 
+    # The appointment a report-forwarding consent prompt named. Pins the recipient so the
+    # clinical summary goes to the doctor the patient actually agreed to share it with.
+    #
+    # MUST stay declared here. LangGraph merges only keys present in this schema, so an
+    # undeclared key is silently discarded between nodes: appointment_booker set this to
+    # stop the recipient being re-picked by list order, the value never survived the hop,
+    # and the fallback forwarded one patient's clinical summary to a different doctor than
+    # the one they consented to.
+    report_forwarding_booking_id: Optional[str]
+
+    # Written by conversation_agent and read by supervisor's routing. Same hazard as
+    # above — undeclared, it never reached the reader, which silently fell back to
+    # counting questions instead.
+    intake_complete: Optional[bool]
+
     # Remedy / follow-up
     remedy_given: Optional[bool]
     remedy_text: Optional[str]
@@ -115,6 +130,16 @@ class GraphState(TypedDict, total=False):
 
     # Persistent document analysis history — survives across turns so supervisor never forgets
     analyzed_documents: Optional[list[dict[str, Any]]]  # [{file_name, document_type, department, summary}]
+
+    # Which post-upload follow-up topics have been covered. Tracked separately from
+    # questions_asked because that list holds whole sentences and other nodes push
+    # non-questions into it, so its length says nothing about what was actually asked.
+    document_topics_asked: Optional[list[str]]
+
+    # What a document's analysis pointed at — a SUGGESTION, not a decision. Deliberately
+    # not target_department: writing that on upload is what made a guessed department
+    # behave like the patient's own request and become impossible to change.
+    suggested_department: Optional[str]
 
     # Legacy / compatibility
     symptom_duration: Optional[str]

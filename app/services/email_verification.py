@@ -15,6 +15,7 @@ from datetime import timedelta
 from app.db.connection import connect_db
 from app.services.email import send_email
 from app.services.users import ensure_user_schema
+from app.db.schema_once import once_per_process
 
 CODE_TTL = timedelta(minutes=10)
 MAX_ATTEMPTS = 5
@@ -22,6 +23,7 @@ MAX_ATTEMPTS = 5
 logger = logging.getLogger(__name__)
 
 
+@once_per_process
 def ensure_email_verification_schema(conn) -> None:
     # users.email_verified is owned by app/services/users.py::ensure_user_schema (the
     # existing owner of the users table's schema, same as failed_login_attempts/

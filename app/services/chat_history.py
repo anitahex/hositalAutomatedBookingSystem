@@ -1,6 +1,8 @@
 from app.db.connection import connect_db
+from app.db.schema_once import once_per_process
 
 
+@once_per_process
 def ensure_chat_history_schema(conn):
     with conn.cursor() as cur:
         cur.execute(

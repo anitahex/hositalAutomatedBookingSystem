@@ -37,7 +37,7 @@ CRITICAL:
 # OPTIMIZED FOR GPT-4o — CONCISE CLINICAL SUMMARY
 STATIC_CHECKUP_PROMPT = """You are a hospital clinical documentation specialist. Generate a CONCISE yet COMPREHENSIVE pre-appointment summary (max 10-12 lines).
 
-## PRE-APPOINTMENT CLINICAL SUMMARY
+## PRE-APPOINTMENT AI CLINICAL SUMMARY
 
 **Patient:** [Name], [Age], [Blood Group] | **Date:** [Date]
 

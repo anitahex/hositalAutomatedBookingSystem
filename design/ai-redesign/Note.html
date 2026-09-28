@@ -1,0 +1,81 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>AI note review</title>
+<script src="./support.js"></script>
+<link rel="stylesheet" href="ai-theme.css">
+</head>
+<body>
+<x-dc>
+<helmet>
+<link rel="preconnect" href="https://fonts.googleapis.com"><link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Bricolage+Grotesque:opsz,wght@12..96,600;12..96,700&amp;family=Geist:wght@400;500;600&amp;family=Geist+Mono:wght@400;500&amp;display=swap">
+<style>body{margin:0}</style>
+</helmet>
+<div style="width:1280px;height:1080px;display:flex;flex-direction:column;background:var(--bg);">
+<header class="top" style="gap:14px;">
+  <a class="icon-btn" href="Reviews.dc.html" aria-label="Back to review inbox"><svg class="i" viewBox="0 0 24 24" aria-hidden="true"><path d="M19 12H5M11 6l-6 6 6 6"/></svg></a>
+  <div class="grow"><div class="row"><h1 class="h2">Anit Rao</h1><span class="chip ai"><svg class="i sm" viewBox="0 0 24 24" aria-hidden="true"><path d="M12 3l1.9 5.1L19 10l-5.1 1.9L12 17l-1.9-5.1L5 10l5.1-1.9z"/><path d="M19 15l.8 2.2L22 18l-2.2.8L19 21l-.8-2.2L16 18l2.2-.8z"/></svg>AI draft</span></div><div class="meta">Nephrology · 21 Sep 2026, 1:00 pm · consultation completed</div></div>
+  <button class="btn ghost" type="button">Save changes</button>
+  <button class="btn" type="button"><svg class="i sm" viewBox="0 0 24 24" aria-hidden="true"><path d="M4 20h4L20 8l-4-4L4 16z"/></svg>Sign note</button>
+</header>
+<div style="flex-grow:1;min-height:0;display:grid;grid-template-columns:1.6fr 1fr;gap:20px;padding:24px 28px;">
+
+  <div style="display:flex;flex-direction:column;gap:14px;min-height:0;">
+    <div class="card" style="padding:16px 18px;display:flex;flex-direction:column;gap:10px;">
+      <div class="between"><div class="h3">2 of 4 sections verified</div><span class="meta">Resolve the 2 flags, then sign</span></div>
+      <div class="progress"><div style="width:50%;"></div></div>
+    </div>
+    <div class="section">
+      <div class="between"><div class="row"><span class="h3">Subjective</span><span class="chip ok"><svg class="i sm" viewBox="0 0 24 24" aria-hidden="true"><path d="M5 12l5 5L20 7"/></svg>Cited · 2 quotes</span></div><span class="chip ok">Verified</span></div>
+      <label class="sr" for="fSubjective">Subjective</label>
+      <textarea id="fSubjective" rows="3">Patient reports reduced headache frequency since starting sumatriptan, now 1-2 episodes per week rather than daily. Reports associated light sensitivity, worse in the afternoon. Denies nausea.</textarea>
+    </div>
+    <div class="section">
+      <div class="between"><div class="row"><span class="h3">Objective</span><span class="chip ok"><svg class="i sm" viewBox="0 0 24 24" aria-hidden="true"><path d="M5 12l5 5L20 7"/></svg>Cited · 1 quote</span></div><span class="chip ok">Verified</span></div>
+      <label class="sr" for="fObjective">Objective</label>
+      <textarea id="fObjective" rows="2">BP 128/82. Neurological examination unremarkable. No new focal deficits.</textarea><div class="cite"><svg class="i sm" viewBox="0 0 24 24" aria-hidden="true"><path d="M7 7h4v4c0 3-2 5-4 6M15 7h4v4c0 3-2 5-4 6"/></svg><span><span class="eyebrow">Transcript · Doctor</span><br><q>Blood pressure today is 128 over 82. Neurological exam is unremarkable.</q></span></div>
+    </div>
+    <div class="section flag">
+      <div class="between"><div class="row"><span class="h3">Assessment</span><span class="chip warn"><svg class="i sm" viewBox="0 0 24 24" aria-hidden="true"><path d="M12 3l10 18H2z"/><path d="M12 10v5M12 18v.5"/></svg>No supporting quote</span></div><button class="btn soft sm" type="button"><svg class="i sm" viewBox="0 0 24 24" aria-hidden="true"><path d="M5 12l5 5L20 7"/></svg>Mark verified</button></div>
+      <label class="sr" for="fAssessment">Assessment</label>
+      <textarea id="fAssessment" rows="2">Migraine, improving on current abortive therapy. Blood pressure borderline elevated.</textarea><div class="cite" style="background:var(--warn-bg);color:var(--warn);"><svg class="i sm" viewBox="0 0 24 24" aria-hidden="true"><path d="M12 3l1.9 5.1L19 10l-5.1 1.9L12 17l-1.9-5.1L5 10l5.1-1.9z"/><path d="M19 15l.8 2.2L22 18l-2.2.8L19 21l-.8-2.2L16 18l2.2-.8z"/></svg><span>AI inferred this from the BP reading and symptom history. Nothing in the transcript says it outright, so confirm or edit it.</span></div>
+    </div>
+    <div class="section flag">
+      <div class="between"><div class="row"><span class="h3">Plan</span><span class="chip warn"><svg class="i sm" viewBox="0 0 24 24" aria-hidden="true"><path d="M12 3l10 18H2z"/><path d="M12 10v5M12 18v.5"/></svg>Cited · check wording</span></div><button class="btn soft sm" type="button"><svg class="i sm" viewBox="0 0 24 24" aria-hidden="true"><path d="M5 12l5 5L20 7"/></svg>Mark verified</button></div>
+      <label class="sr" for="fPlan">Plan</label>
+      <textarea id="fPlan" rows="2">Continue sumatriptan as needed. Recheck blood pressure in two weeks. Consider headache diary to identify afternoon triggers.</textarea>
+    </div>
+  </div>
+
+  <aside class="card pad" style="display:flex;flex-direction:column;gap:16px;align-self:start;" aria-label="AI assistant">
+    <div class="row"><div class="brand-mark" style="width:36px;height:36px;"><svg class="i" viewBox="0 0 24 24" aria-hidden="true"><path d="M12 3l1.9 5.1L19 10l-5.1 1.9L12 17l-1.9-5.1L5 10l5.1-1.9z"/><path d="M19 15l.8 2.2L22 18l-2.2.8L19 21l-.8-2.2L16 18l2.2-.8z"/></svg></div><div><div class="h3">AI assistant</div><div class="meta">What it did on this note, and why</div></div></div>
+    <div style="display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:8px;">
+      <div class="field"><span>Model</span><strong class="mono" style="font-size:13px;">gpt-4o</strong></div>
+      <div class="field"><span>Prompt</span><strong class="mono" style="font-size:13px;">soap-v1:concise</strong></div>
+      <div class="field" style="grid-column:span 2;"><span>Generated</span><strong>21 Sep 2026, 1:34 pm from the visit transcript</strong></div>
+    </div>
+    <div class="divider"></div>
+    <div style="display:flex;flex-direction:column;gap:10px;">
+      <div class="eyebrow">Redraft</div>
+      <div class="between"><div class="seg" role="group" aria-label="Detail level"><button class="on" type="button" aria-pressed="true">Concise</button><button type="button" aria-pressed="false">Detailed</button></div><button class="btn ghost sm" type="button"><svg class="i sm" viewBox="0 0 24 24" aria-hidden="true"><path d="M20 11a8 8 0 10-2.3 5.7"/><path d="M20 4v7h-7"/></svg>Regenerate</button></div>
+    </div>
+    <div class="divider"></div>
+    <div style="display:flex;flex-direction:column;gap:10px;">
+      <div class="eyebrow">Suggested checks</div>
+      <div class="item" style="padding:12px;"><div class="item-ico warn" style="width:32px;height:32px;"><svg class="i sm" viewBox="0 0 24 24" aria-hidden="true"><path d="M12 3l10 18H2z"/><path d="M12 10v5M12 18v.5"/></svg></div><div class="grow"><div class="title" style="font-size:13.5px;">Assessment</div><div class="meta">Confirm “borderline elevated” fits a reading of 128/82.</div></div></div>
+      <div class="item" style="padding:12px;"><div class="item-ico warn" style="width:32px;height:32px;"><svg class="i sm" viewBox="0 0 24 24" aria-hidden="true"><path d="M12 3l10 18H2z"/><path d="M12 10v5M12 18v.5"/></svg></div><div class="grow"><div class="title" style="font-size:13.5px;">Plan</div><div class="meta">Confirm the headache diary was agreed in the visit.</div></div></div>
+    </div>
+    <label class="ask" for="askNote" style="height:44px;box-shadow:none;"><svg class="i sm" viewBox="0 0 24 24" aria-hidden="true"><path d="M12 3l1.9 5.1L19 10l-5.1 1.9L12 17l-1.9-5.1L5 10l5.1-1.9z"/><path d="M19 15l.8 2.2L22 18l-2.2.8L19 21l-.8-2.2L16 18l2.2-.8z"/></svg><span class="sr">Ask about this consultation</span><input id="askNote" type="text" placeholder="Ask about this consultation…"></label>
+  </aside>
+
+</div>
+</div>
+</x-dc>
+<script type="text/x-dc" data-dc-script data-props='{"$preview":{"width":1280,"height":1080}}'>
+class Component extends DCLogic {
+  renderVals() { return {}; }
+}
+</script>
+</body>
+</html>

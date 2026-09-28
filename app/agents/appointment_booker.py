@@ -5,6 +5,7 @@ Handles symptom follow-up, doctor selection, and slot booking.
 Remedy logic lives in remedy_agent.py.
 """
 
+import logging
 import re
 import json
 from datetime import date, datetime, timedelta, timezone
@@ -24,6 +25,7 @@ from app.services.memory_policy import get_memory_policy
 from app.services.language import language_prompt_context, normalize_language
 from app.services.patient_text import display_label, patient_message
 from langchain_core.output_parsers import PydanticOutputParser
+from app.services.booking_context import context_from_state
 from app.services.appointments import (
     active_bookings_for_patient,
     available_doctors_by_name,
@@ -41,6 +43,8 @@ from app.services.appointments import (
 )
 
 menu_parser = PydanticOutputParser(pydantic_object=BookingMenuDecision)
+logger = logging.getLogger(__name__)
+
 BOOKING_WINDOW_DAYS = 7
 MEMORY_POLICY = get_memory_policy("appointment_booker")
 
@@ -614,9 +618,38 @@ def ask_reschedule_choice(state: GraphState):
     }
 
 
+def _bookable_candidates(candidates: list[dict]) -> list[dict]:
+    """Drop any candidate department this hospital does not staff.
+
+    THE GATE. candidate_departments is written by several producers — rag.py's symptom
+    rules, medical_rag, the document paths — and none of them validates against the
+    doctors table. rag.py's DEPARTMENT_SYMPTOM_RULES alone contains ENT, Urology and
+    Ophthalmology, none of which exist here, so "my eye hurts" could offer the patient an
+    Ophthalmology option that books nothing.
+
+    Filtering here rather than in each producer is deliberate: this is the single point
+    every candidate must pass through to reach a patient, so a producer added later cannot
+    bypass it. Preserves order and shape.
+    """
+    from app.services.appointments import routable_departments
+
+    allowed = {d.lower() for d in routable_departments()}
+    kept: list[dict] = []
+    for candidate in candidates:
+        if not isinstance(candidate, dict):
+            continue
+        name = str(candidate.get("department") or "").strip()
+        if name and name.lower() in allowed:
+            kept.append(candidate)
+    return kept
+
+
 def ask_department_choice(state: GraphState):
-    departments = list(state.get("candidate_departments") or [])
+    departments = _bookable_candidates(list(state.get("candidate_departments") or []))
     if not departments:
+        # Either there were no candidates, or every one of them was a department we do not
+        # staff. Both mean the same thing to the patient: fall through to the doctor list
+        # rather than offering a menu that cannot be acted on.
         return ask_preferred_doctor(state)
 
     return {
@@ -1330,13 +1363,28 @@ def book_preferred_slot(state: GraphState):
         }
 
     booking_note = _document_booking_note(state)
+    # The pre-visit context. Built here, where the conversation state still exists — by
+    # the time the doctor opens the appointment, this is the only surviving record of what
+    # the assistant recommended and what the patient chose instead.
+    snapshot_context = context_from_state(state, chosen_department=state.get("target_department"))
     try:
         booked = book_selected_slot(
             slot_id=selected["slot_id"],
             patient_id=state.get("patient_id"),
             booking_note=booking_note,
+            booking_context=snapshot_context,
         )
     except TypeError:
+        # Legacy-signature fallback. It now also drops the booking note AND the pre-visit
+        # context, so if it ever fires the appointment is recorded without any of the
+        # conversation behind it — and that context cannot be reconstructed later. Logged
+        # at error rather than swallowed: a silent degrade here looks identical to a
+        # patient who simply booked without saying anything.
+        logger.error(
+            "appointment_booker: book_selected_slot rejected the current signature — "
+            "booking WITHOUT note or pre-visit context (patient=%s)",
+            state.get("patient_id"),
+        )
         booked = book_selected_slot(
             slot_id=selected["slot_id"],
             patient_id=state.get("patient_id"),

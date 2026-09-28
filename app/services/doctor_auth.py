@@ -20,6 +20,7 @@ from app.services.login_lockout import (
     record_failure,
 )
 from app.services import totp
+from app.db.schema_once import once_per_process
 
 
 class DoctorInviteEmailConfigError(RuntimeError):
@@ -32,7 +33,33 @@ class DoctorInviteEmailConfigError(RuntimeError):
 
 INVITE_TTL = timedelta(hours=48)
 
+# Two logins closer together than this are treated as ONE visit, so previous_login_at is
+# not advanced by the second. That column is the lower bound of the "what did AI do since
+# you were last here?" window on the workspace overview, and advancing it on every login
+# made a sign-out/sign-in collapse that window to a couple of minutes — every count inside
+# it legitimately 0, and the panel blank. Observed in the running app at a 2m40s gap.
+#
+# A real absence (going home and coming back) is far longer than this; a re-login after a
+# dropped session, a browser restart or a password change is far shorter.
+SESSION_GROUPING_MINUTES = 30
 
+# Shared by BOTH login branches (TOTP and recovery code) so they cannot drift apart — a
+# login is a login, and the window must advance identically either way.
+#
+# previous_login_at = last_login_at reads the OLD row value: Postgres evaluates every SET
+# right-hand side against the pre-UPDATE row, so this carries the prior login forward in
+# the same statement that overwrites it. The CASE is what makes it a *visit* boundary
+# rather than a login counter — see SESSION_GROUPING_MINUTES. NULL is preserved rather
+# than coalesced, because "never logged in before" is a real state the window handles.
+_ADVANCE_LOGIN_WINDOW_SQL = """
+    previous_login_at = CASE
+        WHEN last_login_at IS NULL THEN previous_login_at
+        WHEN last_login_at < NOW() - make_interval(mins => %(session_gap)s) THEN last_login_at
+        ELSE previous_login_at
+    END"""
+
+
+@once_per_process
 def ensure_doctor_auth_schema(conn) -> None:
     # login_lockouts is owned by app/services/login_lockout.py but ensured here too:
     # every doctor auth path and admin_management's doctor-list join both read it.
@@ -54,6 +81,13 @@ def ensure_doctor_auth_schema(conn) -> None:
                 created_at TIMESTAMP NOT NULL DEFAULT NOW()
             );
             CREATE INDEX IF NOT EXISTS idx_doctor_auth_audit_doctor_created ON doctor_auth_audit_log(doctor_id, created_at DESC);
+            -- The login BEFORE the current one. last_login_at above is overwritten as part
+            -- of authenticating, so it always reads "now" by the time the workspace
+            -- renders and cannot bound a "since your last session" window. Additive and
+            -- nullable: an account that has only ever logged in once genuinely has no
+            -- previous login, and the activity summary falls back to 24h rather than
+            -- inventing one. Mirrored by Alembic revision 0022.
+            ALTER TABLE doctor_accounts ADD COLUMN IF NOT EXISTS previous_login_at TIMESTAMP;
         """)
 
 
@@ -286,7 +320,23 @@ def complete_mfa_challenge(account_id: str, code: str) -> tuple[str, str, str, b
                 _audit(cur, "mfa_challenge_rejected_replay", doctor_id, email)
                 raise PermissionError("Invalid MFA code.")
             if matching_step is not None:
-                cur.execute("UPDATE doctor_accounts SET last_totp_step = %s, last_login_at = NOW(), updated_at = NOW() WHERE id = %s", (matching_step, account_id))
+                # The carry-forward is _ADVANCE_LOGIN_WINDOW_SQL; see it for why this is a
+                # visit boundary rather than a login counter. That value is the lower
+                # bound of the "what did AI do since you were last here?" window on the
+                # workspace overview.
+                cur.execute(
+                    f"""UPDATE doctor_accounts
+                           SET last_totp_step = %(step)s,
+                               {_ADVANCE_LOGIN_WINDOW_SQL},
+                               last_login_at = NOW(),
+                               updated_at = NOW()
+                         WHERE id = %(account_id)s""",
+                    {
+                        "step": matching_step,
+                        "account_id": account_id,
+                        "session_gap": SESSION_GROUPING_MINUTES,
+                    },
+                )
                 _audit(cur, "login_success", doctor_id, email)
                 return str(doctor_id), email, str(account_id), False
             # else: not a valid TOTP code at all — fall through to recovery-code check.
@@ -294,7 +344,22 @@ def complete_mfa_challenge(account_id: str, code: str) -> tuple[str, str, str, b
             if not matched_hash:
                 _audit(cur, "mfa_challenge_failed", doctor_id, email)
                 raise PermissionError("Invalid MFA code.")
-            cur.execute("UPDATE doctor_accounts SET recovery_codes = array_remove(recovery_codes, %s), last_login_at = NOW(), updated_at = NOW() WHERE id = %s", (matched_hash, account_id))
+            # Literally the same carry-forward SQL as the TOTP branch above, not a copy of
+            # it: a login via recovery code is still a login, and must advance the window
+            # identically.
+            cur.execute(
+                f"""UPDATE doctor_accounts
+                       SET recovery_codes = array_remove(recovery_codes, %(used_hash)s),
+                           {_ADVANCE_LOGIN_WINDOW_SQL},
+                           last_login_at = NOW(),
+                           updated_at = NOW()
+                     WHERE id = %(account_id)s""",
+                {
+                    "used_hash": matched_hash,
+                    "account_id": account_id,
+                    "session_gap": SESSION_GROUPING_MINUTES,
+                },
+            )
             _audit(cur, "recovery_code_used", doctor_id, email)
             _audit(cur, "login_success", doctor_id, email, recovery_code=True)
             return str(doctor_id), email, str(account_id), True
@@ -393,6 +458,7 @@ def list_doctor_auth_audit_log(
     }
 
 
+@once_per_process
 def ensure_rate_limit_schema(conn) -> None:
     with conn.cursor() as cur:
         cur.execute(

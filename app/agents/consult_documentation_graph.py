@@ -26,6 +26,33 @@ _SOAP_FIELDS = ("subjective", "objective", "assessment", "plan")
 
 _parser = PydanticOutputParser(pydantic_object=SOAPNoteExtraction)
 
+# Bumped BY HAND whenever any prompt text below changes. Persisted onto every note as
+# soap_notes.ai_prompt_version (combined with the style, e.g. "soap-v1:concise"), so
+# "which prompt produced the text this doctor signed?" stays answerable after the prompt
+# is next edited. A content hash would be self-maintaining but opaque in the UI; this
+# codebase prefers explicit constants, and the cost is remembering to bump it.
+SOAP_PROMPT_VERSION = "soap-v1"
+
+SOAP_NOTE_STYLES = ("concise", "detailed")
+DEFAULT_SOAP_NOTE_STYLE = "concise"
+
+# Style directives are appended to the shared prompt rather than duplicating it, so the
+# citation and confidence rules below can never drift between the two variants — those
+# rules are safety-critical and must be identical whichever length the doctor picks.
+_STYLE_DIRECTIVES = {
+    "concise": (
+        "LENGTH: Write each section as tightly as the transcript allows — one to two short "
+        "sentences per section. Capture only what was actually said. Do not pad."
+    ),
+    "detailed": (
+        "LENGTH: Write each section in full clinical prose, including the specifics stated in "
+        "the transcript (durations, frequencies, measured values, named medications, stated "
+        "negatives such as 'denies nausea'). Expanding on WHAT WAS SAID is required; inventing "
+        "anything that was not said is still forbidden, and the citation rule still applies to "
+        "every sentence."
+    ),
+}
+
 SOAP_EXTRACTOR_SYSTEM_PROMPT = """You are a clinical documentation assistant producing a SOAP note from a doctor-patient consultation transcript. The transcript is speaker-labeled and each line is prefixed with its segment id in square brackets, e.g. "[a1b2c3] Doctor: How long has the pain lasted?".
 
 Write four sections:
@@ -45,6 +72,7 @@ Return ONLY valid JSON matching this exact structure (no markdown, no explanatio
 class ConsultDocState(TypedDict, total=False):
     consultation_id: str
     patient_id: str
+    style: str
     segments: list[dict]
     transcript_text: str
     subjective: str
@@ -81,8 +109,11 @@ async def soap_extractor_node(state: ConsultDocState) -> dict:
     transcript_text = state.get("transcript_text") or ""
     user_prompt = f"Transcript:\n{transcript_text}"
 
+    style = state.get("style") or DEFAULT_SOAP_NOTE_STYLE
+    system_prompt = f"{SOAP_EXTRACTOR_SYSTEM_PROMPT}\n\n{_STYLE_DIRECTIVES[style]}"
+
     raw_output = await agenerate_text(
-        system_prompt=SOAP_EXTRACTOR_SYSTEM_PROMPT,
+        system_prompt=system_prompt,
         user_prompt=user_prompt,
         node_name="soap_extractor",
         include_history=False,
@@ -144,22 +175,38 @@ _workflow.add_edge("confidence_validator", END)
 consult_documentation_graph = _workflow.compile()
 
 
-async def agenerate_soap_note(consultation_id: str, patient_id: str, segments: list[dict]) -> dict:
+async def agenerate_soap_note(
+    consultation_id: str, patient_id: str, segments: list[dict],
+    style: str = DEFAULT_SOAP_NOTE_STYLE,
+) -> dict:
     """Runs the subgraph end-to-end and returns the fields the service layer needs to
     persist. Raises RuntimeError if the LLM's output could not be parsed into a
     structured note at all (total LLM failure, or malformed JSON) — callers must not
-    persist a note in that case."""
+    persist a note in that case.
+
+    Also returns the provenance the note is stored with: which model produced it and
+    which prompt+style combination was used. Both are read at call time rather than
+    hardcoded, so a note always records what actually generated it, not what the code
+    assumed would.
+    """
+    if style not in SOAP_NOTE_STYLES:
+        raise ValueError(f"style must be one of {SOAP_NOTE_STYLES}.")
+
     result = await consult_documentation_graph.ainvoke(
         {
             "consultation_id": consultation_id,
             "patient_id": patient_id,
             "segments": segments,
+            "style": style,
         }
     )
     if result.get("parse_failed"):
         raise RuntimeError(
             "Could not generate a structured clinical note from this transcript. Please try again."
         )
+
+    from app.inference.llm import CONV_MODEL
+
     return {
         "subjective": result.get("subjective") or "",
         "objective": result.get("objective") or "",
@@ -167,4 +214,6 @@ async def agenerate_soap_note(consultation_id: str, patient_id: str, segments: l
         "plan": result.get("plan") or "",
         "field_citations": result.get("field_citations") or {},
         "confidence_flags": result.get("confidence_flags") or {},
+        "ai_model": CONV_MODEL,
+        "ai_prompt_version": f"{SOAP_PROMPT_VERSION}:{style}",
     }

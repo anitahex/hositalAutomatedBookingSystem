@@ -120,7 +120,9 @@ def _canned_note(subjective="Patient reports headache.", suffix=""):
 
 
 def _mock_llm(monkeypatch, payload):
-    async def fake_agenerate_soap_note(consultation_id, patient_id, segments):
+    # Accepts the style argument added alongside the Concise/Detailed toggle. Kept
+    # optional so this stub still mirrors a call made without it.
+    async def fake_agenerate_soap_note(consultation_id, patient_id, segments, style="concise"):
         return payload
 
     import app.agents.consult_documentation_graph as docgraph

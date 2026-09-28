@@ -8,6 +8,7 @@ from app.services.passwords import hash_password, verify_password
 from app.services.tokens import create_access_token
 from app.services.account_registry import ensure_registry_schema, reserve_email
 from app.services.login_lockout import check_lockout, clear_lockout, ensure_lockout_schema, record_failure
+from app.db.schema_once import once_per_process
 
 
 @dataclass(frozen=True)
@@ -19,6 +20,7 @@ class AdminAccount:
     is_active: bool
 
 
+@once_per_process
 def ensure_admin_schema(conn):
     with conn.cursor() as cur:
         cur.execute(

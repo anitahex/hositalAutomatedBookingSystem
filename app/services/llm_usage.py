@@ -8,6 +8,7 @@ from dataclasses import dataclass
 from datetime import datetime, timezone
 
 from app.db.connection import connect_db
+from app.db.schema_once import once_per_process
 
 
 _TOKEN_PATTERN = re.compile(r"\w+|[^\w\s]", re.UNICODE)
@@ -153,6 +154,7 @@ def summarize_usage(records: list[dict]) -> dict:
     }
 
 
+@once_per_process
 def ensure_llm_usage_schema(conn):
     with conn.cursor() as cur:
         cur.execute(

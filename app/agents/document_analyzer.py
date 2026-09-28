@@ -252,12 +252,18 @@ async def _session_document_fallback_response(state: GraphState) -> dict | None:
 
 # ---- Path B: in-memory analysis — Azure GPT-4o primary, HF vision fallback ----
 
+# Document type -> a department that can actually treat the patient.
+#
+# blood_report/mri/ct/xray/pathology_report previously mapped to "Pathology" and
+# "Radiology". Those are the services that PRODUCED the document, not departments that
+# treat anyone — and neither exists in this hospital, so the result was a department with
+# zero bookable doctors. You follow up on a scan with whoever ordered it, not with the
+# radiologist who read it.
+#
+# Those types are deliberately absent now: the document type alone tells us nothing about
+# where the patient should go, so they fall through to the content keywords below and
+# ultimately to General Physician.
 _DEPT_MAP: dict[str, str] = {
-    "blood_report": "Pathology",
-    "mri_report": "Radiology",
-    "ct_report": "Radiology",
-    "xray_report": "Radiology",
-    "pathology_report": "Pathology",
     "prescription": "General Physician",
     "discharge_summary": "General Physician",
 }
@@ -285,18 +291,56 @@ _CONTENT_DEPT_KEYWORDS: list[tuple[str, list[str]]] = [
     ("Gynecology",     ["gynae", "uterus", "ovary", "pregnancy", "menstrual", "pcos", "ob-gyn"]),
     ("Urology",        ["urology", "prostate", "bladder", "uti", "urinary tract"]),
     ("Psychiatry",     ["anxiety", "depression", "psychiatric", "mental health", "insomnia", "bipolar"]),
-    ("Radiology",      ["mri", "ct scan", "x-ray", "xray", "ultrasound", "radiograph", "imaging"]),
-    ("Pathology",      ["blood report", "cbc", "haemoglobin", "wbc", "rbc", "platelet", "lab result"]),
+    # Ophthalmology, ENT, Gynecology, Urology, Radiology and Pathology were here. None of
+    # them is a department in this hospital, so every one of them resolved to zero
+    # bookable doctors — and the last two are producing services besides. Their keywords
+    # are removed rather than remapped: sending an eye complaint to an arbitrary
+    # "closest" department would be worse than falling through to General Physician, who
+    # can refer onward. Any department named below is validated against the live doctors
+    # table before it is returned, so this list cannot drift out of sync again.
 ]
 
 
-def _infer_department(doc_type: str, impression: str, findings: dict) -> str:
-    """Pick the most relevant department from the actual clinical content."""
+def _department_candidates(
+    doc_type: str, impression: str, findings: dict, valid_departments: list[str] | None = None,
+) -> list[str]:
+    """Every department the document's content plausibly points at, best-guess first.
+
+    Returns a LIST, not a single winner, because a real document routinely matches more
+    than one. The report behind this change contained both "anxiety"/"insomnia" and
+    "thyroid"/"glucose"/"hba1c"; the old first-match-wins scan returned Endocrinology
+    purely because it sat ten rows above Psychiatry in a hand-ordered list, and the
+    patient's mental-health signal was silently discarded. Callers that can ask the
+    patient should use the whole list; _infer_department below keeps the single-value
+    behaviour for callers that cannot.
+
+    Never returns a department this hospital does not staff.
+    """
     combined = (impression + " " + " ".join(str(v) for v in findings.values())).lower()
+    matches: list[str] = []
     for dept, keywords in _CONTENT_DEPT_KEYWORDS:
-        if any(kw in combined for kw in keywords):
-            return dept
-    return _DEPT_MAP.get(doc_type, "General Physician")
+        if any(kw in combined for kw in keywords) and dept not in matches:
+            matches.append(dept)
+
+    type_default = _DEPT_MAP.get(doc_type)
+    if type_default and type_default not in matches:
+        matches.append(type_default)
+
+    allowed = set(valid_departments) if valid_departments else None
+    return [d for d in matches if allowed is None or d in allowed]
+
+
+def _infer_department(doc_type: str, impression: str, findings: dict) -> str:
+    """The single best department for this document's content.
+
+    Always returns a real, bookable department — General Physician when nothing else
+    matches, never a fabricated name. Signature and return type are unchanged so the two
+    existing call sites are unaffected.
+    """
+    from app.services.appointments import routable_departments
+
+    candidates = _department_candidates(doc_type, impression, findings, routable_departments())
+    return candidates[0] if candidates else "General Physician"
 
 
 def _format_finding_value(v: Any) -> str:

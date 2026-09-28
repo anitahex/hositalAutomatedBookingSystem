@@ -1,8 +1,12 @@
+import logging
 import re
-from difflib import get_close_matches
+from difflib import SequenceMatcher, get_close_matches
 from datetime import date, timedelta
 
 from app.db.connection import connect_db
+from app.db.schema_once import once_per_process
+
+logger = logging.getLogger(__name__)
 
 
 BOOKING_LOOKAHEAD_DAYS = 7
@@ -31,7 +35,42 @@ DEPARTMENT_ALIASES = {
     "endo": "Endocrinology",
     "hema": "Hematology",
     "onco": "Oncology",
+    # Practitioner and lay terms. Patients ask for "a psychiatrist", not for "Psychiatry",
+    # and the substring/canonical checks miss that entirely ("psychiatry" is not a
+    # substring of "psychiatrist"). Mapping the words people actually use is what makes
+    # free text resolvable at all.
+    "psychiatrist": "Psychiatry",
+    # There is no Psychology department here, and Psychiatry is the closest we have. This
+    # is a routing convenience, NOT a claim the two are equivalent — the resolver still
+    # confirms with the patient before anything is booked.
+    "psychologist": "Psychiatry",
+    "psychology": "Psychiatry",
+    "mental health": "Psychiatry",
+    "therapist": "Psychiatry",
+    "counsellor": "Psychiatry",
+    "counselor": "Psychiatry",
+    "gastroenterologist": "Gastroenterology",
+    "pulmonologist": "Pulmonology",
+    "nephrologist": "Nephrology",
+    "endocrinologist": "Endocrinology",
+    "hematologist": "Hematology",
+    "haematologist": "Hematology",
+    "oncologist": "Oncology",
+    "dermatologist": "Dermatology",
+    "orthopedist": "Orthopedics",
+    "orthopaedics": "Orthopedics",
+    "general practitioner": "General Physician",
+    "family doctor": "General Physician",
 }
+
+# Services that PRODUCE a document, never departments that TREAT a patient. You do not
+# book a follow-up with the radiologist who read your scan or the lab that ran your
+# blood — you follow up with whoever ordered it. Kept as an explicit denylist rather than
+# relying on their absence from CANONICAL_DEPARTMENTS, so a future data change cannot
+# quietly make them bookable.
+NEVER_ROUTE_TO_DEPARTMENTS = frozenset({
+    "radiology", "pathology", "laboratory", "lab", "diagnostics", "imaging",
+})
 
 CANONICAL_DEPARTMENTS = [
     "General Physician",
@@ -73,36 +112,181 @@ _DEPARTMENT_STOPWORDS = {
 }
 
 
+# Confidence floor for a STRICT match. A fuzzy hit below this is real enough to offer the
+# patient as a candidate but not to act on silently — "physiatrist" (physical medicine)
+# sits one edit from "psychiatrist" (mental health), and picking either one without asking
+# would route a patient on a typo.
+STRICT_MATCH_CONFIDENCE = 0.86
+
+
+def _clean_department_text(text: str | None) -> str:
+    if not text:
+        return ""
+    cleaned = " ".join(str(text).strip().lower().replace("-", " ").replace("/", " ").split())
+    if not cleaned:
+        return ""
+    words = [word for word in cleaned.split() if word not in _DEPARTMENT_STOPWORDS]
+    return " ".join(words).strip() or cleaned
+
+
+def _lookup_exact(candidate: str) -> str | None:
+    if candidate in _NORMALIZED_DEPARTMENT_ALIASES:
+        return _NORMALIZED_DEPARTMENT_ALIASES[candidate]
+    if candidate in _NORMALIZED_CANONICAL_DEPARTMENTS:
+        return _NORMALIZED_CANONICAL_DEPARTMENTS[candidate]
+    return None
+
+
+def match_department_scored(
+    text: str | None, valid_departments: list[str] | None = None
+) -> tuple[str | None, float]:
+    """Resolve free text to a real department, with a confidence score.
+
+    Returns (None, 0.0) when nothing matches — it NEVER invents a department name, which
+    is the difference between this and normalize_department_name below. A caller that
+    gets None is expected to ask the patient rather than guess.
+
+    Handles three shapes of input, because all three occur in practice:
+      - a bare department or practitioner word  ("Psychiatry", "psychiatrist")
+      - a misspelling of one                    ("phyciatrist", "psychitary")
+      - a whole sentence containing one         ("can i see a psychiatrist?")
+
+    `valid_departments` constrains the result to what this hospital actually offers
+    (normally read from the doctors table). Anything on NEVER_ROUTE_TO_DEPARTMENTS is
+    rejected outright: those are services that produce documents, not departments that
+    treat patients.
+    """
+    cleaned = _clean_department_text(text)
+    if not cleaned:
+        return None, 0.0
+
+    # Reject a producing service on the way IN, not just on the way out. Checking only the
+    # result let "radiology" fuzzy-match to "Cardiology" at 0.84 and "pathology" to
+    # "Psychiatry" at 0.74 — plausible-looking scores for two departments the patient never
+    # mentioned. A document produced by Radiology tells us nothing about who should treat.
+    if cleaned in NEVER_ROUTE_TO_DEPARTMENTS or any(
+        token in NEVER_ROUTE_TO_DEPARTMENTS for token in cleaned.split()
+    ):
+        return None, 0.0
+
+    allowed = None
+    if valid_departments is not None:
+        allowed = {" ".join(str(d).lower().split()) for d in valid_departments}
+
+    def _accept(department: str | None, score: float) -> tuple[str | None, float]:
+        if not department:
+            return None, 0.0
+        if " ".join(department.lower().split()) in NEVER_ROUTE_TO_DEPARTMENTS:
+            return None, 0.0
+        if allowed is not None and " ".join(department.lower().split()) not in allowed:
+            return None, 0.0
+        return department, score
+
+    # 1. Whole string, exact.
+    exact = _lookup_exact(cleaned)
+    if exact:
+        return _accept(exact, 1.0)
+
+    known = list(_NORMALIZED_CANONICAL_DEPARTMENTS.keys()) + list(_NORMALIZED_DEPARTMENT_ALIASES.keys())
+
+    # 2. Token-wise, exact — pulls "psychiatrist" out of "can i see a psychiatrist ?",
+    #    which the regex-based extractor in supervisor.py cannot do.
+    tokens = cleaned.split()
+    for token in tokens:
+        hit = _lookup_exact(token)
+        if hit:
+            return _accept(hit, 0.95)
+
+    # 3. Whole string, fuzzy.
+    best: tuple[str | None, float] = (None, 0.0)
+    matches = get_close_matches(cleaned, known, n=1, cutoff=0.78)
+    if matches:
+        best = (_lookup_exact(matches[0]), SequenceMatcher(None, cleaned, matches[0]).ratio())
+
+    # 4. Token-wise, fuzzy — catches a single misspelled word inside a sentence
+    #    ("can i see a phyciatrist ?"). Deliberately last and scored, not trusted.
+    for token in tokens:
+        if len(token) < 5:
+            continue  # too short to fuzzy-match safely ("ct", "mri", "the")
+        token_matches = get_close_matches(token, known, n=1, cutoff=0.72)
+        if not token_matches:
+            continue
+        score = SequenceMatcher(None, token, token_matches[0]).ratio()
+        if score > best[1]:
+            best = (_lookup_exact(token_matches[0]), score)
+
+    return _accept(best[0], round(best[1], 3))
+
+
+def match_department(text: str | None, valid_departments: list[str] | None = None) -> str | None:
+    """Strict resolution: a real department name, or None. Never fabricates.
+
+    Only high-confidence matches are returned. Use match_department_scored() when a weak
+    match is still worth offering the patient as a candidate to confirm.
+    """
+    department, score = match_department_scored(text, valid_departments)
+    return department if department and score >= STRICT_MATCH_CONFIDENCE else None
+
+
 def normalize_department_name(department: str | None) -> str:
+    """Legacy behaviour, unchanged: always returns a string, falling back to a
+    title-cased version of whatever the caller passed.
+
+    That fallback is why a typo could become a department ("physcologist" ->
+    'Physcologist'). It is preserved here because ten call sites across booking, admin and
+    consults depend on a non-None return; new code should call match_department() and
+    handle None by asking the patient instead.
+    """
     if not department:
         return "General Physician"
 
-    cleaned = " ".join(str(department).strip().lower().replace("-", " ").replace("/", " ").split())
+    cleaned = _clean_department_text(department)
     if not cleaned:
         return "General Physician"
 
-    words = [word for word in cleaned.split() if word not in _DEPARTMENT_STOPWORDS]
-    candidate = " ".join(words).strip() or cleaned
+    matched, score = match_department_scored(department)
+    if matched and score >= 0.78:
+        return matched
 
-    if candidate in _NORMALIZED_DEPARTMENT_ALIASES:
-        return _NORMALIZED_DEPARTMENT_ALIASES[candidate]
+    return " ".join(word.capitalize() for word in cleaned.split())
 
-    if candidate in _NORMALIZED_CANONICAL_DEPARTMENTS:
-        return _NORMALIZED_CANONICAL_DEPARTMENTS[candidate]
 
-    matches = get_close_matches(
-        candidate,
-        list(_NORMALIZED_CANONICAL_DEPARTMENTS.keys()) + list(_NORMALIZED_DEPARTMENT_ALIASES.keys()),
-        n=1,
-        cutoff=0.78,
-    )
-    if matches:
-        match = matches[0]
-        if match in _NORMALIZED_CANONICAL_DEPARTMENTS:
-            return _NORMALIZED_CANONICAL_DEPARTMENTS[match]
-        return _NORMALIZED_DEPARTMENT_ALIASES[match]
+def routable_departments(limit: int = 50) -> list[str]:
+    """Every department this hospital actually staffs — the list used to VALIDATE a
+    department before it can be shown to a patient or used in a booking query.
 
-    return " ".join(word.capitalize() for word in candidate.split())
+    Deliberately NOT available_departments() below, which is gated on having a free,
+    unbooked slot inside the next seven days. That gate is right for "what can I book this
+    week" and wrong for "does this department exist": Psychiatry has exactly one doctor, so
+    in any week she is fully booked, available_departments() omits Psychiatry entirely and
+    a validator built on it would conclude the hospital has no such department — the exact
+    failure this validation exists to prevent.
+
+    Falls back to CANONICAL_DEPARTMENTS if the database is unreachable. A validator that
+    returns an empty list would reject every department and take the booking flow down
+    with it; degrading to the static list keeps the app working and still blocks the
+    fabricated names this guards against.
+    """
+    try:
+        with connect_db() as conn:
+            ensure_booking_schema(conn)
+            with conn.cursor() as cur:
+                cur.execute(
+                    f"""
+                    SELECT DISTINCT department
+                    FROM doctors
+                    WHERE {_active_doctor_clause()}
+                        AND department IS NOT NULL
+                        AND length(trim(department)) > 0
+                    ORDER BY department
+                    LIMIT %s
+                    """,
+                    (max(1, int(limit)),),
+                )
+                departments = [row[0] for row in cur.fetchall() if row and row[0]]
+        return departments or list(CANONICAL_DEPARTMENTS)
+    except Exception:
+        return list(CANONICAL_DEPARTMENTS)
 
 
 def available_departments(limit: int = 20):
@@ -196,6 +380,7 @@ def _holiday_block_clause() -> str:
     """
 
 
+@once_per_process
 def ensure_booking_schema(conn):
     with conn.cursor() as cur:
         cur.execute(
@@ -667,7 +852,20 @@ def _sanitize_booking_note(note: str | None, *, max_length: int = BOOKING_NOTE_M
     return cleaned
 
 
-def book_selected_slot(slot_id: str, patient_id: str | None = None, booking_note: str | None = None):
+def book_selected_slot(
+    slot_id: str,
+    patient_id: str | None = None,
+    booking_note: str | None = None,
+    booking_context=None,
+):
+    """Books a slot, and records the pre-visit context in the SAME transaction.
+
+    `booking_context` is an optional booking_context.SnapshotContext describing the
+    conversation that produced this booking. It is keyword-optional so the REST booking
+    route (app/api/routes/appointments.py) is unaffected — a booking made directly has no
+    conversation, and that is recorded honestly as 'skipped' rather than left looking like
+    a summary that failed to generate.
+    """
     note = _sanitize_booking_note(" ".join(str(booking_note).strip().split())) if booking_note else None
     with connect_db() as conn:
         try:
@@ -737,6 +935,34 @@ def book_selected_slot(slot_id: str, patient_id: str | None = None, booking_note
                     """,
                     (patient_id, booked_slot_id),
                 )
+
+                # The pre-visit context, in this transaction so it commits with the
+                # booking or not at all — there is no state where an appointment exists
+                # without the record of what produced it.
+                #
+                # Inside a SAVEPOINT because in Postgres a failed statement aborts the
+                # ENTIRE transaction: without it, a snapshot error would roll back the
+                # booking itself. A missing context is a degraded record; a lost booking
+                # is a patient who does not get seen, and that trade is not close.
+                from app.services.booking_context import (
+                    SnapshotContext, capture_snapshot_safely, ensure_booking_context_schema,
+                )
+
+                context = booking_context or SnapshotContext(chosen_department=department)
+                cur.execute("SAVEPOINT booking_context_capture")
+                try:
+                    ensure_booking_context_schema(conn)
+                    capture_snapshot_safely(
+                        cur, booking_id=booking_id, patient_id=patient_id, context=context
+                    )
+                    cur.execute("RELEASE SAVEPOINT booking_context_capture")
+                except Exception:
+                    cur.execute("ROLLBACK TO SAVEPOINT booking_context_capture")
+                    logger.exception(
+                        "book_selected_slot: pre-visit context not recorded for booking %s",
+                        booking_id,
+                    )
+
                 conn.commit()
         except Exception:
             conn.rollback()
@@ -1368,9 +1594,26 @@ def doctor_patient_detail(doctor_id: str, patient_id: str, limit: int = 100):
                     d.department,
                     b.start_time,
                     b.end_time,
-                    b.status
+                    b.status,
+                    lc.id,
+                    lc.status,
+                    lc.ended_at,
+                    lc.note_status
                 FROM appointment_bookings b
                 JOIN doctors d ON d.doctor_id = b.doctor_id
+                -- The visit's latest consult that was not discarded, and its note. LATERAL
+                -- with LIMIT 1 because a booking can have several consults (one discarded,
+                -- one restarted); a plain join would list the visit once per consult. So the
+                -- visit-history card can say what actually happened instead of the
+                -- "No clinical note yet" it used to print for every visit, signed or not.
+                LEFT JOIN LATERAL (
+                    SELECT c.id, c.status, c.ended_at, sn.status AS note_status
+                    FROM consultations c
+                    LEFT JOIN soap_notes sn ON sn.consultation_id = c.id
+                    WHERE c.booking_id = b.booking_id AND c.status <> 'discarded'
+                    ORDER BY c.created_at DESC
+                    LIMIT 1
+                ) lc ON TRUE
                 WHERE b.doctor_id = %s
                     AND b.patient_id = %s
                 ORDER BY b.start_time DESC
@@ -1413,10 +1656,44 @@ def doctor_patient_detail(doctor_id: str, patient_id: str, limit: int = 100):
                 "start_time": start_time.isoformat(),
                 "end_time": end_time.isoformat(),
                 "status": str(status),
+                "consult_id": str(consult_id) if consult_id else None,
+                "consult_status": consult_status,
+                "consult_ended_at": consult_ended_at.isoformat() if consult_ended_at else None,
+                "note_status": note_status,
             }
-            for booking_id, department, start_time, end_time, status in visit_rows
+            for (booking_id, department, start_time, end_time, status,
+                 consult_id, consult_status, consult_ended_at, note_status) in visit_rows
         ],
     }
+
+
+def doctor_treats_patient(doctor_id: str, patient_id: str) -> bool:
+    """The authorization predicate behind every doctor-to-patient data access: TRUE only
+    if this doctor has a real booking history with this patient.
+
+    This is the cheap EXISTS form of the exact condition doctor_patient_detail already
+    enforces with its `if not visit_rows: return None` gate — same table, same two
+    columns, no status filter — for callers that need the yes/no without paying for the
+    visit list. The two MUST stay in agreement; test_doctor_patient_documents.py asserts
+    that they do, so a change to one that isn't mirrored in the other fails a test rather
+    than silently widening access.
+    """
+    if not doctor_id or not patient_id:
+        return False
+
+    with connect_db() as conn:
+        ensure_booking_schema(conn)
+        with conn.cursor() as cur:
+            cur.execute(
+                """
+                SELECT EXISTS (
+                    SELECT 1 FROM appointment_bookings
+                    WHERE doctor_id = %s AND patient_id = %s
+                )
+                """,
+                (doctor_id, patient_id),
+            )
+            return bool(cur.fetchone()[0])
 
 
 def cancel_booking(reference: str, patient_id: str | None = None):

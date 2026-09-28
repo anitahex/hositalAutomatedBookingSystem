@@ -1,0 +1,64 @@
+<!doctype html><html><head><meta charset="utf-8"><title>probe</title>
+<style>html,body{margin:0;padding:0}#f{width:100vw;height:100vh;border:0;display:block}#o{font:11px monospace;white-space:pre}</style>
+</head><body>
+<iframe id="f" src="/static/index.html"></iframe><div id="o">…</div>
+<script>
+const P = new URLSearchParams(location.search);
+const pane = P.get('pane') || 'overview';
+const FX = {
+  doctor:{doctor_id:'d1',name:'Dr. Sunita Panday',department:'Psychiatry',experience_years:19,mfa_enabled:true,account_id:'a1'},
+  summary:{window_is_fallback:false,counts:{notes_drafted:3,documents_summarized:2,fields_flagged:3,notes_blocked:1,awaiting_signature:4},headline:'3 notes drafted and 2 documents summarised. 4 items wait on your sign-off.'},
+  log:{events:[{action:'consult_soap_note_generated',label:'Drafted a clinical note',is_ai:true,occurred_at:'2026-09-22T19:12:00',detail:{style:'detailed'},consultation_id:'c1'}]},
+  reviews:{reviews:[
+    {consultation_id:'c1',booking_id:'b1',patient_id:'p1',patient_name:'Anit Rao',department:'Nephrology',appointment_start:'2026-09-21T13:00:00',item_type:'draft',is_stale:false,is_edited:false,low_quality_transcript:false,low_confidence_fields:2,lane:'quick_review',ai_explanation:'2 sections flagged where the transcript support was thin.',confidence_flags:{objective:true,assessment:true},field_citations:{subjective:'x'}},
+    {consultation_id:'c2',booking_id:'b2',patient_id:'p1',patient_name:'Anit Rao',department:'Nephrology',appointment_start:'2026-09-21T16:00:00',item_type:'stale',is_stale:true,is_edited:false,low_quality_transcript:false,low_confidence_fields:0,lane:'needs_attention',ai_explanation:'Transcript labels changed after this draft was written — regenerate before signing.'},
+    {consultation_id:'c4',booking_id:'b4',patient_id:'p1',patient_name:'Anit Rao',department:'Nephrology',appointment_start:'2026-09-21T19:00:00',item_type:'not_generated',is_stale:false,is_edited:false,low_quality_transcript:false,low_confidence_fields:0,lane:'not_drafted',ai_explanation:'Transcript captured, ready to draft.'}],
+    counts:{pending:3,not_generated:1,draft:1,stale:1,low_quality_transcript:0},
+    ranked_consultation_ids:['c2','c1','c4']},
+  appointments:{appointments:[]}
+};
+document.getElementById('f').addEventListener('load', async () => {
+  const w=document.getElementById('f').contentWindow, d=w.document;
+  w.fetch = async (u)=>{u=String(u);let b={};
+    if(u.includes('/doctor/me'))b={doctor:FX.doctor};
+    else if(u.includes('activity-summary'))b=FX.summary;
+    else if(u.includes('activity-log'))b=FX.log;
+    else if(u.includes('/doctor/reviews'))b=FX.reviews;
+    else if(u.includes('/doctor/appointments'))b=FX.appointments;
+    return {ok:true,status:200,json:async()=>b,text:async()=>JSON.stringify(b)};};
+  d.querySelectorAll('body > section').forEach(s=>s.classList.add('hidden'));
+  d.querySelector('#doctorDashboardView').classList.remove('hidden');
+  w.renderDoctorDashboard(FX.doctor);
+  await w.loadDoctorReviews(); await w.loadDoctorAppointments('upcoming'); await w.loadDoctorAiActivity();
+  w.showDoctorView(pane);
+  await new Promise(r=>setTimeout(r,500));
+  const de=d.documentElement, side=d.querySelector('.doctor-ai-side'), content=d.querySelector('.doctor-ai-content');
+  const sr=side.getBoundingClientRect();
+  const out=[
+   `VIEWPORT ${de.clientWidth}x${de.clientHeight}  pane=${pane}`,
+   `PAGE SCROLL   v=${de.scrollHeight-de.clientHeight}px  h=${de.scrollWidth-de.clientWidth}px   ${(de.scrollHeight<=de.clientHeight&&de.scrollWidth<=de.clientWidth)?'OK none':'*** WINDOW SCROLLS ***'}`,
+   `SIDEBAR       top=${sr.top} left=${sr.left} h=${sr.height}  ${(sr.top===0&&sr.left===0&&Math.abs(sr.height-de.clientHeight)<1)?'OK flush':'*** NOT FLUSH ***'}`,
+   `CONTENT       scrollable=${content.scrollHeight>content.clientHeight}  overflowY=${w.getComputedStyle(content).overflowY}`,
+   `CONTENT XOVER ${content.scrollWidth-content.clientWidth}px ${content.scrollWidth<=content.clientWidth?'OK':'*** X OVERFLOW ***'}`,
+  ];
+
+  const stats=[['#doctorStatToday','article'],['#doctorStatReviewsCard','button'],['#doctorStatAttentionCard','button']];
+  out.push('--- STAT CARDS ---');
+  for(const [sel,kind] of stats){
+    const v=d.querySelector(sel); if(!v){out.push(sel+' MISSING');continue;}
+    const card = v.tagName.toLowerCase()==='strong' ? v.parentElement : v;
+    const r=card.getBoundingClientRect(); const cs=w.getComputedStyle(card);
+    const big=card.querySelector('.ai-big'); const br=big?big.getBoundingClientRect():null;
+    out.push(`${card.tagName.toLowerCase()} ${sel}`);
+    out.push(`   card h=${r.height.toFixed(1)} radius=${cs.borderRadius} display=${cs.display} padding=${cs.padding} align=${cs.alignItems} overflow=${cs.overflow}`);
+    out.push(`   scrollH=${card.scrollHeight} clientH=${card.clientHeight} ${card.scrollHeight>card.clientHeight?'*** CONTENT OVERFLOWS ***':'ok'}`);
+    if(br) out.push(`   .ai-big top=${(br.top-r.top).toFixed(1)} h=${br.height.toFixed(1)} bottom-vs-card=${(br.bottom-r.bottom).toFixed(1)} ${br.bottom>r.bottom?'*** SPILLS OUT ***':'ok'}`);
+  }
+  const lanes=d.querySelector('#doctorReviewLanes');
+  if(lanes && !lanes.classList.contains('hidden')){
+    const cols=[...lanes.children].map(c=>Math.round(c.getBoundingClientRect().right));
+    out.push(`LANES right edges=${cols.join(', ')}  viewport=${de.clientWidth}  ${Math.max(...cols)<=de.clientWidth?'OK all visible':'*** CLIPPED ***'}`);
+  }
+  document.getElementById('o').textContent=out.join('\n');
+});
+</script></body></html>

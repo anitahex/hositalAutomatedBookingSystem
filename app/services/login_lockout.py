@@ -15,6 +15,7 @@ bookkeeping commits atomically with the caller's own authentication decision —
 can never be recorded against an attempt whose transaction later rolls back.
 """
 from datetime import datetime, timedelta
+from app.db.schema_once import once_per_process
 
 LOCKOUT_THRESHOLD = 5
 
@@ -47,6 +48,7 @@ class AccountLockedError(PermissionError):
         super().__init__("Too many failed attempts. Please try again later.")
 
 
+@once_per_process
 def ensure_lockout_schema(conn) -> None:
     with conn.cursor() as cur:
         cur.execute(

@@ -10,6 +10,7 @@ from urllib.parse import quote
 
 from app.db.connection import connect_db
 from app.services.appointments import ensure_booking_schema, normalize_department_name
+from app.db.schema_once import once_per_process
 
 logger = logging.getLogger(__name__)
 
@@ -30,6 +31,7 @@ _ACTIVE_CONSULT_STATUSES = ("recording", "transcribing", "transcript_ready")
 _TRANSCRIPT_SEGMENT_COLUMNS = "id, speaker, start_ms, end_ms, text, confidence, is_final"
 
 
+@once_per_process
 def ensure_consult_schema(conn) -> None:
     with conn.cursor() as cur:
         cur.execute(
@@ -105,6 +107,12 @@ def ensure_consult_schema(conn) -> None:
             );
             CREATE INDEX IF NOT EXISTS idx_consult_audit_consultation
                 ON consult_audit_log(consultation_id, created_at DESC);
+            -- The doctor-facing AI activity feed reads this table by doctor_id over a time
+            -- window. The consultation-scoped index above cannot serve that, and this
+            -- table grows with every clinical action in the system, so without this the
+            -- feed is a full scan. Mirrored by Alembic revision 0022.
+            CREATE INDEX IF NOT EXISTS idx_consult_audit_doctor
+                ON consult_audit_log(doctor_id, created_at DESC);
             """
         )
 

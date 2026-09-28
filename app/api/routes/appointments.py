@@ -1,3 +1,4 @@
+import logging
 from datetime import date as dt_date
 
 from fastapi import APIRouter, Depends, HTTPException
@@ -18,9 +19,37 @@ from app.services.appointments import (
     reschedule_patient_booking,
     upcoming_bookings_for_patient,
 )
+from app.services.soap_notes import list_shared_notes_for_patient
 
+
+logger = logging.getLogger(__name__)
 
 router = APIRouter()
+
+
+def _with_visit_summaries(bookings: list[dict], patient_id: str) -> list[dict]:
+    """Attaches the doctor-verified visit summary to any booking whose clinical note has
+    been signed AND explicitly shared. One batched query for the whole list — the same
+    enrichment shape doctor.py uses for consult status, never a query per row.
+
+    A booking with no shared note gets visit_summary=None, which is the normal case: a
+    note is only ever here after a clinician signed it and chose to disclose it.
+    """
+    try:
+        summaries = list_shared_notes_for_patient(patient_id, [b["booking_id"] for b in bookings])
+    except Exception as exc:
+        # Deliberately non-fatal, and deliberately a broad catch. Listing appointments is
+        # this endpoint's actual job; a shared visit summary is an enhancement layered on
+        # top of it. The consult/SOAP tables live only in Alembic and the runtime ensure_*
+        # helpers — never in app/db/schema.sql — so they can legitimately be absent on a
+        # database bootstrapped from that file alone, and a failure over there must not
+        # take a patient's appointment list away from them. Degrading this way can only
+        # ever HIDE a summary, never expose one, so it cannot fail open.
+        logger.error("appointments: could not load shared visit summaries: %s", exc)
+        summaries = {}
+    for booking in bookings:
+        booking["visit_summary"] = summaries.get(booking["booking_id"])
+    return bookings
 class RescheduleRequest(BaseModel):
     slot_id: str
 
@@ -80,22 +109,14 @@ def available_slots(department: str = "General Physician", limit: int = 5, user:
 
 @router.get("/upcoming")
 def upcoming_bookings(user: dict = Depends(current_user)):
-    return {
-        "bookings": upcoming_bookings_for_patient(
-            patient_id=user["patient_id"],
-            limit=30,
-        )
-    }
+    bookings = upcoming_bookings_for_patient(patient_id=user["patient_id"], limit=30)
+    return {"bookings": _with_visit_summaries(bookings, user["patient_id"])}
 
 
 @router.get("/previous")
 def previous_bookings(user: dict = Depends(current_user)):
-    return {
-        "bookings": previous_bookings_for_patient(
-            patient_id=user["patient_id"],
-            limit=30,
-        )
-    }
+    bookings = previous_bookings_for_patient(patient_id=user["patient_id"], limit=30)
+    return {"bookings": _with_visit_summaries(bookings, user["patient_id"])}
 
 
 @router.post("/{booking_id}/cancel")

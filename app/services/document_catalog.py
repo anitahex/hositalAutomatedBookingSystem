@@ -12,6 +12,7 @@ from __future__ import annotations
 
 import json
 import logging
+import os
 from datetime import datetime, timezone
 from functools import lru_cache
 from typing import Any
@@ -135,15 +136,30 @@ def update_catalog_after_extraction(
     clinical_date: str | None,
     findings_keys: list[str],
     ingestion_status: str = "complete",
+    referring_doctor: str | None = None,
+    referring_department: str | None = None,
+    body_region: str | None = None,
 ) -> None:
-    """Flip the catalog row to 'complete' after the blob summary write succeeds."""
+    """Flip the catalog row to 'complete' after the blob summary write succeeds.
+
+    referring_doctor / referring_department / body_region are keyword-optional so every
+    existing caller keeps working. The extractor has always returned all three — they were
+    simply dropped on the floor when the summary payload was assembled, which is why a
+    report that plainly said "Referred by Dr Panday, Psychiatry" could not be traced back
+    to that referral afterwards.
+    """
     sql = """
         UPDATE document_catalog
-        SET document_type    = %s,
-            clinical_date    = %s::date,
-            findings_keys    = %s::jsonb,
-            ingestion_status = %s,
-            updated_at       = NOW()
+        SET document_type        = %s,
+            clinical_date        = %s::date,
+            findings_keys        = %s::jsonb,
+            ingestion_status     = %s,
+            -- COALESCE so a re-extraction that fails to read the referral does not erase
+            -- one an earlier pass captured. These fields only ever gain information.
+            referring_doctor     = COALESCE(%s, referring_doctor),
+            referring_department = COALESCE(%s, referring_department),
+            body_region          = COALESCE(%s, body_region),
+            updated_at           = NOW()
         WHERE document_id = %s
     """
     _execute_write(sql, (
@@ -151,12 +167,81 @@ def update_catalog_after_extraction(
         clinical_date,
         json.dumps(findings_keys),
         ingestion_status,
+        referring_doctor,
+        referring_department,
+        body_region,
         document_id,
     ))
     logger.info(
-        "catalog: updated document_id=%s type=%s keys=%s status=%s",
+        "catalog: updated document_id=%s type=%s keys=%s status=%s referral=%s",
         document_id, document_type, findings_keys, ingestion_status,
+        referring_department or referring_doctor or "none",
     )
+
+
+# ---- Per-page source text ----
+#
+# Kept so a summary sentence can quote a specific page and remain CHECKABLE afterwards.
+# Without it a grounded summary could only be verified at the instant it was generated,
+# while the file was still in memory; a month later there would be nothing to re-check it
+# against short of re-downloading and re-parsing the document.
+#
+# `source` records how the text was obtained, and callers must not treat the two as
+# equivalent: 'pdf_text' is a real text layer, while 'vision_transcription' is a model's
+# reading of an image. A quote verified against a transcription proves the summary did not
+# invent anything beyond what was transcribed — it cannot prove the transcription was
+# right. Any UI built on this has to say which one it has.
+
+PAGE_SOURCE_PDF_TEXT = "pdf_text"
+PAGE_SOURCE_VISION = "vision_transcription"
+
+
+def save_document_pages(document_id: str, pages: list[dict], source: str) -> None:
+    """Stores page text for one document. Idempotent — re-extraction overwrites.
+
+    Writes nothing when there are no pages, rather than an empty marker row: "this
+    document has no extractable text" is already expressed by the absence of rows, and a
+    row saying `text=''` would be indistinguishable from a genuinely blank page.
+    """
+    if source not in (PAGE_SOURCE_PDF_TEXT, PAGE_SOURCE_VISION):
+        raise ValueError(f"unknown page source {source!r}")
+    rows = [
+        (document_id, int(page["page_no"]), str(page.get("text") or ""), source)
+        for page in pages or []
+        if str(page.get("text") or "").strip()
+    ]
+    if not rows:
+        logger.info("catalog: no page text to store for document_id=%s", document_id)
+        return
+
+    with connect_db() as conn:
+        with conn.cursor() as cur:
+            cur.executemany(
+                """
+                INSERT INTO document_pages (document_id, page_no, text, source)
+                VALUES (%s, %s, %s, %s)
+                ON CONFLICT (document_id, page_no)
+                DO UPDATE SET text = EXCLUDED.text, source = EXCLUDED.source
+                """,
+                rows,
+            )
+        conn.commit()
+    logger.info("catalog: stored %d pages for document_id=%s (%s)", len(rows), document_id, source)
+
+
+def get_document_pages(document_id: str) -> list[dict]:
+    """Page text for one document, ascending. No authorization — callers serving a doctor
+    must go through the treating-relationship check first."""
+    with connect_db() as conn:
+        with conn.cursor() as cur:
+            cur.execute(
+                """SELECT page_no, text, source FROM document_pages
+                   WHERE document_id = %s ORDER BY page_no ASC""",
+                (document_id,),
+            )
+            rows = cur.fetchall()
+        conn.commit()
+    return [{"page_no": row[0], "text": row[1], "source": row[2]} for row in rows]
 
 
 def mark_catalog_failed(document_id: str, reason: str = "") -> None:
@@ -168,11 +253,23 @@ def mark_catalog_failed(document_id: str, reason: str = "") -> None:
     logger.error("catalog: marked document_id=%s FAILED — %s", document_id, reason)
 
 
-def list_user_documents(user_id: str) -> list[CatalogEntry]:
+# Bound on a single user's document listing. This query previously had no LIMIT at all,
+# which made it an unbounded read on a table that grows with every upload a patient ever
+# makes — and it feeds three callers that each pay for the whole result: the patient's
+# own document panel, the doctor-facing listing, and select_relevant_documents(), which
+# renders EVERY returned row into an LLM prompt (so an unbounded list is also an
+# unbounded token bill). ORDER BY created_at DESC is already in place, so the cap keeps
+# the most recent documents, which is what all three callers actually want. Matches the
+# limit discipline of the doctor_* queries in appointments.py.
+DOCUMENT_LIST_MAX = 200
+
+
+def list_user_documents(user_id: str, limit: int = DOCUMENT_LIST_MAX) -> list[CatalogEntry]:
     """
-    Return all complete catalog entries for a user (all sessions).
-    Returns an empty list if none found.
+    Return the most recent complete catalog entries for a user (all sessions), capped at
+    `limit`. Returns an empty list if none found.
     """
+    limit = max(1, min(int(limit), DOCUMENT_LIST_MAX))
     has_filename = _document_catalog_has_original_filename()
     if has_filename:
         sql = """
@@ -181,6 +278,7 @@ def list_user_documents(user_id: str) -> list[CatalogEntry]:
             FROM document_catalog
             WHERE user_id = %s AND ingestion_status = 'complete'
             ORDER BY created_at DESC
+            LIMIT %s
         """
     else:
         sql = """
@@ -189,8 +287,9 @@ def list_user_documents(user_id: str) -> list[CatalogEntry]:
             FROM document_catalog
             WHERE user_id = %s AND ingestion_status = 'complete'
             ORDER BY created_at DESC
+            LIMIT %s
         """
-    rows = _execute_rows(sql, (user_id,))
+    rows = _execute_rows(sql, (user_id, limit))
     entries: list[CatalogEntry] = []
     for row in rows:
         try:
@@ -297,6 +396,196 @@ def consume_pending_upload(document_token: str) -> dict | None:
         return None
     logger.info("pending_uploads: consumed token=%s", document_token)
     return dict(rows[0])
+
+
+# ---- Doctor access (treating-relationship scoped) ----
+#
+# Patient documents were uploaded under a consent flow that authorised AI PROCESSING of
+# them (chat.py's /upload -> /confirm-processing gate), not disclosure to a clinician.
+# Exposing them to a treating doctor is a deliberate product decision recorded in the
+# implementation plan, not an inference from the existing consent — and it is scoped by
+# the narrowest rule already present in this codebase (an actual booking history), with
+# every content access written to the audit log.
+
+_DOCUMENT_CONTENT_TYPES = {
+    ".pdf": "application/pdf",
+    ".jpg": "image/jpeg",
+    ".jpeg": "image/jpeg",
+    ".png": "image/png",
+}
+
+
+def _content_type_for(filename: str) -> str:
+    """Allowlist only, mirroring document_pipeline.ALLOWED_UPLOAD_MIME_TYPES. Anything
+    unrecognised is served as application/octet-stream rather than guessed: a stored file
+    that the browser renders inline (HTML, SVG) would be stored XSS against a doctor's
+    authenticated session, so an unknown type must always download, never render."""
+    suffix = os.path.splitext(filename or "")[1].lower()
+    return _DOCUMENT_CONTENT_TYPES.get(suffix, "application/octet-stream")
+
+
+def _assert_doctor_may_read(doctor_id: str, patient_id: str) -> None:
+    from app.services.appointments import doctor_treats_patient
+
+    if not doctor_treats_patient(doctor_id, patient_id):
+        # Same discipline as consults.get_consult_owned: "you may not" and "it does not
+        # exist" are deliberately indistinguishable to the caller, so this can never be
+        # used to probe which patients exist.
+        raise PermissionError("Patient not found.")
+
+
+def assert_doctor_may_read_document(doctor_id: str, patient_id: str, document_id: str) -> None:
+    """Public form of the two checks every document route needs, for callers that read
+    document-derived data (measurements, the clinician summary) rather than the file.
+
+    Both checks, not one: the treating relationship AND the document's own ownership.
+    _owned_entry documents why the second is load-bearing — get_catalog_entry looks a
+    document up by id with no ownership check at all, so without it a doctor who treats
+    any patient could reach any document by guessing its id.
+
+    Raises PermissionError for both "not yours" and "does not exist", deliberately
+    indistinguishable. Raises ValueError only for a document that IS the caller's to read
+    but has not finished processing — a real state the caller answers with 409.
+
+    _owned_entry signals "not found" and "belongs to another patient" with ValueError, not
+    PermissionError, so this used to let them straight through. The /clinical route caught
+    only PermissionError, and a wrong document id came back as a 500 — which, next to the
+    404 for "not your patient", told a caller which document ids exist.
+    """
+    try:
+        _owned_entry(doctor_id, patient_id, document_id)
+    except ValueError as exc:
+        if "processing" in str(exc).lower():
+            raise
+        raise PermissionError("Patient not found.") from exc
+
+
+def record_document_content_read(
+    doctor_id: str, patient_id: str, document_id: str,
+    action: str = "patient_document_summary_viewed",
+) -> None:
+    """Public entry point to the document-content audit, for routes that read document-
+    derived content themselves (the clinician summary, parsed findings) rather than through
+    one of the *_for_doctor functions below that audit internally."""
+    _audit_document_access(doctor_id, patient_id, document_id, action)
+
+
+def _audit_document_access(doctor_id: str, patient_id: str, document_id: str, action: str) -> None:
+    """Every access to document CONTENT is recorded. Written to consult_audit_log with a
+    NULL consultation_id: that table is already this codebase's clinical-action audit
+    trail (action_type + JSONB metadata, consultation_id nullable ON DELETE SET NULL),
+    and adding a parallel audit table for one more action type would fragment the trail
+    for no benefit. Listing documents is not audited — only reading their content is."""
+    from app.services.consults import ensure_consult_schema
+
+    try:
+        with connect_db() as conn:
+            ensure_consult_schema(conn)
+            with conn.cursor() as cur:
+                cur.execute(
+                    """INSERT INTO consult_audit_log (consultation_id, doctor_id, action_type, metadata)
+                       VALUES (NULL, %s, %s, %s::jsonb)""",
+                    (doctor_id, action, json.dumps({"document_id": document_id, "patient_id": patient_id})),
+                )
+            conn.commit()
+    except Exception as exc:
+        # Never fail the read because the audit write failed, but never let it pass
+        # unnoticed either — this is the record of who looked at a patient's documents.
+        logger.error(
+            "document_catalog: could not audit %s by doctor=%s document=%s: %s",
+            action, doctor_id, document_id, exc,
+        )
+
+
+def _entry_for_doctor(entry: CatalogEntry) -> dict:
+    """Metadata a doctor sees in the document list. No clinical content: the AI summary
+    is fetched separately and only on explicit open, so a list request never pulls every
+    document's findings out of storage."""
+    return {
+        "document_id": entry.document_id,
+        "original_filename": entry.original_filename,
+        "document_type": entry.document_type,
+        "clinical_date": entry.clinical_date,
+        "uploaded_at": entry.created_at.isoformat() if entry.created_at else None,
+        "findings_keys": entry.findings_keys,
+        "content_type": _content_type_for(entry.original_filename),
+    }
+
+
+def list_documents_for_doctor(doctor_id: str, patient_id: str) -> list[dict]:
+    """Complete documents this patient has uploaded, for a doctor who treats them.
+    Raises PermissionError if there is no treating relationship."""
+    _assert_doctor_may_read(doctor_id, patient_id)
+    return [_entry_for_doctor(entry) for entry in list_user_documents(patient_id)]
+
+
+def _owned_entry(doctor_id: str, patient_id: str, document_id: str) -> CatalogEntry:
+    """Resolves a document_id to its catalog row, enforcing BOTH the treating
+    relationship and the document's own ownership.
+
+    get_catalog_entry() looks a document up by id alone with no ownership check at all,
+    so the entry.user_id comparison below is load-bearing: without it, a doctor who
+    treats any patient could read any document in the system by guessing its id."""
+    _assert_doctor_may_read(doctor_id, patient_id)
+
+    entry = get_catalog_entry(document_id)
+    if entry is None or entry.user_id != patient_id:
+        raise ValueError("Document not found.")
+    if entry.ingestion_status != "complete":
+        raise ValueError("This document has not finished processing.")
+    return entry
+
+
+async def get_document_summary_for_doctor(doctor_id: str, patient_id: str, document_id: str) -> dict:
+    """The AI-extracted summary for one document.
+
+    The returned payload is explicitly labelled as unreviewed AI output. It is the same
+    class of artefact as an unsigned SOAP note — generated by a model, never verified by
+    a clinician — and the caller must present it that way.
+    """
+    from app.services.document_storage import read_document_json
+
+    entry = _owned_entry(doctor_id, patient_id, document_id)
+
+    summary = await read_document_json(entry.blob_summary_path)
+    _audit_document_access(doctor_id, patient_id, document_id, "patient_document_summary_viewed")
+
+    return {
+        **_entry_for_doctor(entry),
+        "overall_impression": summary.get("overall_impression") or "",
+        "findings": summary.get("findings") or {},
+        # Consumed by the UI to badge this the same way an unsigned note is badged.
+        "is_ai_generated": True,
+        "clinician_reviewed": False,
+    }
+
+
+async def read_document_file_for_doctor(
+    doctor_id: str, patient_id: str, document_id: str,
+) -> tuple[bytes, str, str]:
+    """The original uploaded file. Returns (data, filename, content_type).
+
+    Raises FileNotFoundError when the catalog row exists but the stored file does not —
+    which is the normal case for any document uploaded before this deployment's current
+    storage backend, and must surface as a clear 404 rather than a 500.
+    """
+    from app.services.blob_storage import vault_blob_path
+    from app.services.document_storage import read_document_bytes
+
+    entry = _owned_entry(doctor_id, patient_id, document_id)
+
+    # The vault path is not stored on the catalog row; it is built from the same four
+    # values blob_storage.vault_blob_path used when the file was written, all of which
+    # are on the row. Using that builder here (rather than assembling the string) keeps
+    # the two in lockstep if the layout ever changes.
+    vault_path = vault_blob_path(
+        entry.user_id, entry.session_id, entry.document_id, entry.original_filename
+    )
+
+    data = await read_document_bytes(vault_path)
+    _audit_document_access(doctor_id, patient_id, document_id, "patient_document_file_downloaded")
+
+    return data, entry.original_filename, _content_type_for(entry.original_filename)
 
 
 # ---- Retrieval: HF-model relevance selection ----

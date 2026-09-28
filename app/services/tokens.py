@@ -8,6 +8,7 @@ import time
 import uuid
 
 from app.db.connection import connect_db
+from app.db.schema_once import once_per_process
 
 logger = logging.getLogger(__name__)
 
@@ -153,6 +154,7 @@ def create_doctor_mfa_enrollment_token(*, doctor_id: str, account_id: str, email
     )
 
 
+@once_per_process
 def ensure_token_revocation_schema(conn) -> None:
     with conn.cursor() as cur:
         cur.execute(

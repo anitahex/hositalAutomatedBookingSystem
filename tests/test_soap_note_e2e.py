@@ -145,7 +145,7 @@ def _canned_note(subjective="Patient reports headache.", suffix=""):
 
 
 def _mock_llm(monkeypatch, payload):
-    async def fake_agenerate_soap_note(consultation_id, patient_id, segments):
+    async def fake_agenerate_soap_note(consultation_id, patient_id, segments, style="concise"):
         return payload
 
     import app.agents.consult_documentation_graph as docgraph

@@ -4,6 +4,7 @@ from datetime import date, datetime, timedelta, timezone
 
 from langchain_core.output_parsers import PydanticOutputParser
 
+from app.agents import document_followup
 from app.agents.schemas import CombinedSupervisorDecision, GeneralQaDecision
 from app.agents.state import GraphState
 from app.agents.intake_utils import (
@@ -17,7 +18,7 @@ from app.agents.intake_utils import (
     looks_like_thanks as _looks_like_thanks,
 )
 from app.inference.llm import generate_router_text, generate_text
-from app.services.appointments import CANONICAL_DEPARTMENTS, DEPARTMENT_ALIASES, normalize_department_name, update_booking_note
+from app.services.appointments import CANONICAL_DEPARTMENTS, DEPARTMENT_ALIASES, match_department, normalize_department_name, update_booking_note
 from app.services.language import language_prompt_context
 from app.services.patient_text import is_localized_choice, patient_message
 
@@ -136,6 +137,13 @@ def _format_bookings(bookings: list[dict] | None) -> str:
     return " | ".join(parts) if parts else "None"
 
 
+# Department aliases that are far more often a SYMPTOM than a booking request. They are
+# valid aliases elsewhere (triage, candidate ranking) but must not, on their own, be read
+# as "change my department" — this function runs before the booking-menu fast-path, so a
+# false positive here hijacks a menu the patient is part-way through answering.
+_SYMPTOM_WORDS_NOT_A_REQUEST = frozenset({"heart", "skin", "bone", "general", "stomach"})
+
+
 def _extract_requested_department(text: str | None) -> str | None:
     if not text:
         return None
@@ -158,7 +166,19 @@ def _extract_requested_department(text: str | None) -> str | None:
         if candidate and candidate.lower() in cleaned:
             return normalize_department_name(candidate)
 
-    return None
+    # Free-text fallback. Everything above requires either the literal word "department"
+    # or a canonical name spelled exactly — which is why "can i see a psychiatrist?"
+    # returned None even spelled correctly ("psychiatry" is not a substring of
+    # "psychiatrist"), and a patient asking three times was never heard.
+    #
+    # Deliberately narrow. This runs BEFORE the booking-menu fast-path further down, so
+    # anything it matches can pull a patient out of a menu they are mid-way through. A
+    # bare symptom word must therefore NOT count as a request to change department:
+    # "my heart is racing" is a symptom, not "book me with Cardiology". Those words stay
+    # available to the triage/candidate path, which is where they belong.
+    if any(word in _SYMPTOM_WORDS_NOT_A_REQUEST for word in cleaned.split()):
+        return None
+    return match_department(cleaned)
 
 
 def _format_analyzed_documents(state: GraphState) -> str:
@@ -239,7 +259,19 @@ def _latest_booking(state: GraphState) -> dict | None:
 
 
 def _report_forwarding_booking(state: GraphState) -> dict | None:
-    """Return the appointment named by the report-consent prompt."""
+    """The appointment named by the report-consent prompt, or None if we cannot be sure.
+
+    Returning None is a valid, SAFE answer here and the caller handles it: the report is
+    not forwarded and the patient is told. Guessing is not safe. This decides who receives
+    a patient's clinical summary, and the cost of a wrong guess is disclosing it to a
+    clinician the patient never agreed to share it with.
+
+    That is not hypothetical. This function used to end with `return _latest_booking(state)`
+    — which, despite the name, returns the appointment FURTHEST IN THE FUTURE, because
+    upcoming_bookings is ordered by start_time ASC and _latest_booking reverses it. A
+    patient who booked Dr. A for tomorrow and then Dr. B for today, consented to sharing
+    with Dr. B, and had their summary written to Dr. A's appointment instead.
+    """
     booking_id = str(state.get("report_forwarding_booking_id") or "").strip()
     if booking_id:
         for source in (
@@ -253,7 +285,33 @@ def _report_forwarding_booking(state: GraphState) -> dict | None:
         confirmed = state.get("confirmed_booking")
         if isinstance(confirmed, dict) and str(confirmed.get("booking_id") or "") == booking_id:
             return confirmed
-    return _latest_booking(state)
+        # The prompt named an appointment we can no longer resolve. Never substitute a
+        # different one.
+        return None
+
+    # No pin. Only safe when there is exactly one appointment it could possibly mean.
+    candidates: list[dict] = []
+    seen: set[str] = set()
+    for source in (
+        state.get("upcoming_bookings"),
+        state.get("confirmed_bookings"),
+        state.get("active_appointments"),
+    ):
+        for booking in source or []:
+            if not isinstance(booking, dict):
+                continue
+            key = str(booking.get("booking_id") or booking.get("slot_id") or "")
+            if key and key not in seen:
+                seen.add(key)
+                candidates.append(booking)
+
+    if len(candidates) == 1:
+        return candidates[0]
+    if not candidates:
+        confirmed = state.get("confirmed_booking")
+        if isinstance(confirmed, dict) and (confirmed.get("booking_id") or confirmed.get("slot_id")):
+            return confirmed
+    return None
 
 
 def _is_affirmative(text: str) -> bool:
@@ -347,6 +405,59 @@ def _fallback_profile_response(state: GraphState) -> dict | None:
         response = f"Your profile shows {profile.get('name', 'Unknown')} and age {profile.get('age', 'Unknown')}. I am only for health-related support, so tell me your symptoms or ask about a doctor appointment."
         return _route("finish", awaiting=None, final_response=response)
     return None
+
+
+def _handle_document_follow_up(state: GraphState, user_input: str) -> dict:
+    """One turn of the post-upload conversation.
+
+    Returns a routing decision directly rather than adding a graph node: the questions are
+    templated, so there is nothing for an agent to think about, and keeping it here means
+    no new edge in a cycle that already has no recursion limit set.
+    """
+    # 1. Skip ahead — a clear instruction ends the questions immediately.
+    if document_followup.wants_to_only_store(user_input):
+        return _route(
+            "finish",
+            awaiting=None,
+            active_intent=None,
+            intent=None,
+            final_response=(
+                "Saved to your records. I won't book anything. "
+                "Tell me any time if you'd like to see a doctor about it."
+            ),
+        )
+
+    requested = _extract_requested_department(user_input)
+    if requested:
+        # The patient named a department. That outranks everything on the document, and
+        # not honouring it immediately is the exact failure this work exists to fix.
+        return _route(
+            "appointment_booker",
+            awaiting=None,
+            active_intent="direct_booking",
+            intent="direct_booking",
+            requested_department=requested,
+            target_department=requested,
+            department_match_source="patient_request",
+        )
+
+    # 2. Ask the next thing the document could not answer, while budget remains.
+    if not document_followup.budget_exhausted(state):
+        nxt = document_followup.next_question(state)
+        if nxt:
+            topic, question = nxt
+            return _route(
+                "finish",
+                awaiting=document_followup.AWAITING_DOCUMENT_FOLLOW_UP,
+                active_intent="document_review",
+                intent="document_review",
+                final_response=question,
+                **document_followup.register_question(state, topic, question),
+            )
+
+    # 3. Nothing left to ask — decide, or hand the patient the choice.
+    updates = document_followup.resolve_after_followup(state)
+    return _route("appointment_booker", **updates)
 
 
 def _heuristic_supervisor_route(state: GraphState) -> dict | None:
@@ -608,6 +719,14 @@ def _heuristic_supervisor_route(state: GraphState) -> dict | None:
     if _looks_like_remedy_request(lowered) and state.get("symptoms"):
         return _route("remedy_agent", awaiting=None, remedy_requested=True)
 
+    # Post-upload follow-up. Deterministic and LLM-free: the questions are templated from
+    # what the document actually said, so this costs nothing and every branch is testable.
+    # Placed BEFORE the booking-menu fast-path because a document conversation is not a
+    # menu, and after the explicit-department check above so "book me with a psychiatrist"
+    # still skips the questions entirely.
+    if awaiting == document_followup.AWAITING_DOCUMENT_FOLLOW_UP:
+        return _handle_document_follow_up(state, user_input)
+
     # Fast-path for known booking sub-states: skip the LLM when the user is
     # simply picking from a menu we showed them. Special queries (upcoming
     # bookings, billing, etc.) are handled above and take priority.
@@ -654,7 +773,7 @@ def _heuristic_supervisor_route(state: GraphState) -> dict | None:
 
 _CLINICAL_NOTE_PROMPT = """You are a hospital clinical documentation specialist. Generate a CONCISE yet COMPREHENSIVE pre-appointment summary (max 10-12 lines).
 
-## PRE-APPOINTMENT CLINICAL SUMMARY
+## PRE-APPOINTMENT AI CLINICAL SUMMARY
 
 **Patient:** [Name], [Age], [Blood Group] | **Date:** [Date]
 
@@ -925,6 +1044,14 @@ def _fallback_route_after_node(state: GraphState) -> str:
     if awaiting == "file_clarification":
         return "document_analyzer"
 
+    # The follow-up question was just produced and is in final_response; deliver it and
+    # wait. The next user message re-enters via _heuristic_supervisor_route, which owns
+    # this state. Without an entry here the value would be inert — which is exactly what
+    # went wrong with the old awaiting="user_input", written by five document paths and
+    # consumed by none.
+    if awaiting == document_followup.AWAITING_DOCUMENT_FOLLOW_UP:
+        return "finish"
+
     if awaiting == "appointment_resolver":
         return "appointment_resolver"
 
@@ -1002,7 +1129,27 @@ def continue_current_node(state: GraphState):
     if awaiting == "report_forwarding_decision":
         booking = _report_forwarding_booking(state)
         if not booking:
-            response = "I could not find your appointment to attach the report to."
+            # Deliberately does NOT forward. We know the patient said yes, but not which
+            # appointment they said yes about, and sending a clinical summary to the wrong
+            # clinician is worse than sending it to none.
+            options = [
+                b for b in (state.get("upcoming_bookings") or state.get("confirmed_bookings") or [])
+                if isinstance(b, dict)
+            ]
+            if len(options) > 1:
+                listed = "\n".join(
+                    f"- {b.get('doctor') or b.get('doctor_name') or 'Doctor'}"
+                    f" on {b.get('time') or b.get('start_time') or 'your booked date'}"
+                    for b in options[:5]
+                )
+                response = (
+                    "You have more than one upcoming appointment, and I don't want to send "
+                    "your report to the wrong doctor.\n\n"
+                    f"{listed}\n\n"
+                    "Which one should I send it to?"
+                )
+            else:
+                response = "I could not find your appointment to attach the report to."
             history.append({"role": "assistant", "text": response})
             return {
                 "awaiting": None,

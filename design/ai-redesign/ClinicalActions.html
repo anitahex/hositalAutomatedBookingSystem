@@ -1,0 +1,77 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>Clinical actions</title>
+<script src="./support.js"></script>
+<link rel="stylesheet" href="ai-theme.css">
+</head>
+<body>
+<x-dc>
+<helmet>
+<link rel="preconnect" href="https://fonts.googleapis.com"><link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Bricolage+Grotesque:opsz,wght@12..96,600;12..96,700&amp;family=Geist:wght@400;500;600&amp;family=Geist+Mono:wght@400;500&amp;display=swap">
+<style>body{margin:0}</style>
+</helmet>
+<div style="width:1280px;height:960px;display:flex;flex-direction:column;background:var(--bg);">
+<header class="top" style="gap:14px;">
+  <a class="icon-btn" href="Note.dc.html" aria-label="Back to note"><svg class="i" viewBox="0 0 24 24" aria-hidden="true"><path d="M19 12H5M11 6l-6 6 6 6"/></svg></a>
+  <div class="grow"><div class="row"><h1 class="h2">Prescription, care plan &amp; referral</h1><span class="chip">Draft</span></div><div class="meta">Anit Rao · Nephrology · 21 Sep 2026, 1:00 pm</div></div>
+  <button class="btn ghost" type="button">Save draft</button>
+  <button class="btn" type="button"><svg class="i sm" viewBox="0 0 24 24" aria-hidden="true"><path d="M5 12l5 5L20 7"/></svg>Approve</button>
+</header>
+<div style="flex-grow:1;min-height:0;display:grid;grid-template-columns:1.6fr 1fr;gap:20px;padding:24px 28px;">
+
+  <div style="display:flex;flex-direction:column;gap:14px;">
+    <div class="seg" role="tablist" aria-label="Action type" style="align-self:flex-start;"><button class="on" type="button" role="tab" aria-selected="true">Prescription</button><button type="button" role="tab" aria-selected="false">Care plan</button><button type="button" role="tab" aria-selected="false">Referral</button></div>
+
+    <div class="card" style="padding:14px 16px;display:flex;align-items:center;gap:14px;border-color:var(--border-strong);">
+      <div class="item-ico"><svg class="i" viewBox="0 0 24 24" aria-hidden="true"><path d="M12 3l1.9 5.1L19 10l-5.1 1.9L12 17l-1.9-5.1L5 10l5.1-1.9z"/><path d="M19 15l.8 2.2L22 18l-2.2.8L19 21l-.8-2.2L16 18l2.2-.8z"/></svg></div>
+      <div class="grow"><div class="title">Start from the signed note</div><div class="meta">AI can copy the medication lines from this visit's Plan as a starting draft. You write and approve the final wording.</div></div>
+      <button class="btn soft sm" type="button">Insert from plan</button>
+    </div>
+
+    <div class="section">
+      <div class="between"><label class="h3" for="rxText">Prescription</label><span class="chip"><svg class="i sm" viewBox="0 0 24 24" aria-hidden="true"><path d="M4 20h4L20 8l-4-4L4 16z"/></svg>Authored by you</span></div>
+      <textarea id="rxText" rows="6">Sumatriptan 50mg — take as needed at onset of migraine, maximum 2 doses in 24 hours.
+Continue Lisinopril 10mg once daily.
+Recheck blood pressure in two weeks.</textarea>
+      <div class="cite" style="background:var(--bad-bg);color:var(--bad);"><svg class="i sm" viewBox="0 0 24 24" aria-hidden="true"><path d="M12 3l10 18H2z"/><path d="M12 10v5M12 18v.5"/></svg><span>No dose, formulary or interaction checking happens here. Nothing you write is validated.</span></div>
+    </div>
+
+    <div class="card pad" style="display:flex;flex-direction:column;gap:12px;">
+      <div class="row"><svg class="i" viewBox="0 0 24 24" aria-hidden="true"><rect x="5" y="11" width="14" height="10" rx="2"/><path d="M8 11V8a4 4 0 018 0v3"/></svg><div class="h3">Approve this prescription?</div></div>
+      <p class="meta">Approving locks the record. It becomes read-only and cannot be edited afterwards.</p>
+      <div class="row"><button class="btn" type="button">Yes, approve</button><button class="btn ghost" type="button">Cancel</button></div>
+    </div>
+  </div>
+
+  <aside style="display:flex;flex-direction:column;gap:16px;">
+    <div class="card pad" style="display:flex;flex-direction:column;gap:8px;background:var(--warn-bg);border-color:#F6D7A8;">
+      <div class="row" style="color:var(--warn);"><svg class="i sm" viewBox="0 0 24 24" aria-hidden="true"><path d="M12 3l10 18H2z"/><path d="M12 10v5M12 18v.5"/></svg><span class="h3">Patient-reported</span></div>
+      <p style="font-size:14px;">Penicillin allergy — reported severe reaction. Recurring migraine with light sensitivity.</p>
+      <p class="meta">Entered by the patient, not a verified clinical record.</p>
+    </div>
+    <div class="card pad" style="display:flex;flex-direction:column;gap:12px;">
+      <div class="between"><div class="h3">Care plan</div><span class="chip ok"><svg class="i sm" viewBox="0 0 24 24" aria-hidden="true"><rect x="5" y="11" width="14" height="10" rx="2"/><path d="M8 11V8a4 4 0 018 0v3"/></svg>Approved</span></div>
+      <div class="meta">22 Sep 2026, 10:14 am</div>
+      <p style="font-size:14px;line-height:1.6;white-space:pre-line;">Track headache triggers in a diary for four weeks, noting time of day and light exposure.
+Home blood-pressure readings twice weekly.
+Follow up in four weeks, sooner if frequency increases.</p>
+      <p class="meta">Read-only. Write a new plan on a later consultation instead.</p>
+    </div>
+    <div class="card pad" style="display:flex;flex-direction:column;gap:8px;">
+      <div class="between"><div class="h3">Referral</div><span class="chip">Not started</span></div>
+      <p class="meta">No referral written for this visit.</p>
+    </div>
+  </aside>
+
+</div>
+</div>
+</x-dc>
+<script type="text/x-dc" data-dc-script data-props='{"$preview":{"width":1280,"height":960}}'>
+class Component extends DCLogic {
+  renderVals() { return {}; }
+}
+</script>
+</body>
+</html>
