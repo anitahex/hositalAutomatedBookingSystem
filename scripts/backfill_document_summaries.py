@@ -143,7 +143,17 @@ async def main() -> int:
     for document_id, user_id, session_id, filename, summary_path, clinical_date, has_summary in rows:
         print(f"  {filename}")
         try:
-            pages = await _ensure_pages(document_id, user_id, session_id, filename)
+            try:
+                pages = await _ensure_pages(document_id, user_id, session_id, filename)
+            except FileNotFoundError:
+                # The ORIGINAL file is missing (or its filename was never recorded), so no
+                # page text and no summary. The measurements still come from the stored
+                # extraction, which is a different object — without them the document has
+                # no abnormal results and the nutritionist nothing to work from. Flags
+                # then come from the standard ranges only, since there is no page text to
+                # read the report's own flags from.
+                print("    original file is not in storage — measurements only, no summary")
+                pages = []
             try:
                 stored = await _ensure_findings(document_id, user_id, summary_path, clinical_date, pages)
                 if stored is not None:
