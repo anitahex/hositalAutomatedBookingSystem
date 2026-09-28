@@ -413,6 +413,9 @@ let doctorReviewSearchTerm = "";
 let doctorPatientDetailId = null;
 let doctorPatientTab = "history";
 let doctorNoteStyle = "concise";
+// A note is being drafted: the controls are disabled and a status line is shown, so a
+// minute-long model call is visibly in progress and cannot be started twice.
+let doctorNoteGenerating = false;
 let doctorClinicalItemKind = "prescription";
 let doctorClinicalItem = null;
 let doctorDetailReturnView = "upcoming";
@@ -1192,7 +1195,9 @@ function doctorAuthHeaders() {
 
 // Calls that wait on a language model get longer than the default: one note is one model
 // call over a whole consultation; "draft all" is up to ten of them in sequence.
-const DOCTOR_GENERATE_TIMEOUT_MS = 120000;
+// Up to two model attempts on the server (one retry on an unreadable reply), each of
+// which can take a minute on a long consult with a reasoning model.
+const DOCTOR_GENERATE_TIMEOUT_MS = 300000;
 const DOCTOR_DRAFT_ALL_TIMEOUT_MS = 300000;
 
 async function doctorAuthedJson(url, options = {}) {
@@ -3559,7 +3564,15 @@ const DOCTOR_CONSULT_STATUS_LABELS = {
 };
 
 function setDoctorConsultMessage(text) {
-  if (doctorConsultMessage) doctorConsultMessage.textContent = text || "";
+  if (!doctorConsultMessage) return;
+  doctorConsultMessage.textContent = text || "";
+  doctorConsultMessage.classList.remove("is-notice");
+}
+
+/** The same line, for news rather than an error — it is styled as an error otherwise. */
+function setDoctorConsultNotice(text) {
+  setDoctorConsultMessage(text);
+  doctorConsultMessage?.classList.add("is-notice");
 }
 
 function renderConsultState() {
@@ -3591,10 +3604,11 @@ function renderConsultState() {
   }
 
   if (doctorConsultIdLabel) {
-    // Uses doctorActiveConsult directly (not the discarded-normalized `status` above) —
-    // the id remains a meaningful cross-reference even for a discarded consult.
-    doctorConsultIdLabel.textContent = doctorActiveConsult ? `Consult ID: ${doctorActiveConsult.id}` : "";
-    doctorConsultIdLabel.classList.toggle("hidden", !doctorActiveConsult);
+    // Only a consult that still stands is identified. A discarded one kept its ID — and,
+    // below, its recording duration — on screen after the doctor discarded it, which read
+    // as if it were still this appointment's consult. The discard is in the audit log.
+    doctorConsultIdLabel.textContent = status ? `Consult ID: ${doctorActiveConsult.id}` : "";
+    doctorConsultIdLabel.classList.toggle("hidden", !status);
   }
 
   // status === "recording" splits into two distinct UIs: this tab is the one actually
@@ -3636,7 +3650,7 @@ function renderConsultState() {
     }
   } else {
     stopRecordingTimer();
-    if (doctorActiveConsult?.started_at && doctorActiveConsult?.ended_at) {
+    if (status && doctorActiveConsult?.started_at && doctorActiveConsult?.ended_at) {
       const seconds = (new Date(doctorActiveConsult.ended_at) - new Date(doctorActiveConsult.started_at)) / 1000;
       if (doctorConsultDurationLabel) {
         doctorConsultDurationLabel.textContent = `Duration: ${formatDuration(seconds)}`;
@@ -4200,7 +4214,7 @@ function renderSoapNote() {
   doctorNoteGenerateRow?.classList.toggle("hidden", isSigned);
   doctorNoteGenerateConfirm?.classList.add("hidden");
   if (doctorNoteGenerateBtn) {
-    doctorNoteGenerateBtn.textContent = note ? "Regenerate Clinical Note" : "Generate Clinical Note";
+    updateNoteGenerateLabel();
   }
 
   // The explanatory empty state and the detail-level choice are only meaningful before a
@@ -4258,11 +4272,41 @@ async function loadSoapNote() {
   if (doctorCurrentNote && doctorCurrentNote.status !== "signed") loadNoteVerifiedSections();
 }
 
+/** "Regenerate Clinical Note (Detailed)": the button says which length it will draft, so
+ *  choosing Concise or Detailed visibly changes something — the choice applies to the
+ *  NEXT draft, and nothing on screen used to say so. */
+function updateNoteGenerateLabel() {
+  if (!doctorNoteGenerateBtn) return;
+  const length = doctorNoteStyle === "detailed" ? "Detailed" : "Concise";
+  doctorNoteGenerateBtn.textContent = doctorNoteGenerating
+    ? "Drafting…"
+    : `${doctorCurrentNote ? "Regenerate" : "Generate"} Clinical Note (${length})`;
+}
+
+function setNoteGenerating(on) {
+  doctorNoteGenerating = on;
+  [doctorNoteGenerateBtn, doctorNoteGenerateConfirmBtn, ...doctorNoteStyleButtons].forEach((button) => {
+    if (button) button.disabled = on;
+  });
+  doctorNoteGenerateBtn?.setAttribute("aria-busy", String(on));
+  const status = document.querySelector("#doctorNoteGeneratingStatus");
+  if (status) {
+    status.textContent = on
+      ? `Drafting a ${doctorNoteStyle} note from the transcript — this can take up to a minute.`
+      : "";
+    status.classList.toggle("hidden", !on);
+  }
+  updateNoteGenerateLabel();
+}
+
 async function generateSoapNote() {
-  if (!doctorActiveConsult) return;
+  if (!doctorActiveConsult || doctorNoteGenerating) return;
+  const consultId = doctorActiveConsult.id;
+  const hadNote = Boolean(doctorCurrentNote);
   setDoctorNoteMessage("");
+  setNoteGenerating(true);
   try {
-    doctorCurrentNote = await doctorAuthedJson(`/doctor/consult/${doctorActiveConsult.id}/soap/generate`, {
+    const note = await doctorAuthedJson(`/doctor/consult/${consultId}/soap/generate`, {
       method: "POST",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({ style: doctorNoteStyle }),
@@ -4271,13 +4315,24 @@ async function generateSoapNote() {
       // doctor was told it had failed.
       timeoutMs: DOCTOR_GENERATE_TIMEOUT_MS,
     });
+    // The doctor moved to another consult while this was drafting: this note is not
+    // theirs to show there.
+    if (!doctorActiveConsult || doctorActiveConsult.id !== consultId) return;
+    doctorCurrentNote = note;
     // Regenerating replaces the draft wholesale; the doctor confirmed that before this ran.
     doctorNoteDirty = false;
     renderSoapNote();
     // A new draft is a new pending item and a new activity event.
     void refreshAfterClinicalAction();
   } catch (error) {
-    setDoctorNoteMessage(error.message);
+    if (!doctorActiveConsult || doctorActiveConsult.id !== consultId) return;
+    // A failed REGENERATE leaves the previous note on screen; say so, or the error reads as
+    // if that note were broken.
+    setDoctorNoteMessage(hadNote
+      ? `The note was not regenerated — the note below is still the previous version. ${error.message}`
+      : error.message);
+  } finally {
+    setNoteGenerating(false);
   }
 }
 
@@ -4331,7 +4386,9 @@ function setDoctorNoteStyle(style) {
   doctorNoteStyle = next;
   doctorNoteStyleButtons.forEach((button) => {
     button.classList.toggle("is-active", button.dataset.noteStyle === next);
+    button.setAttribute("aria-pressed", String(button.dataset.noteStyle === next));
   });
+  updateNoteGenerateLabel();
 }
 
 async function confirmSignSoapNote() {
@@ -4640,6 +4697,7 @@ async function confirmDiscardConsult() {
     const consult = await doctorAuthedJson(`/doctor/consult/${doctorActiveConsult.id}/discard`, { method: "POST" });
     doctorActiveConsult = consult;
     renderConsultState();
+    setDoctorConsultNotice("Consult discarded. You can start a new one.");
   } catch (error) {
     setDoctorConsultMessage(error.message);
   }

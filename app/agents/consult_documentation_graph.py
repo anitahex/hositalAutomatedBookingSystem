@@ -14,6 +14,8 @@ PydanticOutputParser against app.agents.schemas.SOAPNoteExtraction.
 """
 from __future__ import annotations
 
+import logging
+import os
 from typing import TypedDict
 
 from langchain_core.output_parsers import PydanticOutputParser
@@ -22,7 +24,29 @@ from langgraph.graph import END, StateGraph
 from app.agents.schemas import SOAPNoteExtraction
 from app.inference.llm import agenerate_text
 
+logger = logging.getLogger(__name__)
+
 _SOAP_FIELDS = ("subjective", "objective", "assessment", "plan")
+
+# The whole note comes back as ONE JSON object, so a reply cut off at the token cap is
+# unreadable, and the doctor saw "Could not generate a structured clinical note" with a
+# note that had nothing wrong with it. The shared chat cap (OPENAI_MAX_TOKENS, 1024) is
+# sized for short chat replies. Measured on a realistic 46-line consult: gpt-4.1-mini
+# needed 505 tokens (concise) and 717 (detailed) — close to the cap already — and a
+# reasoning model (gpt-5-mini) spent all 1024 thinking and returned nothing parseable in
+# BOTH styles. Billing is by tokens actually used, so a generous cap costs nothing on the
+# calls that do not need it.
+SOAP_MAX_TOKENS = int(os.getenv("SOAP_MAX_TOKENS", "8000"))
+# One retry: a malformed reply is usually a one-off. Not more — each attempt can take a
+# minute on a long consult, and the doctor is waiting.
+SOAP_ATTEMPTS = 2
+
+MODEL_UNAVAILABLE_MESSAGE = (
+    "The AI service did not return a note (it may have timed out). Please try again in a moment."
+)
+UNREADABLE_NOTE_MESSAGE = (
+    "Could not generate a structured clinical note from this transcript. Please try again."
+)
 
 _parser = PydanticOutputParser(pydantic_object=SOAPNoteExtraction)
 
@@ -82,10 +106,19 @@ class ConsultDocState(TypedDict, total=False):
     field_citations: dict
     confidence_flags: dict
     parse_failed: bool
+    failure: str
 
 
 def _clean_json(raw_output: str) -> str:
     return raw_output.replace("```json", "").replace("```", "").strip()
+
+
+def _extract_json(raw_output: str) -> str:
+    """The JSON object in the reply, even when the model wrapped it in a sentence
+    ("Here is the SOAP note: {...}"), which failed to parse as a whole."""
+    text = _clean_json(raw_output)
+    start, end = text.find("{"), text.rfind("}")
+    return text[start:end + 1] if start != -1 and end > start else text
 
 
 def _speaker_label(speaker: str | None) -> str:
@@ -112,20 +145,41 @@ async def soap_extractor_node(state: ConsultDocState) -> dict:
     style = state.get("style") or DEFAULT_SOAP_NOTE_STYLE
     system_prompt = f"{SOAP_EXTRACTOR_SYSTEM_PROMPT}\n\n{_STYLE_DIRECTIVES[style]}"
 
-    raw_output = await agenerate_text(
-        system_prompt=system_prompt,
-        user_prompt=user_prompt,
-        node_name="soap_extractor",
-        include_history=False,
-        history_turns=0,
-        patient_id=str(state.get("patient_id") or ""),
-        chat_session_id=str(state.get("consultation_id") or ""),
-    )
-
-    try:
-        extracted = _parser.parse(_clean_json(raw_output))
-    except Exception:
-        return {"parse_failed": True}
+    extracted = None
+    failure = None
+    for attempt in range(1, SOAP_ATTEMPTS + 1):
+        try:
+            raw_output = await agenerate_text(
+                system_prompt=system_prompt,
+                user_prompt=user_prompt,
+                node_name="soap_extractor",
+                include_history=False,
+                history_turns=0,
+                patient_id=str(state.get("patient_id") or ""),
+                chat_session_id=str(state.get("consultation_id") or ""),
+                max_tokens=SOAP_MAX_TOKENS,
+                # Canned fallback text would only fail to parse and hide the real error.
+                fallback=False,
+            )
+        except Exception as exc:
+            failure = "model"
+            logger.warning("soap_extractor: model call failed (attempt %d/%d): %s",
+                           attempt, SOAP_ATTEMPTS, type(exc).__name__)
+            continue
+        try:
+            extracted = _parser.parse(_extract_json(raw_output))
+            break
+        except Exception:
+            failure = "parse"
+            # Lengths and shape only — never the transcript or the note's text.
+            logger.warning(
+                "soap_extractor: unreadable note (attempt %d/%d): %d characters, %s",
+                attempt, SOAP_ATTEMPTS, len(raw_output),
+                "cut off before the end" if not raw_output.rstrip().endswith(("}", "```"))
+                else "complete but not in the expected shape",
+            )
+    if extracted is None:
+        return {"parse_failed": True, "failure": failure}
 
     valid_ids = {segment["id"] for segment in (state.get("segments") or []) if segment.get("id")}
 
@@ -202,7 +256,7 @@ async def agenerate_soap_note(
     )
     if result.get("parse_failed"):
         raise RuntimeError(
-            "Could not generate a structured clinical note from this transcript. Please try again."
+            MODEL_UNAVAILABLE_MESSAGE if result.get("failure") == "model" else UNREADABLE_NOTE_MESSAGE
         )
 
     from app.inference.llm import CONV_MODEL

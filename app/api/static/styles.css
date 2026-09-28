@@ -3021,6 +3021,17 @@ body.sidebar-collapsed .sidebar-handle {
 
 /* ---- SOAP detail level toggle ---- */
 
+/* The Generate/Regenerate row had space above it and none below, so the button sat on the
+   edge of the "0 of 4 sections verified" card. Room on both sides, and the button and the
+   Concise/Detailed toggle centred on one line (wrapping on narrow screens). */
+#doctorNoteGenerateRow {
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 12px;
+  margin: 12px 0 18px;
+}
+#doctorNoteGenerateRow + .doctor-note-generating { margin: -8px 0 16px; }
+
 .doctor-note-style-toggle {
   display: flex;
   align-items: center;
@@ -4814,3 +4825,16 @@ button.doctor-visit-card:focus-visible { outline: 2px solid var(--ring); outline
   .doctor-ai-progress-fill { transition: none; }
   button.doctor-ai-tile { transition: none; }
 }
+
+/* A note being drafted: said, with a pulse, while the model works (up to a minute). */
+.doctor-note-generating { margin: 6px 0 0; font-weight: 600; color: var(--fg); }
+.doctor-note-generating::before {
+  content: ""; display: inline-block; width: 8px; height: 8px; margin-right: 8px;
+  border-radius: 50%; background: var(--primary, #7c3aed); vertical-align: middle;
+  animation: doctor-note-pulse 1.2s ease-in-out infinite;
+}
+@keyframes doctor-note-pulse { 0%, 100% { opacity: 0.25; } 50% { opacity: 1; } }
+@media (prefers-reduced-motion: reduce) { .doctor-note-generating::before { animation: none; } }
+
+/* A consult-line message that is news, not an error ("Consult discarded"). */
+#doctorConsultMessage.is-notice { color: var(--muted-fg); }

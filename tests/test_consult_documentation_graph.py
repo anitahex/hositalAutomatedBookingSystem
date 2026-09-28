@@ -134,3 +134,74 @@ def test_markdown_fenced_json_is_still_parsed(monkeypatch):
 
     result = _generate()
     assert result["subjective"] == "Headache for 2 days."
+
+
+# ── a reply cut off at the token cap (the "Could not generate" error on the server) ──
+
+_GOOD = {
+    "subjective": {"text": "Headache for 2 days.", "citations": ["s1"], "confident": True},
+    "objective": {"text": "BP 120/80.", "citations": ["s2"], "confident": True},
+    "assessment": {"text": "Tension headache.", "citations": ["s2"], "confident": True},
+    "plan": {"text": "Rest and hydrate.", "citations": ["s1"], "confident": True},
+}
+
+
+def _replies(monkeypatch, *replies):
+    """The model answers with each reply in turn; an Exception instance is raised."""
+    calls = []
+
+    async def fake_agenerate_text(**kwargs):
+        calls.append(kwargs)
+        reply = replies[min(len(calls), len(replies)) - 1]
+        if isinstance(reply, Exception):
+            raise reply
+        return reply
+
+    monkeypatch.setattr(docgraph, "agenerate_text", fake_agenerate_text)
+    return calls
+
+
+def test_the_note_gets_its_own_output_budget_not_the_chat_cap(monkeypatch):
+    """At the shared 1024-token cap a reasoning model used every token thinking and
+    returned no note, in both styles, on a realistic consult."""
+    calls = _replies(monkeypatch, json.dumps(_GOOD))
+    _generate()
+    assert calls[0]["max_tokens"] == docgraph.SOAP_MAX_TOKENS >= 4000
+    assert calls[0]["fallback"] is False
+
+
+def test_a_reply_cut_off_once_is_retried(monkeypatch):
+    truncated = json.dumps(_GOOD)[:120]
+    calls = _replies(monkeypatch, truncated, json.dumps(_GOOD))
+    result = _generate()
+    assert len(calls) == 2
+    assert result["subjective"] == "Headache for 2 days."
+
+
+def test_a_reply_cut_off_every_time_says_so_and_stops(monkeypatch):
+    calls = _replies(monkeypatch, json.dumps(_GOOD)[:120])
+    with pytest.raises(RuntimeError, match="structured clinical note"):
+        _generate()
+    assert len(calls) == docgraph.SOAP_ATTEMPTS
+
+
+def test_an_ai_service_failure_is_not_reported_as_an_unreadable_note(monkeypatch):
+    """With the canned fallback, a timeout became "could not generate a structured note",
+    which sent the doctor looking at the transcript instead of just retrying."""
+    _replies(monkeypatch, TimeoutError("read timed out"))
+    with pytest.raises(RuntimeError, match="AI service did not return a note"):
+        _generate()
+
+
+def test_json_wrapped_in_a_sentence_is_still_read(monkeypatch):
+    _replies(monkeypatch, f"Here is the SOAP note: {json.dumps(_GOOD)} Let me know if you need changes.")
+    assert _generate()["plan"] == "Rest and hydrate."
+
+
+def test_the_failure_is_logged_without_the_note_or_transcript(monkeypatch, caplog):
+    secret = "Headache for 2 days."
+    _replies(monkeypatch, json.dumps(_GOOD)[:60])
+    with caplog.at_level("WARNING"), pytest.raises(RuntimeError):
+        _generate()
+    assert "cut off before the end" in caplog.text
+    assert secret[:8] not in caplog.text

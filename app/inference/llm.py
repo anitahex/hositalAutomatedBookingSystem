@@ -378,7 +378,17 @@ async def agenerate_text(
     history_turns: int | None = None,
     patient_id: str | None = None,
     chat_session_id: str | None = None,
+    max_tokens: int | None = None,
+    fallback: bool = True,
 ) -> str:
+    """`max_tokens` overrides the shared OPENAI_MAX_TOKENS cap, which is sized for chat
+    replies — long structured outputs (a whole SOAP note as JSON) need more, and a
+    reasoning model spends part of the cap thinking before it writes.
+
+    `fallback=False` lets a failure raise instead of returning canned text. For output
+    that is parsed rather than shown, canned text is not a fallback: it fails to parse
+    and the real cause (a timeout, an API error) is lost behind a parse error.
+    """
     try:
         if not _async_client:
             raise RuntimeError("OpenAI async client is not configured.")
@@ -387,7 +397,7 @@ async def agenerate_text(
             system_prompt=system_prompt,
             user_prompt=user_prompt,
             deployment=CONV_MODEL,
-            max_tokens=MAX_TOKENS,
+            max_tokens=max_tokens or MAX_TOKENS,
             temperature=0.1,
             call_type="generation",
             node_name=node_name,
@@ -400,6 +410,8 @@ async def agenerate_text(
         )
     except Exception as exc:
         print(f"Async LLM call failed for {CONV_MODEL}: {exc}")
+        if not fallback:
+            raise
         return _local_fallback(system_prompt, user_prompt)
 
 

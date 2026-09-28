@@ -841,3 +841,45 @@ def test_documents_without_a_visit_are_shown_on_the_timeline(app_js):
     doc = _function_body(app_js, "buildTimelineDocument")
     assert "not linked to a visit" in doc and "openDoctorDocumentViewer(" in doc
     assert not re.search(r"\.innerHTML\s*[+]?=|insertAdjacentHTML", doc)
+
+
+# ---- drafting a clinical note is visibly in progress ----
+
+def test_a_note_being_drafted_is_shown_and_cannot_be_started_twice(app_js):
+    body = _function_body(app_js, "generateSoapNote")
+    assert "if (!doctorActiveConsult || doctorNoteGenerating) return;" in body
+    assert body.index("setNoteGenerating(true)") < body.index("await doctorAuthedJson(")
+    assert "finally {" in body and "setNoteGenerating(false)" in body
+    status = _function_body(app_js, "setNoteGenerating")
+    assert "button.disabled = on" in status and "doctorNoteStyleButtons" in status
+
+
+def test_a_failed_regenerate_says_the_previous_note_is_still_shown(app_js):
+    assert "the note below is still the previous version" in _function_body(app_js, "generateSoapNote")
+
+
+def test_a_note_drafted_for_another_consult_is_not_shown_here(app_js):
+    body = _function_body(app_js, "generateSoapNote")
+    assert "doctorActiveConsult.id !== consultId" in body
+
+
+def test_the_generate_button_names_the_length_it_will_draft(app_js):
+    label = _function_body(app_js, "updateNoteGenerateLabel")
+    assert "Clinical Note (${length})" in label
+    assert "updateNoteGenerateLabel();" in _function_body(app_js, "setDoctorNoteStyle")
+
+
+# ---- a discarded consult leaves nothing of itself on screen ----
+
+def test_a_discarded_consult_does_not_keep_its_id_or_duration_on_screen(app_js):
+    """After a discard the old consult's ID and recording duration stayed, reading as if it
+    were still this appointment's consult."""
+    body = _function_body(app_js, "renderConsultState")
+    assert 'doctorConsultIdLabel.textContent = status ? `Consult ID: ${doctorActiveConsult.id}` : "";' in body
+    assert 'doctorConsultIdLabel.classList.toggle("hidden", !status);' in body
+    assert "if (status && doctorActiveConsult?.started_at && doctorActiveConsult?.ended_at)" in body
+
+
+def test_a_discard_says_it_happened_without_looking_like_an_error(app_js):
+    assert 'setDoctorConsultNotice("Consult discarded. You can start a new one.")' in \
+        _function_body(app_js, "confirmDiscardConsult")

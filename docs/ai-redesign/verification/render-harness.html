@@ -296,6 +296,19 @@ document.getElementById("frame").addEventListener("load", async () => {
       if (failures.includes("clinical-put") && method === "PUT" && u.includes("/clinical-items/")) {
         return reply({ detail: "Simulated save failure" }, 500);
       }
+      // ?generateflow=1: drafting a note takes a while, as a model call does; ?fail=generate
+      // makes it fail the way the server did ("Could not generate a structured note").
+      // ?discardflow=1: the server's answer to a discard — the consult, now discarded.
+      if (method === "POST" && u.endsWith("/discard")) {
+        return reply({ id: "c1", status: "discarded", started_at: "2026-09-21T13:00:00",
+                       ended_at: "2026-09-21T13:04:12" });
+      }
+      if (method === "POST" && u.includes("/soap/generate")) {
+        await new Promise((r) => win.setTimeout(r, 1500));
+        return failures.includes("generate")
+          ? reply({ detail: "Could not generate a structured clinical note from this transcript. Please try again." }, 502)
+          : reply(NOTE);
+      }
       // ?race=1: two patients whose overview cards arrive in the WRONG order — A's is slow
       // (as a card needing the model is), B's instant (as a cached one is).
       const race = params.get("race") === "1" && u.match(/\/doctor\/patients\/(p[AB])(\/[a-z-]+)?$/);
@@ -443,6 +456,54 @@ document.getElementById("frame").addEventListener("load", async () => {
 
     const sleep = (ms) => new Promise((r) => win.setTimeout(r, ms));
     const sent = () => win.__requests.map((r, i) => `${i}:${r.method} ${r.url.replace(/^.*\/doctor/, "")}`);
+
+    // ?discardflow=1 (with pane=note): discard the consult; nothing of it may stay on screen.
+    if (params.get("discardflow") === "1") {
+      const shown = (id) => {
+        const el = doc.querySelector(id);
+        return el && !el.classList.contains("hidden") ? el.textContent : null;
+      };
+      const before = { id: shown("#doctorConsultIdLabel"), duration: shown("#doctorConsultDurationLabel") };
+      doc.querySelector("#doctorConsultDiscardBtn")?.click();
+      doc.querySelector("#doctorConsultDiscardConfirmBtn").click();
+      await sleep(300);
+      const message = doc.querySelector("#doctorConsultMessage");
+      out.textContent = "DISCARD " + JSON.stringify({
+        before,
+        after: { id: shown("#doctorConsultIdLabel"), duration: shown("#doctorConsultDurationLabel"),
+                 transcriptShown: shown("#doctorConsultTranscriptBlock") !== null,
+                 noteShown: shown("#doctorConsultNoteBlock") !== null,
+                 startOffered: shown("#doctorConsultStartRow") !== null,
+                 message: message.textContent, messageColor: win.getComputedStyle(message).color },
+      });
+      return;
+    }
+
+    // ?generateflow=1 (with pane=note): choose Detailed, regenerate, and read the screen
+    // while the draft is in progress and after it finishes.
+    if (params.get("generateflow") === "1") {
+      const button = () => doc.querySelector("#doctorNoteGenerateBtn");
+      const state = () => ({
+        label: button().textContent,
+        disabled: button().disabled,
+        styleButtonsDisabled: [...doc.querySelectorAll("[data-note-style]")].every((b) => b.disabled),
+        status: doc.querySelector("#doctorNoteGeneratingStatus")?.classList.contains("hidden")
+          ? "" : doc.querySelector("#doctorNoteGeneratingStatus").textContent,
+        message: doc.querySelector("#doctorNoteMessage")?.textContent || "",
+      });
+      [...doc.querySelectorAll("[data-note-style]")].find((b) => b.dataset.noteStyle === "detailed").click();
+      const afterStyle = state().label;
+      button().click();
+      doc.querySelector("#doctorNoteGenerateConfirmBtn").click();
+      await sleep(300);
+      const during = state();
+      button().click();  // a second press while drafting must not start another
+      await sleep(1700);
+      const posts = win.__requests.filter((r) => r.method === "POST" && r.url.includes("/soap/generate"));
+      out.textContent = "GENERATE " + JSON.stringify({ afterStyle, during, after: state(), posts: posts.length,
+        sentStyle: posts[0] ? JSON.parse(posts[0].body).style : null });
+      if (!runAxe) return;
+    }
 
     // ?signflow=1 (with pane=note): type into the draft, press Mark verified, then sign.
     // Proves: the typed text survives the re-render, the sign dialog says it will save,
