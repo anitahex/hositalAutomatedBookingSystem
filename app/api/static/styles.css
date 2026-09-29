@@ -1195,6 +1195,23 @@ body.sidebar-collapsed .sidebar-handle {
   white-space: nowrap;
 }
 
+.attach-pill-status {
+  font-size: 11px;
+  font-weight: 600;
+  /* The pill's own text colour: muted grey on the lilac pill failed contrast. */
+  color: var(--accent-fg);
+  white-space: nowrap;
+}
+
+.attach-pill[data-state="checking"] { opacity: 0.8; }
+
+.attach-pill[data-state="error"] {
+  border-color: var(--destructive, #dc2626);
+  background: var(--card);
+}
+
+.attach-pill[data-state="error"] .attach-pill-status { color: var(--destructive, #dc2626); }
+
 .attach-pill-remove {
   display: flex;
   align-items: center;
@@ -2040,6 +2057,52 @@ body.sidebar-collapsed .sidebar-handle {
   text-transform: uppercase;
   color: var(--muted-fg);
 }
+
+/* The patient's own documents and food handouts (Records & history, and the dashboard). */
+.analyzed-docs-list:has(.patient-doc-card), #dashboardDocsList:has(.patient-doc-card),
+.patient-handouts-list { display: grid; gap: 10px; }
+.patient-doc-card {
+  display: grid;
+  gap: 6px;
+  padding: 12px 14px;
+  border: 1px solid var(--border);
+  border-left: 4px solid var(--border);
+  border-radius: var(--r-xl);
+  background: var(--card);
+  min-width: 0;
+}
+.patient-doc-card.is-verified { border-left-color: var(--ok, #047857); }
+.patient-doc-card.is-review { border-left-color: var(--warn, #A14A06); }
+.patient-doc-card.is-failed { border-left-color: var(--bad, #B91C1C); }
+.patient-doc-head { display: flex; justify-content: space-between; align-items: flex-start; gap: 10px; flex-wrap: wrap; }
+.patient-doc-name { margin: 0; font-weight: 700; color: var(--fg); overflow-wrap: anywhere; }
+.patient-doc-meta { margin: 2px 0 0; font-size: 12.5px; color: var(--muted-fg); }
+.patient-doc-chip {
+  display: inline-flex;
+  align-items: center;
+  min-height: 24px;
+  padding: 2px 10px;
+  border-radius: var(--r-full);
+  background: var(--muted);
+  color: var(--fg);
+  font-size: 12px;
+  font-weight: 600;
+  white-space: nowrap;
+}
+.patient-doc-card.is-verified .patient-doc-chip { background: var(--ok-bg, #ECFDF5); color: var(--ok, #047857); }
+.patient-doc-card.is-review .patient-doc-chip { background: var(--warn-bg, #FFF7E8); color: var(--warn, #A14A06); }
+.patient-doc-card.is-failed .patient-doc-chip { background: var(--bad-bg, #FEF2F2); color: var(--bad, #B91C1C); }
+.patient-doc-status { margin: 0; font-size: 13px; color: var(--fg); }
+.patient-doc-card.is-verified .patient-doc-status { color: var(--ok, #047857); }
+.patient-doc-actions { display: flex; flex-wrap: wrap; gap: 8px; }
+.patient-doc-card.is-compact { padding: 10px 12px; }
+.patient-handout-details { display: grid; gap: 4px; padding: 4px 0; font-size: 13.5px; }
+.patient-handout-details h4 { margin: 8px 0 0; font-size: 14px; color: var(--fg); }
+.patient-handout-details p { margin: 0; }
+.patient-handout-tip { color: var(--accent-fg); }
+.patient-handout-note { margin-top: 6px !important; font-size: 12.5px; color: var(--muted-fg); }
+.patient-preview-dialog { max-width: min(92vw, 900px); }
+.patient-preview-image { display: block; max-width: 100%; max-height: 72vh; margin: 0 auto; border-radius: var(--r-lg); }
 
 .analyzed-doc-item {
   display: inline-flex;
@@ -3520,6 +3583,62 @@ button.compact { height: 30px; padding: 0 12px; font-size: 12px; }
   border-color: var(--ring);
 }
 
+/* The corner close of the chat dialogs. Beats `.closed-dialog button`, which would
+   otherwise paint it as a full-size primary button. */
+.closed-dialog { position: relative; }
+
+.closed-dialog .dialog-close {
+  position: absolute;
+  top: 10px;
+  right: 10px;
+  width: 36px;
+  height: 36px;
+  padding: 0;
+  justify-content: center;
+  border-radius: var(--r-full);
+  background: transparent;
+  color: var(--muted-fg);
+  font-size: 22px;
+  font-weight: 400;
+  line-height: 1;
+  box-shadow: none;
+}
+
+.closed-dialog .dialog-close:hover,
+.closed-dialog .dialog-close:focus-visible {
+  background: var(--accent);
+  color: var(--fg);
+}
+
+.closed-dialog h2 { padding: 0 28px; }
+
+.consent-dialog { max-width: 440px; }
+
+.consent-file-list {
+  list-style: none;
+  margin: -6px 0 20px;
+  padding: 0;
+  display: grid;
+  gap: 6px;
+  text-align: left;
+}
+
+.consent-file-list li {
+  padding: 8px 12px;
+  border: 1px solid var(--border);
+  border-radius: var(--r-lg);
+  background: var(--accent);
+  color: var(--accent-fg);
+  font-size: 13px;
+  overflow-wrap: anywhere;
+}
+
+@media (max-width: 480px) {
+  .closed-dialog { padding: 24px 18px; }
+  .confirm-dialog-actions { flex-wrap: wrap; }
+  .confirm-dialog-actions button { flex: 1 1 auto; justify-content: center; }
+}
+
 .admin-detail-dialog {
   text-align: left;
   max-width: 680px;
@@ -4247,7 +4366,125 @@ button.doctor-ai-card {
 .doctor-nutrition-toggle { margin: 4px 0; }
 .doctor-nutrition-toggle[aria-expanded="true"]::after { content: " \25B4"; }
 .doctor-nutrition-toggle[aria-expanded="false"]::after { content: " \25BE"; }
-.doctor-nutrition-body { margin-top: 6px; }
+.doctor-nutrition-body { margin-top: 6px; container-type: inline-size; }
+
+/* The organised nutritionist (nutrition_plan): header, then foods · themes · sample day. */
+.doctor-nutri-header {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 10px 16px;
+  margin-bottom: 10px;
+}
+.doctor-nutri-summary { margin: 0; font-size: 13px; color: var(--fg); }
+.doctor-nutri-controls { display: flex; flex-wrap: wrap; align-items: center; gap: 8px; }
+.doctor-nutri-controls .doctor-nutrition-diets { margin: 0; }
+.doctor-nutri-grid { display: grid; gap: 12px; grid-template-columns: 1fr; }
+@container (min-width: 860px) {
+  .doctor-nutri-grid { grid-template-columns: minmax(200px, 1fr) minmax(300px, 2fr) minmax(200px, 1fr); }
+}
+.doctor-nutri-card {
+  padding: 14px;
+  border: 1px solid var(--border);
+  border-radius: var(--r-lg);
+  background: var(--card);
+  min-width: 0;
+}
+.doctor-nutri-eyebrow {
+  margin: 0 0 4px;
+  font-size: 11px;
+  font-weight: 700;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+  color: var(--accent-fg);
+}
+.doctor-nutri-title { margin: 0 0 4px; font-size: 14.5px; font-weight: 700; color: var(--fg); }
+.doctor-nutri-title.is-large { font-size: 17px; }
+.doctor-nutri-muted { margin: 0; font-size: 12px; color: var(--muted-fg); }
+.doctor-nutri-ranked, .doctor-nutri-easy { list-style: none; margin: 10px 0 14px; padding: 0; display: grid; gap: 2px; }
+.doctor-nutri-ranked li, .doctor-nutri-easy li {
+  display: grid;
+  grid-template-columns: 1fr auto auto;
+  align-items: center;
+  gap: 8px;
+  padding: 6px 0;
+  border-bottom: 1px solid var(--border);
+  font-size: 13px;
+}
+.doctor-nutri-easy li { grid-template-columns: 1fr auto; }
+.doctor-nutri-meter { display: inline-flex; gap: 3px; }
+.doctor-nutri-meter span { width: 7px; height: 7px; border-radius: 2px; background: var(--accent); }
+.doctor-nutri-meter span.is-on { background: var(--primary); }
+.doctor-nutri-themes { display: grid; gap: 10px; min-width: 0; align-content: start; }
+.doctor-nutri-tabs { display: grid; gap: 8px; grid-template-columns: repeat(auto-fit, minmax(130px, 1fr)); }
+.doctor-nutri-tabs button.doctor-nutri-tab {
+  display: grid;
+  justify-items: start;
+  gap: 2px;
+  height: auto;
+  min-height: 44px;
+  padding: 10px 12px;
+  border: 1px solid var(--border);
+  border-radius: var(--r-lg);
+  background: var(--card);
+  color: var(--fg);
+  box-shadow: none;
+  text-align: left;
+  font: inherit;
+  cursor: pointer;
+}
+.doctor-nutri-tabs button.doctor-nutri-tab[aria-selected="true"] {
+  border-color: var(--primary);
+  box-shadow: 0 0 0 2px var(--accent);
+}
+.doctor-nutri-tab-title { font-size: 13.5px; font-weight: 700; }
+.doctor-nutri-panel-head {
+  display: flex;
+  flex-wrap: wrap;
+  justify-content: space-between;
+  align-items: flex-start;
+  gap: 8px 12px;
+  margin-bottom: 10px;
+}
+.doctor-nutri-discussed { display: flex; flex-wrap: wrap; align-items: center; gap: 8px; }
+.doctor-nutri-why { display: grid; gap: 8px; grid-template-columns: repeat(auto-fit, minmax(190px, 1fr)); margin: 4px 0 12px; }
+.doctor-nutri-why-card { padding: 10px 12px; border-radius: 10px; background: var(--secondary); color: var(--secondary-fg); }
+.doctor-nutri-why-top, .doctor-nutri-why-bottom {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  gap: 8px;
+  font-size: 13px;
+}
+.doctor-nutri-why-bottom { margin-top: 4px; }
+.doctor-nutri-why-card .doctor-nutri-muted { color: var(--secondary-fg); }
+.doctor-nutri-columns { display: grid; gap: 12px; grid-template-columns: repeat(auto-fit, minmax(180px, 1fr)); }
+.doctor-nutri-chips { display: flex; flex-wrap: wrap; gap: 6px; margin: 4px 0 8px; }
+.doctor-nutri-chip {
+  display: inline-flex;
+  align-items: center;
+  min-height: 24px;
+  padding: 2px 10px;
+  border-radius: var(--r-full);
+  background: var(--muted);
+  color: var(--fg);
+  font-size: 12px;
+  font-weight: 600;
+}
+.doctor-nutri-chip.is-ok { background: var(--ok-bg); color: var(--ok); }
+.doctor-nutri-chip.is-warn { background: var(--warn-bg); color: var(--warn); }
+.doctor-nutri-tip {
+  margin: 8px 0 0;
+  padding: 10px 12px;
+  border-radius: 10px;
+  background: var(--accent);
+  color: var(--accent-fg);
+  font-size: 13px;
+}
+.doctor-nutri-meal { padding: 10px 0; border-bottom: 1px solid var(--border); }
+.doctor-nutri-meal:last-child { border-bottom: 0; }
+.doctor-nutri-meal-foods { margin: 0 0 2px; font-size: 13.5px; font-weight: 600; color: var(--fg); }
 .doctor-nutrition-label {
   margin: 0 0 4px;
   font-size: 11px;
@@ -4311,6 +4548,76 @@ button.doctor-ai-card {
 
 /* Whether a clinician has checked a document against the original. Shared by every doctor
    treating the patient, so it sits first in the viewer's side panel. */
+/* "Your next actions": the document work under the note work. */
+.doctor-next-actions-subhead {
+  margin: 6px 0 0;
+  font-size: 12px;
+  font-weight: 700;
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+  color: var(--muted-fg);
+}
+
+/* At a glance, by document: one block per report, with who checked it and what changed. */
+.doctor-glance-docs-heading {
+  margin: 14px 0 8px;
+  font-size: 12px;
+  font-weight: 700;
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+  color: var(--muted-fg);
+}
+.doctor-glance-doc {
+  display: grid;
+  gap: 8px;
+  margin: 0 0 10px;
+  padding: 12px 14px;
+  border: 1px solid var(--border);
+  border-left-width: 4px;
+  border-radius: var(--r-lg);
+  background: var(--card);
+}
+.doctor-glance-doc.is-verified { border-left-color: var(--ok); }
+.doctor-glance-doc.is-flagged { border-left-color: var(--bad); }
+.doctor-glance-doc.is-unverified { border-left-color: var(--border); }
+.doctor-glance-doc-head {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 10px;
+  flex-wrap: wrap;
+}
+.doctor-glance-doc-title { margin: 0; font-size: 14px; font-weight: 700; color: var(--fg); }
+.doctor-glance-doc-meta { margin: 2px 0 0; font-size: 12px; color: var(--muted-fg); overflow-wrap: anywhere; }
+.doctor-glance-doc-review { margin: 0; font-size: 12.5px; color: var(--fg); }
+.doctor-glance-doc.is-verified .doctor-glance-doc-review { color: var(--ok); }
+.doctor-glance-doc.is-flagged .doctor-glance-doc-review { color: var(--bad); }
+.doctor-glance-findings {
+  display: grid;
+  gap: 6px;
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+.doctor-glance-findings li {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 6px 10px;
+  font-size: 13px;
+}
+.doctor-glance-findings.is-summary li { display: list-item; margin-left: 18px; list-style: disc; }
+.doctor-glance-finding-name { font-weight: 600; color: var(--fg); }
+.doctor-glance-finding-value { font-variant-numeric: tabular-nums; color: var(--fg); }
+.doctor-glance-finding-change { font-size: 12px; color: var(--muted-fg); }
+.doctor-glance-finding-change.is-worse,
+.doctor-glance-finding-change.is-new,
+.doctor-glance-finding-change.is-flipped { color: var(--warn); font-weight: 600; }
+.doctor-glance-finding-change.is-better,
+.doctor-glance-finding-change.is-back_to_normal { color: var(--ok); font-weight: 600; }
+.doctor-glance-doc-changes { margin: 0; font-size: 12.5px; font-weight: 600; color: var(--fg); }
+.doctor-glance-doc > button { justify-self: start; }
+
 .doctor-review-block {
   margin: 0 0 12px;
   padding: 10px 12px;

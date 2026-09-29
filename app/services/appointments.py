@@ -832,7 +832,10 @@ def first_available_slots(department: str, limit: int = 5):
     return slots[:limit]
 
 
-BOOKING_NOTE_MAX_LENGTH = 4000
+# Bounded, and re-applied after every forward (update_booking_note), which is what stops
+# the field growing without limit. It was 4000: a pre-appointment note for three documents
+# is ~3500 on its own, so forwarding the summary the patient saw cut that summary off.
+BOOKING_NOTE_MAX_LENGTH = 16000
 
 _CONTROL_CHAR_RE = re.compile(r"[\x00-\x08\x0b\x0c\x0e-\x1f\x7f]")
 
@@ -866,7 +869,10 @@ def book_selected_slot(
     conversation, and that is recorded honestly as 'skipped' rather than left looking like
     a summary that failed to generate.
     """
-    note = _sanitize_booking_note(" ".join(str(booking_note).strip().split())) if booking_note else None
+    # Newlines are kept: the note is the pre-appointment summary, and flattening it onto one
+    # line left the doctor a single unreadable paragraph. The sanitizer still strips control
+    # characters and caps the length.
+    note = _sanitize_booking_note(_normalized_booking_note(booking_note)) if booking_note else None
     with connect_db() as conn:
         try:
             ensure_booking_schema(conn)

@@ -271,6 +271,14 @@
   "used_at",
   "user_id"
  ],
+ "nutrition_discussions": [
+  "booking_id",
+  "discussed_at",
+  "doctor_id",
+  "id",
+  "patient_id",
+  "theme"
+ ],
  "nutrition_guidance": [
   "created_at",
   "direction",
@@ -279,6 +287,16 @@
   "model",
   "prompt_version",
   "term"
+ ],
+ "nutrition_handouts": [
+  "booking_id",
+  "content",
+  "created_at",
+  "diet",
+  "doctor_id",
+  "document_id",
+  "id",
+  "patient_id"
  ],
  "otp_verifications": [
   "attempts",

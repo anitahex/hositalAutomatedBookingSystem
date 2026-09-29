@@ -12,7 +12,9 @@ from app.agents.intake_utils import (
     compact_booking_summary,
     compact_fact_summary,
     compact_state_summary,
+    extract_local_intake_info,
     looks_like_crisis_or_harm,
+    looks_like_explicit_end_chat,
     looks_like_end_chat as _looks_like_end_chat,
     looks_like_general_knowledge_question,
     looks_like_thanks as _looks_like_thanks,
@@ -391,9 +393,15 @@ def _looks_like_remedy_request(text: str) -> bool:
     ))
 
 
+# Whole words only. As substrings these refused ordinary answers: "I sometimes take
+# painkillers" contains "kill" and was answered "I am only for health-related support".
+# Threats of harm are the crisis gate's job, which runs before this.
+_UNSAFE_NON_MEDICAL = re.compile(r"\b(?:bombs?|weapons?|hack|hacking|kill|make poison)\b")
+
+
 def _looks_like_unsafe_non_medical(text: str) -> bool:
     lowered = " ".join((text or "").lower().replace("'", "").split())
-    return any(term in lowered for term in ("bomb", "weapon", "hack", "kill", "make poison"))
+    return bool(_UNSAFE_NON_MEDICAL.search(lowered))
 
 
 def _fallback_profile_response(state: GraphState) -> dict | None:
@@ -441,23 +449,34 @@ def _handle_document_follow_up(state: GraphState, user_input: str) -> dict:
             department_match_source="patient_request",
         )
 
-    # 2. Ask the next thing the document could not answer, while budget remains.
-    if not document_followup.budget_exhausted(state):
-        nxt = document_followup.next_question(state)
-        if nxt:
-            topic, question = nxt
-            return _route(
-                "finish",
-                awaiting=document_followup.AWAITING_DOCUMENT_FOLLOW_UP,
-                active_intent="document_review",
-                intent="document_review",
-                final_response=question,
-                **document_followup.register_question(state, topic, question),
-            )
+    # The message is the answer to the question asked last. Record it, with anything it
+    # says about symptoms or duration, before choosing what to ask next.
+    answered = document_followup.record_answer(state, user_input)
+    state = {**state, **answered}
+    collected = {**(state.get("collected_data") or {}), **extract_local_intake_info(user_input)}
+    learned = {**answered, "collected_data": collected}
 
-    # 3. Nothing left to ask — decide, or hand the patient the choice.
+    # 2. Ask the next thing the documents could not answer, while budget remains.
+    choice = document_followup.choose_next_question(state, user_input)
+    learned.update(document_followup.merge_symptoms(state, choice["symptoms"]))
+    state = {**state, **learned}
+    if choice["question"]:
+        topic, question = choice["question"]
+        return _route(
+            "finish",
+            awaiting=document_followup.AWAITING_DOCUMENT_FOLLOW_UP,
+            active_intent="document_review",
+            intent="document_review",
+            final_response=question,
+            **{**learned, **document_followup.register_question(state, topic, question)},
+        )
+
+    # 3. Nothing left to ask — decide the department (or hand the patient the choice), then
+    #    show the clinical analysis and pre-appointment summary before any booking. This
+    #    used to go straight to booking, so the patient never saw a summary, yet was asked
+    #    after booking whether to forward one.
     updates = document_followup.resolve_after_followup(state)
-    return _route("appointment_booker", **updates)
+    return _route("checkup_report", **learned, **updates, checkup_summary_shown=False)
 
 
 def _heuristic_supervisor_route(state: GraphState) -> dict | None:
@@ -499,7 +518,15 @@ def _heuristic_supervisor_route(state: GraphState) -> dict | None:
             ),
         )
 
-    if _looks_like_end_chat(lowered):
+    # While a question about the patient's documents is waiting for its answer, "nothing
+    # else", "no more" and "no, thanks" ARE answers; the broad goodbye matchers closed the
+    # chat or dropped the questions on them. Only an explicit "end the chat" ends it then.
+    answering_document_question = awaiting == document_followup.AWAITING_DOCUMENT_FOLLOW_UP
+    if (
+        looks_like_explicit_end_chat(lowered)
+        if answering_document_question
+        else _looks_like_end_chat(lowered)
+    ):
         return _route(
             "finish",
             awaiting=None,
@@ -507,13 +534,22 @@ def _heuristic_supervisor_route(state: GraphState) -> dict | None:
             final_response="The chat is now closed. Take care, and you can start a new chat anytime if you need help again.",
         )
 
-    if _looks_like_thanks(lowered):
+    if _looks_like_thanks(lowered) and not answering_document_question:
         return _route(
             "finish",
             awaiting=None,
             chat_closed=False,
             final_response="You're welcome. Tell me your symptoms if you still need health-related support.",
         )
+
+    # Post-upload follow-up: the message answers a question about the patient's documents.
+    # Handled here, before the shortcuts below, because they read an answer as a request —
+    # a department named in "a follow-up from my orthopaedic doctor" jumped straight to
+    # booking without the summary, or into symptom triage when no symptoms were known yet.
+    # _handle_document_follow_up applies the skip-ahead rules itself: "just store it" files
+    # the documents, and naming a department still books it.
+    if awaiting == document_followup.AWAITING_DOCUMENT_FOLLOW_UP:
+        return _handle_document_follow_up(state, user_input)
 
     # Remedy persisting: go find the right department immediately without an LLM call.
     if state.get("persisting") and not state.get("target_department") and state.get("symptoms"):
@@ -719,14 +755,6 @@ def _heuristic_supervisor_route(state: GraphState) -> dict | None:
     if _looks_like_remedy_request(lowered) and state.get("symptoms"):
         return _route("remedy_agent", awaiting=None, remedy_requested=True)
 
-    # Post-upload follow-up. Deterministic and LLM-free: the questions are templated from
-    # what the document actually said, so this costs nothing and every branch is testable.
-    # Placed BEFORE the booking-menu fast-path because a document conversation is not a
-    # menu, and after the explicit-department check above so "book me with a psychiatrist"
-    # still skips the questions entirely.
-    if awaiting == document_followup.AWAITING_DOCUMENT_FOLLOW_UP:
-        return _handle_document_follow_up(state, user_input)
-
     # Fast-path for known booking sub-states: skip the LLM when the user is
     # simply picking from a menu we showed them. Special queries (upcoming
     # bookings, billing, etc.) are handled above and take priority.
@@ -804,6 +832,46 @@ CRITICAL:
 - Include FUNCTIONAL IMPACT in chief complaint
 - Max 10-12 lines total, no repetition
 - Omit fields where patient didn't provide data (don't say "unknown")"""
+
+
+def _forwardable_summary(state: GraphState, user_text: str | None = None) -> str:
+    """What "yes, send it to my doctor" attaches.
+
+    The formatted pre-appointment summary the patient was shown — headings and bold, with
+    its Document Findings section when documents were shared. Never the plain-text intake
+    report: that was attached automatically at booking, without asking, and read to the
+    doctor as a wall of unformatted text. When no summary was made (the patient named a
+    department and skipped the questions), a note is written now, with the documents'
+    findings added so they still reach the doctor.
+    """
+    summary = str(state.get("pre_checkup_summary") or "").strip()
+    if summary:
+        return summary
+    note = _generate_clinical_note(state, user_text)
+    documents = document_followup.findings_note(state)
+    return f"{note}\n\n{documents}" if documents else note
+
+
+def _next_department_offer(state: GraphState) -> tuple[str, dict]:
+    """The departments still to book, offered once the patient has answered the summary
+    question for the booking just made. ("", end state) when there are none."""
+    from app.agents.appointment_booker import _bookable_candidates, _format_department_options
+
+    remaining = _bookable_candidates(list(state.get("candidate_departments") or []))
+    if not remaining:
+        return "", {"awaiting": "end_confirmation", "candidate_departments": []}
+    text = (
+        "\n\nI can also help you book the other department(s) we identified:\n"
+        f"{_format_department_options(remaining)}\n\n"
+        "Please reply with the department number or name you want to book next, or say no to stop here."
+    )
+    # Cleared so the menu decides the next department, not the one just booked.
+    return text, {
+        "awaiting": "department_selection",
+        "candidate_departments": remaining,
+        "target_department": None,
+        "requested_department": None,
+    }
 
 
 def _generate_clinical_note(state: GraphState, user_text: str | None = None) -> str:
@@ -1163,22 +1231,19 @@ def continue_current_node(state: GraphState):
             # Prefer the full GPT-generated clinical summary (shown to the patient)
             # as it contains the complete structured clinical details.
             # Fall back to the technical report, then to an inline-generated note.
-            booking_note = (
-                state.get("pre_checkup_summary")
-                or state.get("pre_checkup_clinical_note")
-                or _generate_clinical_note(state)
-            )
+            booking_note = _forwardable_summary(state)
             updated_booking = update_booking_note(
                 booking_id=str(booking["booking_id"]),
                 patient_id=str(state.get("patient_id") or ""),
                 booking_note=booking_note,
             )
+            offer, offer_state = _next_department_offer(state)
 
             if not updated_booking:
-                response = "I could not attach the clinical note right now. It will still be available in your appointment record."
+                response = "I could not attach the clinical note right now. It will still be available in your appointment record." + offer
                 history.append({"role": "assistant", "text": response})
                 return {
-                    "awaiting": "end_confirmation",
+                    **offer_state,
                     "note_forwarded": False,
                     "conversation_history": history,
                     "messages": history[-10:],
@@ -1204,11 +1269,12 @@ def continue_current_node(state: GraphState):
                 f"for your appointment on {updated_booking.get('time') or updated_booking.get('start_time')}.\n\n"
                 f"{doctor_name} will review it before you arrive and may have additional questions during your visit.\n\n"
                 f"**Appointment confirmed.** Please arrive 10 minutes early. Take care!"
+                f"{offer}"
             )
             history.append({"role": "assistant", "text": response})
             return _sync_state_aliases(
                 {
-                    "awaiting": "end_confirmation",
+                    **offer_state,
                     "report_forwarding_booking_id": None,
                     "note_forwarded": True,
                     "conversation_history": history,
@@ -1221,14 +1287,17 @@ def continue_current_node(state: GraphState):
             )
         else:
             # User declined to forward report
+            offer, offer_state = _next_department_offer(state)
             response = (
                 "No problem! Your appointment is still confirmed, but the clinical report won't be forwarded. "
                 f"You can discuss all the details with {booking.get('doctor') or 'your doctor'} during your visit.\n\n"
                 "Take care!"
+                f"{offer}"
             )
             history.append({"role": "assistant", "text": response})
             return {
-                "awaiting": "end_confirmation",
+                **offer_state,
+                "report_forwarding_booking_id": None,
                 "note_forwarded": False,
                 "conversation_history": history,
                 "messages": history[-10:],
@@ -1250,11 +1319,7 @@ def continue_current_node(state: GraphState):
                 "final_response": response,
             }
 
-        booking_note = (
-            state.get("pre_checkup_summary")
-            or state.get("pre_checkup_clinical_note")
-            or _generate_clinical_note(state, user_input)
-        )
+        booking_note = _forwardable_summary(state, user_input)
         updated_booking = update_booking_note(
             booking_id=str(booking["booking_id"]),
             patient_id=str(state.get("patient_id") or ""),

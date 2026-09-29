@@ -330,7 +330,7 @@
                 <div class="doctor-ai-list" id="doctorOverviewReviews"></div>
                 <div class="doctor-ai-guard" style="margin-top: auto;">
                   <svg class="ai-i is-sm" viewBox="0 0 24 24" aria-hidden="true"><path d="M12 3l8 3v6c0 5-3.5 8-8 9-4.5-1-8-4-8-9V6z"/><path d="M9 12l2 2 4-4"/></svg>
-                  Every item above is an AI draft. It joins the record only when you sign it.
+                  Every item above was prepared by AI. Nothing joins the record until you sign or verify it.
                 </div>
               </section>
 
@@ -866,13 +866,14 @@
               <span class="admin-status-pill hidden" id="doctorClinicalItemStatus"></span>
 
               <div class="form-actions hidden" id="doctorInsertFromPlanRow">
-                <!-- Copies the medication lines out of the SIGNED note's Plan so they do not
-                     have to be retyped. It is a copy, not a suggestion: nothing is
+                <!-- Copies the medication lines, and the tests or reports advised, out of the
+                     SIGNED note's Plan so they do not have to be retyped. It is a copy, not
+                     a suggestion: nothing is
                      validated, corrected or completed, and the notice above still applies. -->
                 <button class="doctor-ai-btn is-ghost is-sm" type="button" id="doctorInsertFromPlanBtn">
                   Insert from plan
                 </button>
-                <span class="panel-note">Copies the plan's medication lines. Nothing is checked or corrected.</span>
+                <span class="panel-note">Copies the plan's medicines and the tests or reports it advises. Nothing is checked or corrected.</span>
               </div>
 
               <label class="sr-only" for="doctorClinicalItemText">Clinical record text</label>
@@ -1066,9 +1067,9 @@
                       </button>
                     </div>
                   <div class="composer-row">
-                    <label class="attach-label" for="documentUpload" title="Attach a medical document (PDF, JPG, PNG)">
+                    <label class="attach-label" for="documentUpload" title="Attach up to 3 medical documents (PDF, JPG, PNG)">
                       <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="m21.44 11.05-9.19 9.19a6 6 0 0 1-8.49-8.49l8.57-8.57A4 4 0 1 1 18 8.84l-8.59 8.57a2 2 0 0 1-2.83-2.83l8.49-8.48"/></svg>
-                      <input id="documentUpload" type="file" accept=".pdf,.jpg,.jpeg,.png,application/pdf,image/jpeg,image/png" />
+                      <input id="documentUpload" type="file" multiple aria-label="Attach up to 3 medical documents" accept=".pdf,.jpg,.jpeg,.png,application/pdf,image/jpeg,image/png" />
                     </label>
                     <textarea id="messageInput" name="message" rows="1" autocomplete="off" placeholder="Describe symptoms, ask about your documents, or type a message…" required></textarea>
                     <button type="button" class="voice-btn" id="voiceBtn" title="Speak a message" aria-label="Speak a message">
@@ -1283,6 +1284,7 @@
             <div class="tab-bar" role="tablist">
               <button class="tab-btn is-active" data-rec-tab="docs" type="button" role="tab">Documents</button>
               <button class="tab-btn" data-rec-tab="chats" type="button" role="tab">Chat history</button>
+              <button class="tab-btn" data-rec-tab="food" type="button" role="tab">Food suggestions</button>
             </div>
 
             <!-- Documents tab -->
@@ -1291,6 +1293,13 @@
                 <p class="panel-note">No documents analyzed yet. Use 📎 in the chat to attach a file.</p>
               </div>
               <p class="upload-status" id="uploadStatus"></p>
+            </div>
+
+            <!-- Food suggestions tab: handouts the patient's doctors made for them -->
+            <div id="recFoodPanel" class="hidden">
+              <div class="patient-handouts-list" id="patientHandoutsList">
+                <p class="panel-note">No food suggestions yet.</p>
+              </div>
             </div>
 
             <!-- Chat history tab -->
@@ -1661,10 +1670,11 @@
     </section><!-- .workspace -->
 
     <!-- End chat confirmation modal -->
-    <div class="closed-modal hidden" id="endChatConfirmModal" role="dialog" aria-modal="true" aria-labelledby="endChatConfirmTitle">
+    <div class="closed-modal hidden" id="endChatConfirmModal" role="dialog" aria-modal="true" aria-labelledby="endChatConfirmTitle" aria-describedby="endChatConfirmBody">
       <section class="closed-dialog">
+        <button id="endChatCloseBtn" type="button" class="dialog-close" aria-label="Keep chatting">&times;</button>
         <h2 id="endChatConfirmTitle">End this chat?</h2>
-        <p>This will close the current conversation. You can always start a new chat afterwards.</p>
+        <p id="endChatConfirmBody">The conversation will be closed and cleared from this screen. Appointments you booked stay booked, and documents you stored stay in your records. Attachments you have not sent will be discarded.</p>
         <div class="confirm-dialog-actions">
           <button id="endChatCancelBtn" type="button" class="secondary">Cancel</button>
           <button id="endChatConfirmBtn" type="button">End chat</button>
@@ -1673,11 +1683,51 @@
     </div>
 
     <!-- Chat closed modal -->
-    <div class="closed-modal hidden" id="chatClosedModal" role="dialog" aria-modal="true" aria-labelledby="chatClosedTitle">
+    <div class="closed-modal hidden" id="chatClosedModal" role="dialog" aria-modal="true" aria-labelledby="chatClosedTitle" aria-describedby="chatClosedBody">
       <section class="closed-dialog">
+        <button id="chatClosedCloseBtn" type="button" class="dialog-close" aria-label="Close and clear this chat">&times;</button>
         <h2 id="chatClosedTitle">Chat closed</h2>
-        <p>This care conversation has ended. Start a new chat to discuss new symptoms or appointments.</p>
+        <p id="chatClosedBody">This conversation has ended. Closing this clears it from the screen; start a new chat to discuss new symptoms or appointments.</p>
         <button id="startNewChatBtn" type="button">Start new chat</button>
+      </section>
+    </div>
+
+    <!-- Consent for the documents attached to a message, asked once for all of them when
+         the message is sent. Replaces a browser confirm() per file. -->
+    <div class="closed-modal hidden" id="documentConsentModal" role="dialog" aria-modal="true" aria-labelledby="documentConsentTitle" aria-describedby="documentConsentBody">
+      <section class="closed-dialog consent-dialog">
+        <button id="documentConsentCloseBtn" type="button" class="dialog-close" aria-label="Go back without sending">&times;</button>
+        <h2 id="documentConsentTitle">Store and analyse these documents?</h2>
+        <p id="documentConsentBody">They were checked and look like medical records. Storing them keeps them securely in your health record, lets the assistant analyse them now, and lets your doctor see them. Discard removes them.</p>
+        <ul class="consent-file-list" id="documentConsentList"></ul>
+        <div class="confirm-dialog-actions">
+          <button id="documentConsentDiscardBtn" type="button" class="secondary">Discard</button>
+          <button id="documentConsentAcceptBtn" type="button">Store &amp; analyse</button>
+        </div>
+      </section>
+    </div>
+
+    <!-- A patient's own uploaded image, previewed in the app (never navigated to). -->
+    <div class="closed-modal hidden" id="patientPreviewModal" role="dialog" aria-modal="true" aria-labelledby="patientPreviewTitle">
+      <section class="closed-dialog patient-preview-dialog">
+        <button id="patientPreviewCloseBtn" type="button" class="dialog-close" aria-label="Close preview">&times;</button>
+        <h2 id="patientPreviewTitle">Document</h2>
+        <img id="patientPreviewImage" class="patient-preview-image" alt="" />
+      </section>
+    </div>
+
+    <!-- A doctor's confirmation, e.g. before marking a document verified. Sits above the
+         document viewer (z-index), and replaces the browser confirm() used before. -->
+    <div class="closed-modal hidden" id="doctorConfirmModal" role="dialog" aria-modal="true" aria-labelledby="doctorConfirmTitle" aria-describedby="doctorConfirmBody">
+      <section class="closed-dialog consent-dialog">
+        <button id="doctorConfirmCloseBtn" type="button" class="dialog-close" aria-label="Cancel">&times;</button>
+        <h2 id="doctorConfirmTitle">Are you sure?</h2>
+        <p id="doctorConfirmBody"></p>
+        <ul class="consent-file-list" id="doctorConfirmList"></ul>
+        <div class="confirm-dialog-actions">
+          <button id="doctorConfirmCancelBtn" type="button" class="secondary">Cancel</button>
+          <button id="doctorConfirmOkBtn" type="button">Confirm</button>
+        </div>
       </section>
     </div>
 
@@ -1818,8 +1868,10 @@
             });
             var docs = document.getElementById("recDocsPanel");
             var chats = document.getElementById("recChatsPanel");
+            var food = document.getElementById("recFoodPanel");
             if (docs) docs.classList.toggle("hidden", tab !== "docs");
             if (chats) chats.classList.toggle("hidden", tab !== "chats");
+            if (food) food.classList.toggle("hidden", tab !== "food");
           });
         });
 

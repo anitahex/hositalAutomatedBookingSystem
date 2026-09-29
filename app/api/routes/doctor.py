@@ -3,7 +3,7 @@ from typing import Annotated
 
 from fastapi import APIRouter, Depends, HTTPException, Query, Request, Response
 from fastapi.security import HTTPAuthorizationCredentials
-from pydantic import BaseModel
+from pydantic import BaseModel, Field
 
 from psycopg2 import DataError
 
@@ -44,6 +44,7 @@ from app.services.patient_timeline import (
 from app.services.login_lockout import AccountLockedError
 from app.services.visit_brief import get_visit_brief
 from app.services.patient_overview import get_overview
+from app.services.overview_documents import apply_review_labels, document_blocks
 from app.services.doctor_auth import (
     authenticate_doctor_password, check_rate_limit, complete_invite, complete_mfa_challenge,
     issue_invite, start_mfa_enrollment, verify_mfa_enrollment,
@@ -317,6 +318,17 @@ def doctor_ai_activity_log_route(
     return get_activity_log(doctor["doctor_id"], limit)
 
 
+@router.get("/ai/document-actions")
+def doctor_document_actions_route(doctor: dict = Depends(get_current_doctor)):
+    """Document work for "Your next actions": reports a colleague flagged, new abnormal
+    results for patients seen soon, and their recent documents no doctor has verified.
+    Scoped to this doctor's own appointments; reviewers are shown as this doctor may see them.
+    """
+    from app.services.doctor_next_actions import document_actions
+
+    return document_actions(doctor["doctor_id"], doctor.get("department"))
+
+
 @router.post("/reviews/draft-all")
 async def doctor_draft_all_missing_notes_route(
     http_request: Request,
@@ -381,9 +393,111 @@ async def doctor_visit_nutrition_route(booking_id: str, doctor: dict = Depends(g
     for a result nobody has had before is generated here, once, and then reused.
     """
     try:
-        return await guidance_for_appointment(doctor["doctor_id"], booking_id)
+        guidance = await guidance_for_appointment(doctor["doctor_id"], booking_id)
     except PermissionError:
         raise HTTPException(status_code=404, detail="Appointment not found.")
+    return _with_nutrition_plan(guidance, doctor, guidance["patient_id"])
+
+
+def _with_nutrition_plan(guidance: dict, doctor: dict, patient_id: str) -> dict:
+    """The checked guidance, organised into themes, foods that help most, a sample day and
+    which themes were discussed (app/services/nutrition_plan.py). Code only, no model."""
+    from app.services.nutrition_plan import discussions_for, organize
+
+    discussions = discussions_for(patient_id, doctor["doctor_id"], doctor.get("department"))
+    return {**guidance, "patient_id": patient_id, "plan": organize(guidance, discussions)}
+
+
+class NutritionDiscussedRequest(BaseModel):
+    theme: str = Field(..., max_length=40)
+    discussed: bool = True
+    booking_id: str | None = Field(None, max_length=64)
+
+
+class NutritionHandoutRequest(BaseModel):
+    diet: str = Field("veg", max_length=10)
+    # Accepted for older pages; the handout always covers every theme on the page.
+    themes: list[str] = Field(default_factory=list, max_length=20)
+    booking_id: str | None = Field(None, max_length=64)
+    # From the document viewer's nutritionist, which has no booking.
+    document_id: str | None = Field(None, max_length=128)
+
+
+def _assert_nutrition_access(doctor_id: str, patient_id: str, booking_id: str | None) -> str | None:
+    """A doctor treating the patient; a booking, when named, must be theirs with this patient.
+    Returns the booking id to record, or raises 404 — the same answer for every refusal."""
+    from app.services.visit_brief import _uuid_or_none
+
+    if not doctor_treats_patient(doctor_id, patient_id):
+        raise HTTPException(status_code=404, detail="Patient not found.")
+    if not booking_id:
+        return None
+    safe_booking = _uuid_or_none(booking_id)
+    if not safe_booking:
+        raise HTTPException(status_code=404, detail="Patient not found.")
+    with connect_db() as conn:
+        with conn.cursor() as cur:
+            cur.execute(
+                "SELECT 1 FROM appointment_bookings WHERE booking_id = %s AND doctor_id = %s AND patient_id = %s",
+                (safe_booking, doctor_id, patient_id),
+            )
+            found = cur.fetchone() is not None
+        conn.commit()
+    if not found:
+        raise HTTPException(status_code=404, detail="Patient not found.")
+    return str(safe_booking)
+
+
+@router.post("/patients/{patient_id}/nutrition/discussed")
+def doctor_nutrition_discussed_route(
+    patient_id: str, request: NutritionDiscussedRequest, doctor: dict = Depends(get_current_doctor),
+):
+    """Marks a nutrition theme discussed with the patient, or withdraws this doctor's own mark
+    for this visit. Shown at the next visit; audited either way."""
+    from app.services.nutrition_plan import discussions_for, mark_discussed
+
+    booking_id = _assert_nutrition_access(doctor["doctor_id"], patient_id, request.booking_id)
+    try:
+        mark_discussed(doctor["doctor_id"], patient_id, request.theme, booking_id, request.discussed)
+    except ValueError as exc:
+        raise HTTPException(status_code=422, detail=str(exc))
+    return {"discussed": discussions_for(patient_id, doctor["doctor_id"], doctor.get("department"))}
+
+
+@router.post("/patients/{patient_id}/nutrition/handout")
+async def doctor_nutrition_handout_route(
+    patient_id: str, request: NutritionHandoutRequest, doctor: dict = Depends(get_current_doctor),
+):
+    """Makes the patient's food handout, keeps it in their account, and returns it to print.
+
+    Built here from the same guidance the doctor is looking at (the visit's, or the
+    document's), so what is printed and what the patient later reads in their account are
+    the same thing. Contains no values, no document names and no doses (nutrition_plan).
+    """
+    from app.services.nutrition_plan import build_handout, organize, save_handout
+
+    booking_id = _assert_nutrition_access(doctor["doctor_id"], patient_id, request.booking_id)
+    if booking_id:
+        try:
+            guidance = await guidance_for_appointment(doctor["doctor_id"], booking_id)
+        except PermissionError:
+            raise HTTPException(status_code=404, detail="Patient not found.")
+    elif request.document_id:
+        try:
+            assert_doctor_may_read_document(doctor["doctor_id"], patient_id, request.document_id)
+        except PermissionError:
+            raise HTTPException(status_code=404, detail="Patient not found.")
+        except ValueError:
+            raise HTTPException(status_code=409, detail="This document has not finished processing.")
+        guidance = await guidance_for_document(doctor["doctor_id"], patient_id, request.document_id)
+    else:
+        raise HTTPException(status_code=422, detail="Say which visit or document the handout is for.")
+    content = build_handout(organize(guidance), request.diet)
+    if not content["themes"]:
+        raise HTTPException(status_code=409, detail="There is no food guidance to hand out.")
+    handout_id = save_handout(doctor["doctor_id"], patient_id, booking_id,
+                              None if booking_id else request.document_id, content)
+    return {"id": handout_id, "handout": content, "saved_to_patient_account": True}
 
 
 @router.get("/appointments/{booking_id}/context")
@@ -547,7 +661,8 @@ async def doctor_patient_document_nutrition_route(
         raise HTTPException(status_code=404, detail="Patient not found.")
     except ValueError:
         raise HTTPException(status_code=409, detail="This document has not finished processing.")
-    return await guidance_for_document(doctor["doctor_id"], patient_id, document_id)
+    guidance = await guidance_for_document(doctor["doctor_id"], patient_id, document_id)
+    return _with_nutrition_plan(guidance, doctor, patient_id)
 
 
 @router.post("/patients/{patient_id}/documents/{document_id}/review")
@@ -614,6 +729,14 @@ async def doctor_patient_overview_route(
         raise HTTPException(status_code=404, detail="Patient not found.")
 
     overview = await get_overview(doctor["doctor_id"], patient_id, doctor.get("department"))
+    # Read on every open, never cached with the card: a document can be verified or
+    # reported at any moment, and that is not one of the inputs the card is cached on.
+    overview = apply_review_labels(overview, doctor["doctor_id"], doctor.get("department"))
+    try:
+        overview["documents"] = document_blocks(doctor["doctor_id"], patient_id, doctor.get("department"))
+    except Exception as exc:  # the card must still load if this part cannot be built
+        logger.error("overview: document blocks failed for %s: %s", patient_id, exc)
+        overview["documents"] = []
     # Every view, cached or not: the audit records who READ the record, and a cache hit is
     # still a read.
     _audit_overview_view(doctor["doctor_id"], patient_id, overview)

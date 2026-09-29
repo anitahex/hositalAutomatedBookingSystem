@@ -272,12 +272,634 @@ const SIGNED = { ...NOTE, status: "signed", signed_at: "2026-09-23T10:05:00",
   addenda: [{ id: "a1", content: "Patient called; tolerating medication well.",
               added_by: "d1", created_at: "2026-09-23T12:00:00" }] };
 
+// ── ?patient=<flow>: the PATIENT chat — attachments, consent at Send, End chat ─────────
+// The real app code runs against a mocked API, and each flow is driven by real clicks and
+// keys. #out gets JSON: what the page showed at each step, and every request it sent.
+//   attach3        three files -> pills -> Send -> one consent dialog -> Store & analyse
+//   cap            four files chosen at once -> only three are added
+//   remove         two files, remove one pill -> that file is discarded on the server
+//   discard        a file and some text -> Discard -> only the text is sent
+//   cancelconsent  Esc on the consent dialog -> nothing sent, attachment kept
+//   endmid         End chat while a reply is still streaming -> reply dropped, × clears
+//   endesc         Esc on the End dialog -> back to the chat, focus on End chat
+//   endpending     End chat with an unsent attachment -> it is discarded on the server
+//   typedclose     the assistant closes the chat -> closed dialog -> Esc clears
+// ?hold=consent|end|closed stops with that dialog open, for a screenshot or ?axe=1.
+async function runPatientChat(win, doc) {
+  const flow = params.get("patient");
+  const hold = params.get("hold");
+  const report = { flow, steps: [] };
+  const wait = (ms) => new Promise((r) => win.setTimeout(r, ms));
+  const until = async (test, ms = 4000) => {
+    const end = Date.now() + ms;
+    while (Date.now() < end) {
+      if (test()) return true;
+      await wait(50);
+    }
+    return false;
+  };
+  const step = (name, extra = {}) => report.steps.push({ name, ...extra });
+  const $ = (sel) => doc.querySelector(sel);
+  const visible = (sel) => { const el = $(sel); return !!el && !el.classList.contains("hidden"); };
+  const reply = (body, status = 200) => ({
+    ok: status < 400, status, json: async () => body, text: async () => JSON.stringify(body),
+  });
+  const encoder = new win.TextEncoder();
+  const ndjson = (events) => events.map((e) => JSON.stringify(e)).join("\n") + "\n";
+  let streamMode = flow === "endmid" ? "hang" : flow === "typedclose" ? "close" : "normal";
+  let abortSeen = false;
+
+  win.__requests = [];
+  win.fetch = async (url, options = {}) => {
+    const u = String(url);
+    const method = String(options.method || "GET").toUpperCase();
+    let body = options.body || null;
+    if (body && typeof body !== "string") {
+      // FormData: record the file name only.
+      body = { file: body.get && body.get("file") ? body.get("file").name : null };
+    }
+    win.__requests.push({ method, url: u, body });
+    if (u.includes("/chat/upload")) {
+      await wait(300);
+      const name = body && body.file;
+      if (name && name.includes("holiday")) {
+        return reply({ detail: "Invalid document type. Only verified medical records are supported." }, 400);
+      }
+      return reply({ requires_consent: true, document_token: `tok-${name}` });
+    }
+    if (u.includes("/chat/confirm-processing")) {
+      const sent = JSON.parse(options.body);
+      return reply({ status: sent.consent_granted ? "processing" : "cancelled" });
+    }
+    if (u.includes("/chat/stream")) {
+      const sent = JSON.parse(options.body);
+      const finalState = { ...sent.state, awaiting: null, chat_closed: streamMode === "close" };
+      const text = streamMode === "close" ? "The chat is now closed." : `Reply to: ${sent.message}`;
+      const stream = new win.ReadableStream({
+        start(controller) {
+          controller.enqueue(encoder.encode(ndjson([{ type: "start_response" }, { type: "token", token: text.slice(0, 5) }])));
+          if (options.signal) {
+            options.signal.addEventListener("abort", () => {
+              abortSeen = true;
+              try { controller.error(new win.DOMException("The operation was aborted.", "AbortError")); } catch (e) { /* closed */ }
+            });
+          }
+          if (streamMode === "hang") return;  // a reply still streaming when End is pressed
+          controller.enqueue(encoder.encode(ndjson([
+            { type: "token", token: text.slice(5) },
+            { type: "final", response: text, state: finalState, token_usage: {} },
+          ])));
+          controller.close();
+        },
+      });
+      return new win.Response(stream, { status: 200, headers: { "Content-Type": "application/x-ndjson" } });
+    }
+    if (u.includes("/chat/records")) return reply(PATIENT_RECORDS);
+    if (u.includes("/chat/documents/") && u.endsWith("/file")) {
+      const png = Uint8Array.from(atob("iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mNk+M9QDwADhgGAWjR9awAAAABJRU5ErkJggg=="), (c) => c.charCodeAt(0));
+      const isImage = u.includes("scan1");
+      return new win.Response(isImage ? png : new win.Blob(["%PDF-1.4 fixture"]), {
+        status: 200, headers: { "Content-Type": isImage ? "image/png" : "application/pdf" } });
+    }
+    if (u.includes("/auth/me")) return reply({ user: FIXTURES_PATIENT });
+    if (u.includes("/appointments")) return reply({ bookings: [] });
+    return reply({});
+  };
+
+  const PATIENT_RECORDS = {
+    documents: [
+      { document_id: "lab1", document_ids: ["lab1", "lab1b"], session_id: "s1", original_filename: "Lab_Report.pdf",
+        document_type: "blood_report", clinical_date: "2026-09-20", uploaded_at: "2026-09-20T10:00:00",
+        content_type: "application/pdf", copies: 2, ingestion_status: "complete", status: "verified",
+        verified_by: [{ name: "Dr. Mihir Thanvi", department: "Orthopedics", at: "2026-09-29T10:00:00" },
+                      { name: "Dr. Sunita Panday", department: "Psychiatry", at: "2026-09-30T09:00:00" }] },
+      { document_id: "scan1", document_ids: ["scan1"], session_id: "s2", original_filename: "mri.png",
+        document_type: "mri_report", clinical_date: "2022-04-23", uploaded_at: "2026-09-21T10:00:00",
+        content_type: "image/png", copies: 1, ingestion_status: "complete", status: "not_reviewed", verified_by: [] },
+      { document_id: "rx1", document_ids: ["rx1"], session_id: "s2", original_filename: "prescription.jpg",
+        document_type: "prescription", clinical_date: "2022-05-21", uploaded_at: "2026-09-21T10:00:00",
+        content_type: "image/jpeg", copies: 1, ingestion_status: "complete", status: "under_review", verified_by: [] },
+      { document_id: "new1", document_ids: ["new1"], session_id: "s3", original_filename: "today.pdf",
+        document_type: "other", clinical_date: null, uploaded_at: "2026-09-30T10:00:00",
+        content_type: "application/pdf", copies: 1, ingestion_status: "processing", status: "processing", verified_by: [] },
+    ],
+    handouts: [{ id: 3, created_at: "2026-09-29T12:00:00", diet: "veg", doctor_name: "Dr. Mihir Thanvi", department: "Orthopedics",
+      content: { diet: "veg", note: "These are food suggestions to talk over with your doctor, not a diet prescription.",
+        themes: [{ title: "Vitamins & blood", blurb: "Foods rich in the vitamins and minerals that are low.",
+                   foods: ["paneer", "almonds", "spinach"], go_easy: ["alcohol"], tips: ["Sit in the morning sun."] }],
+        sample_day: [{ label: "Morning", foods: ["oats", "almonds", "amla"] }] } }],
+  };
+  const FIXTURES_PATIENT = { patient_id: "pt1", name: "Asha Verma", age: 34, email: "asha@example.com",
+                             mobile_number: "+919800000000", blood_group: "B+" };
+  win.setPatientAuthenticated(FIXTURES_PATIENT, "harness-token", "harness-refresh");
+  await wait(200);
+
+  const input = $("#messageInput");
+  const form = $("#chatForm");
+  const upload = $("#documentUpload");
+  const attach = (names) => {
+    const dt = new win.DataTransfer();
+    for (const name of names) {
+      const type = name.endsWith(".pdf") ? "application/pdf" : "image/png";
+      dt.items.add(new win.File(["%PDF fixture"], name, { type }));
+    }
+    upload.files = dt.files;
+    upload.dispatchEvent(new win.Event("change", { bubbles: true }));
+  };
+  const pills = () => Array.from(doc.querySelectorAll("#attachPills .attach-pill")).map((p) => ({
+    name: p.querySelector(".attach-pill-name").textContent,
+    state: p.dataset.state,
+    status: p.querySelector(".attach-pill-status").textContent,
+  }));
+  const bubbles = () => Array.from(doc.querySelectorAll("#messages .message")).map((m) => ({
+    role: m.classList.contains("user") ? "user" : "assistant",
+    text: m.textContent.replace(/\s+/g, " ").trim().slice(0, 120),
+  }));
+  const requests = () => win.__requests
+    .filter((r) => r.url.includes("/chat/"))
+    .map((r) => ({ method: r.method, url: r.url.replace(/^.*\/chat\//, "/chat/"),
+                   body: typeof r.body === "string" ? JSON.parse(r.body) : r.body }))
+    .map((r) => (r.url === "/chat/stream" ? { ...r, body: { message: r.body.message } } : r));
+  const active = () => doc.activeElement && (doc.activeElement.id || doc.activeElement.className || doc.activeElement.tagName);
+  const press = (key, opts = {}) => doc.activeElement.dispatchEvent(
+    new win.KeyboardEvent("keydown", { key, bubbles: true, cancelable: true, ...opts }));
+  const send = () => form.requestSubmit();
+  const consentOpen = () => visible("#documentConsentModal");
+
+  if (["attach3", "cap", "remove", "discard", "cancelconsent", "endpending"].includes(flow)) {
+    const names = {
+      attach3: ["blood-report.pdf", "mri-scan.pdf", "xray.png"],
+      cap: ["a.pdf", "b.pdf", "c.pdf", "d.pdf"],
+      remove: ["keep.pdf", "drop.pdf"],
+      discard: ["report.pdf"],
+      cancelconsent: ["report.pdf"],
+      endpending: ["unsent.pdf"],
+    }[flow];
+    attach(names);
+    step("chosen", { pills: pills(), status: $("#uploadStatus").textContent, required: input.required });
+    await until(() => pills().every((p) => p.state !== "checking"));
+    step("checked", { pills: pills(), status: $("#uploadStatus").textContent, required: input.required });
+  }
+
+  if (flow === "remove") {
+    doc.querySelector("#attachPills .attach-pill:nth-child(2) .attach-pill-remove").click();
+    await wait(50);
+    step("removed", { pills: pills(), requests: requests().filter((r) => r.url.includes("confirm")) });
+  }
+
+  if (["attach3", "remove", "discard", "cancelconsent"].includes(flow)) {
+    if (flow === "discard") input.value = "Also I have a cough";
+    send();
+    await until(consentOpen);
+    step("consent dialog", {
+      open: consentOpen(),
+      title: $("#documentConsentTitle").textContent,
+      files: Array.from(doc.querySelectorAll("#documentConsentList li")).map((li) => li.textContent),
+      focus: active(),
+    });
+    if (hold === "consent") return report;
+    if (flow === "cancelconsent") {
+      press("Escape");
+      await wait(50);
+      step("after Esc", { open: consentOpen(), pills: pills(), focus: active(), requests: requests() });
+    } else {
+      (flow === "discard" ? $("#documentConsentDiscardBtn") : $("#documentConsentAcceptBtn")).click();
+      await until(() => !consentOpen());
+      await until(() => bubbles().some((b) => b.text.startsWith("Reply to") || b.text.includes("Reply to")), 3000);
+      step("sent", { open: consentOpen(), pills: pills(), required: input.required,
+                     status: $("#uploadStatus").textContent, bubbles: bubbles().slice(-2), requests: requests() });
+    }
+  }
+
+  if (flow === "endmid") {
+    input.value = "I have a headache";
+    send();
+    await until(() => win.__requests.some((r) => r.url.includes("/chat/stream")));
+    await wait(200);
+    step("reply streaming", { composerDisabled: input.disabled, bubbles: bubbles().slice(-1) });
+  }
+
+  if (["endmid", "endesc", "endpending"].includes(flow)) {
+    $("#endChatBtn").focus();
+    $("#endChatBtn").click();
+    await wait(50);
+    step("end dialog", { open: visible("#endChatConfirmModal"), focus: active(),
+                         body: $("#endChatConfirmBody").textContent });
+    if (hold === "end") return report;
+    if (flow === "endesc") {
+      press("Escape");
+      await wait(50);
+      step("after Esc", { open: visible("#endChatConfirmModal"), focus: active(), requests: requests() });
+      return report;
+    }
+    // Tab from the last control wraps to the first: focus stays inside the dialog.
+    $("#endChatConfirmBtn").focus();
+    press("Tab");
+    step("tab wraps", { focus: active() });
+    $("#endChatConfirmBtn").click();
+    await wait(300);
+    step("ended", {
+      endDialog: visible("#endChatConfirmModal"), closedDialog: visible("#chatClosedModal"),
+      focus: active(), abortSeen, composerDisabled: input.disabled, pills: pills(),
+      lastBubble: bubbles().slice(-1), requests: requests().filter((r) => r.url.includes("confirm")),
+    });
+    if (hold === "closed") return report;
+    $("#chatClosedCloseBtn").click();
+    await wait(300);
+    step("after ×", { closedDialog: visible("#chatClosedModal"), bubbles: bubbles(),
+                      composerDisabled: input.disabled, focus: active() });
+  }
+
+  // The doctor's visit brief labels an AI summary as one, not as the patient's own words.
+  if (flow === "doctorlabel") {
+    const chipsFor = (note) => {
+      const node = win.buildVisitBrief({
+        why: { booking_note: note, label: "Patient reports", recorded: true, messages: 14, documents_brought: 3 },
+        since: { first_visit: true, documents: [], abnormal: [], colleague_notes: [], colleague_prescriptions: [] },
+        last_plan: null,
+      });
+      return Array.from(node.querySelectorAll("[class*='chip']")).map((c) => c.textContent.trim()).filter(Boolean);
+    };
+    step("ai summary", { chips: chipsFor("PRE-AI INTAKE CHECKUP REPORT (Auto-generated from patient chat) DOCUMENT FINDINGS") });
+    step("patient words", { chips: chipsFor("My back hurts when I sit.") });
+    step("timeline check", { ai: win.isAiPreVisitSummary("## PRE-APPOINTMENT AI CLINICAL SUMMARY"), plain: win.isAiPreVisitSummary("fever") });
+    return report;
+  }
+
+  // The patient's records: every document with its status and verifiers, their own files,
+  // and the food handouts their doctors made.
+  if (flow === "records") {
+    // ?notransition=1: headless virtual time can freeze a CSS transition half-way, which
+    // makes a screenshot show a tab mid-fade. Only for screenshots.
+    if (params.get("notransition") === "1") {
+      const st = doc.createElement("style");
+      st.textContent = "*{transition:none !important}";
+      doc.head.appendChild(st);
+    }
+    doc.querySelector('[data-nav="records"]').click();
+    await until(() => doc.querySelectorAll("#analyzedDocsList .patient-doc-card").length === 4);
+    const cards = () => Array.from(doc.querySelectorAll("#analyzedDocsList .patient-doc-card")).map((c) => ({
+      name: c.querySelector(".patient-doc-name").textContent,
+      chip: c.querySelector(".patient-doc-chip").textContent,
+      status: c.querySelector(".patient-doc-status").textContent,
+      buttons: Array.from(c.querySelectorAll("button")).map((b) => b.textContent),
+    }));
+    step("documents", { cards: cards(),
+      dashboard: Array.from(doc.querySelectorAll("#dashboardDocsList .patient-doc-card .patient-doc-name")).map((n) => n.textContent) });
+    if (hold === "records") return report;
+    const imageButton = Array.from(doc.querySelectorAll("#analyzedDocsList .patient-doc-card"))
+      .find((c) => c.textContent.includes("mri.png")).querySelector("button");
+    imageButton.click();
+    await until(() => visible("#patientPreviewModal"));
+    step("image preview", { open: visible("#patientPreviewModal"), src: (doc.querySelector("#patientPreviewImage").src || "").slice(0, 5),
+      focus: active(), title: doc.querySelector("#patientPreviewTitle").textContent });
+    if (hold === "preview") return report;
+    press("Escape");
+    await wait(100);
+    step("preview closed", { open: visible("#patientPreviewModal"), srcCleared: !doc.querySelector("#patientPreviewImage").getAttribute("src") });
+    let downloaded = null;
+    const originalClick = win.HTMLAnchorElement.prototype.click;
+    win.HTMLAnchorElement.prototype.click = function () { downloaded = { name: this.download, href: this.href.slice(0, 5) }; };
+    Array.from(doc.querySelectorAll("#analyzedDocsList .patient-doc-card")).find((c) => c.textContent.includes("Lab_Report.pdf"))
+      .querySelector("button").click();
+    await until(() => downloaded);
+    win.HTMLAnchorElement.prototype.click = originalClick;
+    step("pdf download", { downloaded, requests: win.__requests.filter((r) => r.url.includes("/file")).map((r) => r.url.replace(/^.*\/chat\//, "/chat/")) });
+    doc.querySelector('[data-rec-tab="food"]').click();
+    await wait(50);
+    const handout = doc.querySelector("#patientHandoutsList .patient-doc-card");
+    step("food suggestions", { panelVisible: visible("#recFoodPanel"), title: handout.querySelector(".patient-doc-name").textContent,
+      meta: handout.querySelector(".patient-doc-meta").textContent, covers: handout.querySelector(".patient-doc-status").textContent });
+    handout.querySelector("button").click();
+    await wait(50);
+    await wait(400);  // past the tabs' 0.12s transition, which a headless screenshot can freeze
+    step("handout shown", { expanded: handout.querySelector("button").getAttribute("aria-expanded"),
+      details: handout.querySelector(".patient-handout-details").textContent,
+      tabs: Array.from(doc.querySelectorAll("[data-rec-tab]")).map((b) => `${b.textContent}:${b.classList.contains("is-active")}:${win.getComputedStyle(b).color}`),
+      nav: Array.from(doc.querySelectorAll(".nav-item.is-active")).map((b) => b.dataset.nav) });
+    if (hold === "food") return report;
+    let printed = null;
+    win.open = () => {
+      const frame = doc.createElement("iframe");
+      frame.style.display = "none";
+      doc.body.appendChild(frame);
+      printed = frame.contentDocument;
+      return { document: printed, close() {}, print() {} };
+    };
+    Array.from(handout.querySelectorAll("button")).find((b) => b.textContent === "Print").click();
+    await wait(100);
+    step("handout printed", { title: printed && printed.querySelector("h1")?.textContent,
+      headings: printed ? Array.from(printed.querySelectorAll("h2")).map((h) => h.textContent) : [] });
+    return report;
+  }
+
+  if (flow === "typedclose") {
+    input.value = "bye";
+    send();
+    await until(() => visible("#chatClosedModal"));
+    step("closed by the assistant", { closedDialog: visible("#chatClosedModal"), focus: active() });
+    if (hold === "closed") return report;
+    press("Escape");
+    await wait(300);
+    step("after Esc", { closedDialog: visible("#chatClosedModal"), bubbles: bubbles(), composerDisabled: input.disabled });
+  }
+  return report;
+}
+
+// ── ?doctor=<flow>: the doctor pages built for verification, next actions and nutrition ──
+// Real payloads captured from the live API (served as /static/_live_*.json while checking),
+// with the app's own code rendering them. #out gets JSON of what each step showed.
+//   glance      At a glance by document -> open a block -> Mark verified dialog -> confirm
+//   actions     Next actions with document work
+//   auditlog    the audit log's document rows, one opened
+//   nutrition   the organised AI nutritionist: themes, Mark discussed, handout
+// ?hold=verify|nutrition stops with that on screen (for screenshots or ?axe=1).
+async function runDoctorChecks(win, doc) {
+  const flow = params.get("doctor");
+  const hold = params.get("hold");
+  const report = { flow, steps: [] };
+  const wait = (ms) => new Promise((r) => win.setTimeout(r, ms));
+  const until = async (test, ms = 4000) => {
+    const end = Date.now() + ms;
+    while (Date.now() < end) { if (test()) return true; await wait(50); }
+    return false;
+  };
+  const step = (name, extra = {}) => report.steps.push({ name, ...extra });
+  const $ = (sel) => doc.querySelector(sel);
+  const $$ = (sel) => Array.from(doc.querySelectorAll(sel));
+  const visible = (sel) => { const el = $(sel); return !!el && !el.classList.contains("hidden"); };
+  const reply = (body, status = 200) => ({ ok: status < 400, status, json: async () => body, text: async () => JSON.stringify(body) });
+  const nativeFetch = window.fetch.bind(window);
+  const live = async (name) => (await nativeFetch(`/static/_live_${name}.json`)).json();
+
+  const overview = await live("overview");
+  const nutrition = await live("nutrition");
+  const counters = { overview: 0, review: null, discussed: null, handout: null };
+  const DOC_ACTIONS = {
+    reported: [{ kind: "reported_document", patient_id: "p1", patient_name: "Anit Rao", booking_id: "b1",
+      appointment_start: "2026-09-30T10:00:00",
+      document: { document_id: "rx1", original_filename: "prescription.png", document_type: "prescription", clinical_date: "2022-05-21", content_type: "image/png" },
+      review: { status: "flagged", verified_by: [], mine: null,
+        flagged_by: [{ name: "Dr. Sunita Panday", department: "Psychiatry", at: "2026-09-29T09:00:00", is_me: false, reason: "Dose misread on the photo" }] } }],
+    new_abnormal: [{ kind: "new_abnormal", patient_id: "p2", patient_name: "Priya Menon", booking_id: "b2",
+      appointment_start: "2026-09-30T11:30:00",
+      document: { document_id: "lab2", original_filename: "labs.pdf", document_type: "blood_report", clinical_date: "2026-09-20", content_type: "application/pdf" },
+      findings: [{ name: "HbA1c", value: 8.1, unit: "%", flag: "high", change: { kind: "new" } },
+                 { name: "Vitamin D", value: 13.8, unit: "ng/mL", flag: "low", change: { kind: "worse" } }],
+      review: { status: "unverified", verified_by: [], flagged_by: [], mine: null } }],
+    to_verify: [{ kind: "verify_document", patient_id: "p1", patient_name: "Anit Rao", booking_id: "b1",
+      appointment_start: "2026-09-30T10:00:00",
+      document: { document_id: "mri1", original_filename: "mri.png", document_type: "mri_report", clinical_date: "2022-04-23", content_type: "image/png" },
+      review: { status: "unverified", verified_by: [], flagged_by: [], mine: null } }],
+  };
+  const LOG = { events: [
+    { action: "document_verified", label: "You verified a document", is_ai: false, occurred_at: "2026-09-29T10:05:00",
+      detail: { document_id: "lab1" }, openable: true, consultation_id: null,
+      document: { document_id: "lab1", original_filename: "Lab_Report.pdf", document_type: "blood_report", clinical_date: "2026-09-20", patient_id: "p1", content_type: "application/pdf" } },
+    { action: "document_flagged_inaccurate", label: "You reported a document inaccurate", is_ai: false, occurred_at: "2026-09-29T09:00:00",
+      detail: { document_id: "rx1", reason: "Dose misread on the photo" }, openable: true, consultation_id: null,
+      document: { document_id: "rx1", original_filename: "prescription.png", document_type: "prescription", clinical_date: "2022-05-21", patient_id: "p1", content_type: "image/png" } },
+    { action: "nutrition_theme_discussed", label: "You discussed a nutrition topic", is_ai: false, occurred_at: "2026-09-29T08:00:00",
+      detail: { theme_title: "Vitamins & blood" }, openable: false, consultation_id: null },
+  ] };
+
+  win.__requests = [];
+  win.fetch = async (url, options = {}) => {
+    const u = String(url);
+    const method = String(options.method || "GET").toUpperCase();
+    win.__requests.push({ method, url: u, body: options.body || null });
+    if (u.includes("/overview")) { counters.overview += 1; return reply(overview); }
+    if (u.includes("/ai/document-actions")) return reply(DOC_ACTIONS);
+    if (u.includes("/ai/activity-log")) return reply(LOG);
+    if (u.includes("/ai/activity-summary")) return reply({ counts: {}, headline: "", window: "last_visit", window_requested: "last_visit" });
+    if (u.includes("/doctor/reviews")) return reply({ reviews: [], counts: {}, ranked_consultation_ids: [] });
+    if (u.includes("/doctor/me")) return reply({ doctor: FIXTURES.doctor });
+    if (u.includes("/doctor/appointments") && u.includes("/brief")) return reply({ ...FIXTURES.brief, patient_id: "p1", has_documents: true });
+    if (u.includes("/nutrition/discussed")) {
+      const sent = JSON.parse(options.body);
+      counters.discussed = sent;
+      return reply({ discussed: sent.discussed
+        ? { [sent.theme]: { name: "Dr. Ajit Singh Narula", department: "Nephrology", at: "2026-09-29T12:00:00", is_me: true, booking_id: sent.booking_id } }
+        : {} });
+    }
+    if (u.includes("/nutrition/handout")) {
+      counters.handout = JSON.parse(options.body);
+      return reply({ id: 7, saved_to_patient_account: true, handout: {
+        diet: counters.handout.diet,
+        themes: (nutrition.plan.themes || []).map((t) => ({ title: t.title, blurb: t.blurb,
+          foods: t.foods[counters.handout.diet] || [], go_easy: t.go_easy, tips: t.tips })),
+        sample_day: ((nutrition.plan.sample_day || {})[counters.handout.diet] || []).map((m) => ({ label: m.label, foods: m.foods })),
+        note: "These are food suggestions to talk over with your doctor, not a diet prescription." } });
+    }
+    if (u.includes("/nutrition")) return reply(nutrition);
+    if (u.includes("/clinical")) {
+      const id = decodeURIComponent((u.match(/documents\/([^/]+)\/clinical/) || [])[1] || "d-open");
+      return reply({ document_id: id, summary: null, findings: [], completeness: { report_flagged: 0, listed_from_report: 0 },
+        review: { status: "unverified", verified_by: [], flagged_by: [], mine: null } });
+    }
+    if (u.includes("/review")) {
+      counters.review = JSON.parse(options.body);
+      const id = decodeURIComponent((u.match(/documents\/([^/]+)\/review/) || [])[1] || "d-open");
+      return reply({ document_id: id, review: { status: "verified", mine: "verified", flagged_by: [],
+        verified_by: [{ name: "Dr. Ajit Singh Narula", department: "Nephrology", at: "2026-09-29T12:00:00", is_me: true }] } });
+    }
+    if (u.includes("/file")) return reply({ detail: "not in the harness" }, 404);
+    if (/\/doctor\/patients\/p1$/.test(u)) return reply(FIXTURES.patient);
+    if (u.includes("/doctor/appointments")) return reply({ appointments: [] });
+    return reply({});
+  };
+
+  doc.querySelectorAll("body > section").forEach((s) => s.classList.add("hidden"));
+  const dash = doc.querySelector("#doctorDashboardView");
+  dash.classList.remove("hidden");
+  dash.querySelectorAll(".doctor-ai-side, .doctor-ai-main, .doctor-ai").forEach((el) => el.classList.remove("hidden"));
+  win.renderDoctorDashboard(FIXTURES.doctor);
+
+  if (flow === "glance") {
+    await win.loadDoctorPatientDetail("p1");
+    await until(() => $$(".doctor-glance-doc").length > 0);
+    step("at a glance", {
+      heading: $(".doctor-glance-docs-heading")?.textContent,
+      blocks: $$(".doctor-glance-doc").map((b) => ({
+        classes: b.className,
+        title: b.querySelector(".doctor-glance-doc-title")?.textContent,
+        meta: b.querySelector(".doctor-glance-doc-meta")?.textContent,
+        chip: b.querySelector(".doctor-review-chip")?.textContent,
+        review: b.querySelector(".doctor-glance-doc-review")?.textContent,
+        rows: Array.from(b.querySelectorAll(".doctor-glance-findings li")).slice(0, 3).map((li) => li.textContent),
+        changes: b.querySelector(".doctor-glance-doc-changes")?.textContent || null,
+        button: b.querySelector("button:last-child")?.textContent,
+      })),
+      lines: $$("#doctorOverviewLines > p.clinical-note-line").length,
+    });
+    if (hold === "glance") { $(".doctor-glance-docs-heading")?.scrollIntoView(); return report; }
+    const unverified = $$(".doctor-glance-doc.is-unverified button").find((b) => b.textContent === "Open to review");
+    unverified.click();
+    await until(() => visible("#doctorViewer") && $$(".doctor-review-actions button").length > 0);
+    $$(".doctor-review-actions button").find((b) => b.textContent === "Mark verified").click();
+    await until(() => visible("#doctorConfirmModal"));
+    step("verify dialog", {
+      open: visible("#doctorConfirmModal"),
+      title: $("#doctorConfirmTitle").textContent,
+      items: $$("#doctorConfirmList li").map((li) => li.textContent),
+      focus: doc.activeElement && doc.activeElement.id,
+      viewerStillOpen: visible("#doctorViewer"),
+    });
+    if (hold === "verify") return report;
+    const before = counters.overview;
+    $("#doctorConfirmOkBtn").click();
+    await until(() => counters.review && counters.overview > before);
+    await wait(200);
+    step("confirmed", { posted: counters.review, dialogOpen: visible("#doctorConfirmModal"),
+      overviewReloaded: counters.overview > before,
+      reviewStatus: $(".doctor-review-status")?.textContent });
+    return report;
+  }
+
+  if (flow === "actions") {
+    await win.loadDoctorReviews();
+    await until(() => $$("#doctorOverviewReviews .doctor-ai-item").length > 0);
+    step("next actions", {
+      subhead: $(".doctor-next-actions-subhead")?.textContent,
+      empty: $("#doctorOverviewReviews .doctor-ai-empty")?.textContent || null,
+      cards: $$("#doctorOverviewReviews .doctor-ai-item").map((c) => ({
+        title: c.querySelector(".doctor-ai-item-title")?.textContent,
+        chip: c.querySelector(".doctor-ai-chip")?.textContent,
+        detail: Array.from(c.querySelectorAll(".doctor-ai-item-body > .doctor-ai-item-meta")).map((d) => d.textContent).join(" | "),
+        action: c.querySelector("button")?.textContent,
+      })),
+      footnote: Array.from(doc.querySelectorAll(".doctor-ai-guard")).map((g) => g.textContent.trim())[0],
+    });
+    $$("#doctorOverviewReviews .doctor-ai-item button").find((b) => b.textContent === "Verify").click();
+    await until(() => visible("#doctorViewer"));
+    step("verify opens the document", { viewer: visible("#doctorViewer"), title: $("#doctorViewerTitle").textContent });
+    return report;
+  }
+
+  if (flow === "auditlog") {
+    await win.loadDoctorAiActivity();
+    await until(() => $$("#doctorActivityLog .doctor-ai-feed-row").length > 0);
+    step("audit log", { rows: $$("#doctorActivityLog .doctor-ai-feed-row").map((r) => ({
+      tag: r.tagName, text: r.textContent.replace(/\s+/g, " ").trim(), label: r.getAttribute("aria-label") })) });
+    $$("#doctorActivityLog .doctor-ai-feed-row")[0].click();
+    await until(() => visible("#doctorViewer"));
+    step("row opens the document", { viewer: visible("#doctorViewer"), title: $("#doctorViewerTitle").textContent });
+    return report;
+  }
+
+  if (flow === "nutrition") {
+    const appt = { booking_id: "b1", patient_id: "p1", patient_name: "Anit Rao", department: "Nephrology",
+      start_time: "2026-09-30T09:00:00", status: "booked", consult_id: null };
+    win.showDoctorAppointmentDetail(appt, "overview");
+    await until(() => $(".doctor-nutrition-toggle"));
+    $(".doctor-nutrition-toggle").click();
+    await until(() => $$(".doctor-nutri-tab").length > 0);
+    const snapshot = () => ({
+      summary: $(".doctor-nutri-summary")?.textContent,
+      tabs: $$(".doctor-nutri-tab").map((t) => `${t.getAttribute("aria-selected") === "true" ? "*" : " "}${t.textContent}`),
+      topFoods: $$(".doctor-nutri-ranked li").slice(0, 5).map((li) => li.textContent),
+      goEasy: $$(".doctor-nutri-easy li").slice(0, 4).map((li) => li.textContent),
+      panelTitle: $(".doctor-nutri-panel .doctor-nutri-title")?.textContent,
+      why: $$(".doctor-nutri-why-card").map((c) => c.textContent.replace(/\s+/g, " ").trim()),
+      add: $$(".doctor-nutri-panel .doctor-nutri-chip.is-ok").slice(0, 6).map((c) => c.textContent),
+      day: $$(".doctor-nutri-meal").map((m) => m.textContent.replace(/\s+/g, " ").trim()),
+      discussedButton: $(".doctor-nutri-discussed button")?.textContent,
+    });
+    step("organised", snapshot());
+    if (hold === "nutrition") { $(".doctor-nutrition")?.scrollIntoView(); return report; }
+    $$(".doctor-nutri-tab")[1]?.click();
+    await wait(100);
+    step("second theme", { tabs: snapshot().tabs, panelTitle: snapshot().panelTitle, focus: doc.activeElement && doc.activeElement.className });
+    $(".doctor-nutri-discussed button").click();
+    await until(() => counters.discussed && $(".doctor-nutri-discussed button")?.textContent === "Undo discussed");
+    step("marked discussed", { posted: counters.discussed, status: $(".doctor-nutri-discussed [role=status]")?.textContent,
+      button: $(".doctor-nutri-discussed button")?.textContent, tabChip: $$(".doctor-nutri-tab .doctor-nutri-chip").map((c) => c.textContent) });
+    [...$$(".doctor-nutrition-diet")].find((b) => b.textContent === "Non-vegetarian").click();
+    await wait(100);
+    step("non-vegetarian", { topFoods: snapshot().topFoods, day: snapshot().day });
+    // The handout opens a window: captured here instead of opened.
+    let handoutDoc = null;
+    win.open = () => {
+      const frame = doc.createElement("iframe");
+      frame.style.display = "none";
+      doc.body.appendChild(frame);
+      handoutDoc = frame.contentDocument;
+      return { document: handoutDoc, close() {}, print() {} };
+    };
+    $$(".doctor-nutri-controls button").find((b) => b.textContent === "Create patient handout").click();
+    await until(() => handoutDoc && handoutDoc.body && handoutDoc.body.textContent.includes("sample day"), 3000);
+    const text = handoutDoc ? handoutDoc.body.textContent : "";
+    step("handout", { recorded: counters.handout, title: handoutDoc && handoutDoc.querySelector("h1")?.textContent,
+      headings: handoutDoc ? Array.from(handoutDoc.querySelectorAll("h2")).map((h) => h.textContent) : [],
+      // No reading from the patient's results reaches the handout ("omega-3" in a blurb is fine).
+      leakedValues: (nutrition.items || []).flatMap((i) => (i.because || []).map((b) => b.value_text))
+        .filter((v) => v && text.includes(v)),
+      length: text.length,
+      // Printed from what the server stored, so the patient's copy and this one match.
+      firstThemeFoods: handoutDoc ? Array.from(handoutDoc.querySelector("ul")?.querySelectorAll("li") || []).map((li) => li.textContent) : [],
+      button: $$(".doctor-nutri-controls button").map((b) => b.textContent).find((t) => t.includes("handout") || t.includes("Handout")) });
+    return report;
+  }
+  return report;
+}
+
 document.getElementById("frame").addEventListener("load", async () => {
   const frame = document.getElementById("frame");
   const win = frame.contentWindow;
   const doc = frame.contentDocument;
 
   try {
+    if (params.get("doctor")) {
+      const report = await runDoctorChecks(win, doc);
+      if (runAxe) {
+        await new Promise((resolve, reject) => {
+          const s = doc.createElement("script");
+          s.src = "/static/_axe.js";
+          s.onload = resolve;
+          s.onerror = () => reject(new Error("could not load axe into the frame"));
+          doc.head.appendChild(s);
+        });
+        const open = Array.from(doc.querySelectorAll(".closed-modal")).find((m) => !m.classList.contains("hidden"));
+        const roots = { glance: "#doctorOverviewBlock", actions: "#doctorOverviewReviews",
+                        auditlog: "#doctorActivityLog", nutrition: ".doctor-nutrition" };
+        const root = open || doc.querySelector(roots[params.get("doctor")]) || doc.body;
+        const results = await win.axe.run(root, {
+          runOnly: { type: "tag", values: ["wcag2a", "wcag2aa", "wcag21a", "wcag21aa"] },
+        });
+        report.axe = {
+          root: root.id || root.className,
+          violations: results.violations.map((v) => ({ id: v.id, impact: v.impact, nodes: v.nodes.map((n) => n.target) })),
+          passes: results.passes.length,
+        };
+      }
+      out.textContent = "DOCTOR_DONE " + JSON.stringify(report, null, 1);
+      return;
+    }
+    if (params.get("patient")) {
+      const report = await runPatientChat(win, doc);
+      if (runAxe) {
+        await new Promise((resolve, reject) => {
+          const s = doc.createElement("script");
+          s.src = "/static/_axe.js";
+          s.onload = resolve;
+          s.onerror = () => reject(new Error("could not load axe into the frame"));
+          doc.head.appendChild(s);
+        });
+        const open = Array.from(doc.querySelectorAll(".closed-modal")).find((m) => !m.classList.contains("hidden"));
+        const root = open || (params.get("patient") === "records" ? doc.querySelector("#pageRecords") : null)
+          || doc.querySelector("#chatForm").closest("section") || doc.body;
+        const results = await win.axe.run(root, {
+          runOnly: { type: "tag", values: ["wcag2a", "wcag2aa", "wcag21a", "wcag21aa"] },
+        });
+        report.axe = {
+          root: root.id || root.className,
+          violations: results.violations.map((v) => ({ id: v.id, impact: v.impact, nodes: v.nodes.map((n) => n.target) })),
+          passes: results.passes.length,
+        };
+      }
+      out.textContent = "PATIENT_DONE " + JSON.stringify(report, null, 1);
+      return;
+    }
     // Every request the app makes, in order, with its method and body — so a flow can be
     // checked for WHAT it sent and in WHICH order (save before sign), not just what painted.
     win.__requests = [];
@@ -349,6 +971,11 @@ document.getElementById("frame").addEventListener("load", async () => {
       // re-renders; a direct render call is overwritten by that async continuation, which
       // left the SOAP fields empty and meant axe was auditing a blank note.
       else if (u.includes("/soap/verified-sections")) body = { sections: [] };
+      else if (u.includes("/plan-medications")) body = {
+        lines: ["Tab Gabapentin NT 400/10 BD x 15 days", "Serum Vitamin B12 and Vitamin D levels", "MRI lumbar spine"],
+        medications: ["Tab Gabapentin NT 400/10 BD x 15 days"],
+        tests: ["Serum Vitamin B12 and Vitamin D levels", "MRI lumbar spine"],
+        validated: false, notice: "Copied verbatim from your signed plan." };
       else if (u.includes("/soap")) body = pane === "signed" ? SIGNED : NOTE;
       else if (u.includes("/transcript")) body = FIXTURES.transcript;
       else if (u.includes("/clinical-item")) body = FIXTURES.clinicalItem;
@@ -532,6 +1159,22 @@ document.getElementById("frame").addEventListener("load", async () => {
         + `\npatch_index=${patch} sign_index=${sign} saved_before_sign=${patch >= 0 && sign > patch}`
         + `\npatch_carries_edit=${patchBody.includes(EDIT)}`
         + `\nrequests=${sent().join(" | ")}`;
+      return;
+    }
+
+    // ?insertplan=1 (with pane=clinical): Insert from plan copies the medicines and, under
+    // their own label, the tests and reports the signed plan advises.
+    if (params.get("insertplan") === "1") {
+      const box = doc.querySelector("#doctorClinicalItemText");
+      box.disabled = false;
+      box.value = "";
+      doc.querySelector("#doctorInsertFromPlanBtn").click();
+      await sleep(400);
+      out.textContent = "INSERTPLAN " + JSON.stringify({
+        text: box.value,
+        message: doc.querySelector("#doctorClinicalItemMessage").textContent,
+        hint: doc.querySelector("#doctorInsertFromPlanRow .panel-note").textContent,
+      });
       return;
     }
 

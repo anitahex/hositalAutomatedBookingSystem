@@ -214,3 +214,50 @@ def test_a_document_with_no_summary_can_still_be_verified_and_lapses_when_one_ar
 def test_an_unknown_action_is_rejected(world):
     with pytest.raises(ValueError):
         _review(world, "ortho", "approve")
+
+
+# ---- the doctor's own audit log ----
+
+def test_a_review_appears_in_the_reviewing_doctors_audit_log_and_opens_the_document(world):
+    """Recorded in consult_audit_log since reviews shipped, but never on the feed: a doctor
+    who verified a document could find no trace of it in their own audit log."""
+    from app.services.doctor_ai_activity import get_activity_log
+
+    with connect_db() as conn:
+        with conn.cursor() as cur:
+            cur.execute(
+                """INSERT INTO document_catalog (document_id, user_id, session_id, document_type,
+                                                 blob_summary_path, original_filename, ingestion_status)
+                   VALUES (%s, %s, 'feed-session', 'blood_report', 'x', 'lab-feed.pdf', 'complete')""",
+                (world["document"], world["patient"]),
+            )
+        conn.commit()
+    try:
+        _review(world, "ortho", "verify")
+        _review(world, "ortho", "flag", reason="Vitamin D value misread")
+        events = get_activity_log(world["ortho"])["events"]
+        mine = [e for e in events if (e.get("detail") or {}).get("document_id") == world["document"]]
+        assert [e["action"] for e in mine] == ["document_flagged_inaccurate", "document_verified"]
+        flagged, verified = mine
+        assert verified["label"] == "You verified a document" and verified["is_ai"] is False
+        assert verified["openable"] is True
+        assert verified["document"]["original_filename"] == "lab-feed.pdf"
+        assert verified["document"]["patient_id"] == world["patient"]
+        assert flagged["detail"]["reason"] == "Vitamin D value misread"
+        # Another doctor's log does not show it.
+        assert not [e for e in get_activity_log(world["psych"])["events"]
+                    if (e.get("detail") or {}).get("document_id") == world["document"]]
+    finally:
+        with connect_db() as conn:
+            with conn.cursor() as cur:
+                cur.execute("DELETE FROM document_catalog WHERE document_id = %s", (world["document"],))
+            conn.commit()
+
+
+def test_a_review_of_a_document_no_longer_catalogued_is_listed_but_not_openable(world):
+    from app.services.doctor_ai_activity import get_activity_log
+
+    _review(world, "cardio", "verify")
+    [event] = [e for e in get_activity_log(world["cardio"])["events"]
+               if (e.get("detail") or {}).get("document_id") == world["document"]]
+    assert event["openable"] is False and "document" not in event

@@ -38,7 +38,7 @@ from app.services.clinical_items import (
     ITEM_KINDS, approve_clinical_item, get_clinical_item, save_clinical_item,
 )
 from app.services.doctor_auth import get_doctor_profile
-from app.services.doctor_workspace import extract_plan_medication_lines
+from app.services.doctor_workspace import extract_plan_items, extract_plan_medication_lines
 from app.services.patient_overview import schedule_overview_refresh
 from app.services.soap_sections import list_verified_sections, set_section_verified
 from app.services.soap_notes import (
@@ -309,8 +309,13 @@ def get_plan_medications_route(consultation_id: str, doctor: dict = Depends(get_
             status_code=409,
             detail="Only a signed note's plan can be copied. Sign the note first.",
         )
+    items = extract_plan_items(note.get("plan"))
     return {
         "lines": extract_plan_medication_lines(note.get("plan")),
+        # The medicines and the tests or reports the plan asks for, each verbatim, so the
+        # prescription can carry both (doctor_workspace.extract_plan_items).
+        "medications": items["medications"],
+        "tests": items["tests"],
         # Restated in the payload so a client cannot render these as validated content
         # without also having been told they are not.
         "validated": False,

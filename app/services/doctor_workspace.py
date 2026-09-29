@@ -205,6 +205,62 @@ _DOSE_HINT = re.compile(
 )
 
 
+# A test, investigation or report the plan asks for. Whole words: "ct" is a scan, "act" is
+# not. A FORMATTING heuristic like _DOSE_HINT: it decides which copied line goes under which
+# label, never what the line says.
+_TEST_HINT = re.compile(
+    r"\b(?:tests?|investigations?|labs?|blood\s+work|blood\s+tests?|cbc|lft|kft|rft|lipid\s+profile|"
+    r"thyroid\s+profile|tsh|hba1c|fbs|ppbs|rbs|serum|urine|stool|culture|x-?rays?|mri|ct|"
+    r"ct\s+scan|usg|ultrasound|sonography|ecg|ekg|echo|2d\s+echo|scans?|biopsy|reports?|"
+    r"levels?|panel|screening|audiometry|spirometry|endoscopy|colonoscopy)\b",
+    re.IGNORECASE,
+)
+# A sentence boundary inside one unmarked line of prose: ". " or "; " before a new clause.
+_SENTENCE = re.compile(r"(?<=[.;])\s+(?=[A-Z0-9])")
+
+
+def extract_plan_items(plan_text: str | None, limit: int = 20) -> dict:
+    """The medicines and the tests or reports a signed Plan asks for, each copied verbatim.
+
+    {"medications": [...], "tests": [...]}. A line — or, in prose, a sentence — is a TEST
+    when it names an investigation, a scan or a report ("Serum Vitamin B12 and Vitamin D
+    levels", "MRI lumbar spine", "Bring previous reports"); a MEDICATION when it is a list
+    item or carries a dose. A dose wins: "Vitamin D3 60000 IU weekly" is a medicine.
+    Everything else is left where the doctor wrote it.
+
+    Same guarantees as extract_plan_medication_lines: nothing is validated, corrected,
+    reworded or added; each list is bounded and de-duplicated.
+    """
+    result: dict[str, list[str]] = {"medications": [], "tests": []}
+    if not plan_text or not isinstance(plan_text, str):
+        return result
+    seen: set[str] = set()
+    for raw in plan_text.splitlines():
+        stripped = raw.strip()
+        if not stripped or _HEADING.match(stripped):
+            continue
+        is_list_item = bool(_LIST_MARKER.match(stripped))
+        text = _LIST_MARKER.sub("", stripped).strip()
+        # A list item is one entry; an unmarked line of prose may hold several sentences.
+        units = [text] if is_list_item else [part.strip() for part in _SENTENCE.split(text)]
+        for unit in units:
+            if not unit or unit.casefold() in seen or _HEADING.match(unit):
+                continue
+            if _DOSE_HINT.search(unit):
+                kind = "medications"
+            elif _TEST_HINT.search(unit):
+                kind = "tests"
+            elif is_list_item:
+                kind = "medications"
+            else:
+                continue
+            if len(result[kind]) >= limit:
+                continue
+            seen.add(unit.casefold())
+            result[kind].append(unit)
+    return result
+
+
 def extract_plan_medication_lines(plan_text: str | None, limit: int = 20) -> list[str]:
     """Pulls the medication-looking lines out of a signed note's Plan, for "Insert from
     plan" to drop into the prescription textarea as an editable draft.

@@ -343,3 +343,54 @@ def test_bulk_draft_is_capped():
     triggered by one click."""
     assert isinstance(BULK_DRAFT_MAX_ITEMS, int)
     assert 0 < BULK_DRAFT_MAX_ITEMS <= 25
+
+
+# ---- Insert from plan: medicines AND the tests or reports the plan advises ----
+
+from app.services.doctor_workspace import extract_plan_items  # noqa: E402
+
+
+def test_tests_and_reports_are_copied_under_their_own_list():
+    """The prescription used to receive only medication lines: a plan that advised an MRI
+    or blood tests lost them."""
+    plan = """- Tab Gabapentin NT 400/10 BD x 15 days
+- Cap Rabeprazole 20 mg OD
+- Serum Vitamin B12 and Vitamin D levels
+- MRI lumbar spine if pain persists
+Physiotherapy for back strengthening.
+"""
+    items = extract_plan_items(plan)
+    # Unmarked prose with no dose and no test ("Physiotherapy ...") stays in the plan.
+    assert items["medications"] == ["Tab Gabapentin NT 400/10 BD x 15 days", "Cap Rabeprazole 20 mg OD"]
+    assert items["tests"] == ["Serum Vitamin B12 and Vitamin D levels", "MRI lumbar spine if pain persists"]
+
+
+def test_prose_plans_are_read_sentence_by_sentence():
+    plan = ("Continue sumatriptan 50 mg as needed. Recheck blood pressure in two weeks. "
+            "Advised CBC, LFT and lipid profile. Bring previous reports at the next visit.")
+    items = extract_plan_items(plan)
+    assert items["medications"] == ["Continue sumatriptan 50 mg as needed."]
+    assert items["tests"] == ["Advised CBC, LFT and lipid profile.", "Bring previous reports at the next visit."]
+
+
+def test_a_dose_makes_it_a_medicine_even_when_it_names_a_test_word():
+    items = extract_plan_items("- Vitamin D3 60000 IU weekly\n- Serum vitamin D level after 8 weeks")
+    assert items["medications"] == ["Vitamin D3 60000 IU weekly"]
+    assert items["tests"] == ["Serum vitamin D level after 8 weeks"]
+
+
+def test_tests_are_copied_verbatim_and_bounded():
+    plan = "\n".join(f"- X-ray view {i}" for i in range(40))
+    items = extract_plan_items(plan, limit=5)
+    assert items["tests"] == [f"X-ray view {i}" for i in range(5)]
+    assert extract_plan_items("- MRI  brain  with contrast")["tests"] == ["MRI  brain  with contrast"]
+
+
+def test_words_that_merely_contain_a_test_name_do_not_count():
+    """Whole words only: "act", "fact", "echoing" are not tests."""
+    assert extract_plan_items("Act on the advice given. The fact is noted.")["tests"] == []
+
+
+def test_plan_items_handle_empty_input():
+    assert extract_plan_items(None) == {"medications": [], "tests": []}
+    assert extract_plan_items("Follow up in six weeks.") == {"medications": [], "tests": []}

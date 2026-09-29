@@ -65,6 +65,47 @@ _doc_analysis_cache: dict[str, list[dict]] = {}
 def _doc_cache_key(user_id: str, session_id: str | None) -> str:
     return f"{user_id}:{session_id or ''}"
 
+
+# Documents one message can carry. Each is analysed in full, one after another, so a bound
+# keeps the reply to something a patient will read and the stream inside its timeout.
+MAX_DOCUMENTS_PER_MESSAGE = 3
+
+
+def _discard_cached_document(user_id: str, session_id: str | None, document_token: str) -> None:
+    """Removes ONE staged document from the session's queue and leaves the others.
+
+    Declining used to drop the whole queue, so declining a second file silently threw
+    away a first file the patient had just agreed to.
+    """
+    key = _doc_cache_key(user_id, session_id)
+    kept = [e for e in _doc_analysis_cache.get(key, []) if e.get("document_token") != document_token]
+    if kept:
+        _doc_analysis_cache[key] = kept
+    else:
+        _doc_analysis_cache.pop(key, None)
+
+
+def _mark_cached_document_consented(user_id: str, session_id: str | None, document_token: str) -> None:
+    for entry in _doc_analysis_cache.get(_doc_cache_key(user_id, session_id), []):
+        if entry.get("document_token") == document_token:
+            entry["consented"] = True
+
+
+def _take_consented_documents(key: str) -> list[dict]:
+    """Removes and returns the queued documents the patient consented to, in upload order.
+
+    Consent is asked when the message is sent, so a file can wait in the queue without it;
+    that file stays queued and is never analysed until the patient agrees.
+    """
+    queued = _doc_analysis_cache.get(key, [])
+    taken = [e for e in queued if e.get("consented")]
+    waiting = [e for e in queued if not e.get("consented")]
+    if waiting:
+        _doc_analysis_cache[key] = waiting
+    else:
+        _doc_analysis_cache.pop(key, None)
+    return taken
+
 from app.services.chat_history import (
     append_chat_messages,
     load_chat_history_with_timestamps,
@@ -241,7 +282,7 @@ async def _run_chat_with_usage(payload: dict, user: dict):
     user_id_str = str(patient_id or "")
     cache_key = _doc_cache_key(user_id_str, state.get("chat_session_id"))
     if user_id_str and cache_key in _doc_analysis_cache:
-        pending_files = _doc_analysis_cache.pop(cache_key)
+        pending_files = _take_consented_documents(cache_key)
         if pending_files:
             first = pending_files[0]
             # Always use the server-side cache — it contains full extracted images
@@ -548,13 +589,20 @@ async def chat_stream(request: Request, user: dict = Depends(current_user)):
     async def event_stream():
         # ── Fast path: direct GPT-4o streaming for document analysis ──────────
         if user_id_str and stream_cache_key in _doc_analysis_cache:
-            files = _doc_analysis_cache.pop(stream_cache_key, [])
+            # Only documents the patient agreed to store and analyse; any still waiting
+            # for that decision stay queued.
+            files = _take_consented_documents(stream_cache_key)
             if files:
+                from app.agents import document_followup
                 from app.inference.azure_client import gpt4o_stream_analysis
                 from app.services.appointments import routable_departments
 
                 yield _stream_event("start_response")
                 full_text = ""
+                # Each document's own analysis. Type, department, referral and findings are
+                # read from these one at a time: reading them from the combined text gave
+                # every document of a multi-file upload the first one's labels.
+                file_texts: list[str] = []
 
                 try:
                     for file_idx, fp in enumerate(files):
@@ -562,6 +610,10 @@ async def chat_stream(request: Request, user: dict = Depends(current_user)):
                             sep = "\n\n---\n\n"
                             yield _stream_event("token", token=sep)
                             full_text += sep
+                        if len(files) > 1:
+                            heading = f"**Document {file_idx + 1} of {len(files)} — {fp.get('file_name') or 'document'}**\n\n"
+                            yield _stream_event("token", token=heading)
+                            full_text += heading
 
                         mime = fp.get("mime_type", "application/octet-stream")
                         images = fp.get("images") or []
@@ -578,6 +630,7 @@ async def chat_stream(request: Request, user: dict = Depends(current_user)):
                         else:
                             file_bytes = b""
 
+                        file_texts.append("")
                         async for token in gpt4o_stream_analysis(
                             mime_type=mime,
                             file_bytes=file_bytes,
@@ -591,6 +644,7 @@ async def chat_stream(request: Request, user: dict = Depends(current_user)):
                         ):
                             yield _stream_event("token", token=token)
                             full_text += token
+                            file_texts[-1] += token
 
                 except Exception as exc:
                     logger.error("event_stream: document streaming failed: %s", exc, exc_info=True)
@@ -601,28 +655,34 @@ async def chat_stream(request: Request, user: dict = Depends(current_user)):
                 # Build minimal state so frontend can show department / analyzed docs
                 state, patient_id = _prepare_chat_state(payload, user)
                 state = _append_user_message_to_state(state, payload["message"])
-                dept = _extract_dept_from_text(full_text)
-                doc_type = _extract_doctype_from_text(full_text)
-                # Parsed from the analysis the model just wrote, because the streaming
-                # path never calls the structured extractor. Keeping these means a later
-                # turn can reason about the document instead of re-reading 150 truncated
-                # characters of its own prose.
-                referring_doctor = _extract_labelled_line(full_text, "Referred By")
-                referring_department = _referring_department_from_text(full_text)
-                clinical_history = _extract_labelled_line(full_text, "Clinical History")
+                # A new upload is a new round: its own questions, and a summary rebuilt to
+                # cover every document shared so far.
+                state.update(document_followup.start_round(state))
+                current_round = state["document_followup_round"]
                 doc_log = list(state.get("analyzed_documents") or [])
-                for fp in files:
+                departments: list[str] = []
+                for index, fp in enumerate(files):
+                    text = file_texts[index] if index < len(file_texts) else ""
+                    dept = _extract_dept_from_text(text)
+                    departments.append(dept)
+                    # Parsed from the analysis the model just wrote, because the streaming
+                    # path never calls the structured extractor. Keeping these means a later
+                    # turn can reason about the document instead of re-reading 150 truncated
+                    # characters of its own prose.
                     doc_log.append({
                         "file_name": fp.get("file_name") or "document",
-                        "document_type": doc_type,
+                        "document_type": _extract_doctype_from_text(text),
                         "department": dept,
-                        "referring_doctor": referring_doctor,
-                        "referring_department": referring_department,
-                        "clinical_history": clinical_history,
-                        "summary": (full_text[:150] + "…") if len(full_text) > 150 else full_text,
+                        "referring_doctor": _extract_labelled_line(text, "Referred By"),
+                        "referring_department": _referring_department_from_text(text),
+                        "clinical_history": _extract_labelled_line(text, "Clinical History"),
+                        "key_findings": document_followup.parse_key_findings(text),
+                        "summary": (text[:150] + "…") if len(text) > 150 else text,
+                        "followup_round": current_round,
                     })
-                history = list(state.get("conversation_history") or [])
-                history.append({"role": "assistant", "text": full_text})
+                # The suggestion is the department most of the documents point to (the
+                # first one on a tie). A SUGGESTION: the resolver decides after the questions.
+                suggested = max(departments, key=departments.count) if departments else None
                 # Uploading a document is not a request to be booked.
                 #
                 # This used to set active_intent="direct_booking" and a target_department
@@ -632,15 +692,49 @@ async def chat_stream(request: Request, user: dict = Depends(current_user)):
                 # "user_input", which no router consumes, so nothing could follow up either.
                 #
                 # Now: the analysis is offered, the department is remembered as a
-                # SUGGESTION, and the next turn asks what the document could not answer.
+                # SUGGESTION, and the first question about the documents comes with it.
                 # awaiting is a value the supervisor actually routes.
                 state.update({
-                    "final_response": full_text,
-                    "suggested_department": dept,
+                    "suggested_department": suggested,
                     "awaiting": AWAITING_DOCUMENT_FOLLOW_UP,
                     "active_intent": "document_review",
                     "intent": "document_review",
                     "analyzed_documents": doc_log,
+                })
+
+                # The first question arrives with the analysis, so the patient is not left
+                # to type something before the questions begin.
+                closing = ""
+                if document_followup.wants_to_only_store(payload["message"]):
+                    closing = (
+                        "\n\n---\n\nSaved to your records. I won't book anything. "
+                        "Tell me any time if you'd like to see a doctor about it."
+                    )
+                    state.update({"awaiting": None, "active_intent": None, "intent": None})
+                elif any(t.strip() for t in file_texts):
+                    try:
+                        choice = await asyncio.to_thread(
+                            document_followup.choose_next_question, dict(state), payload["message"]
+                        )
+                    except Exception as exc:
+                        logger.warning("event_stream: first follow-up question failed: %s", exc)
+                        choice = {"question": None, "symptoms": []}
+                    if choice.get("question"):
+                        topic, question = choice["question"]
+                        state.update(document_followup.merge_symptoms(state, choice.get("symptoms") or []))
+                        state.update(document_followup.register_question(state, topic, question))
+                        closing = (
+                            "\n\n---\n\n**A few quick questions so I can guide you to the right doctor.**\n\n"
+                            f"{question}"
+                        )
+                if closing:
+                    yield _stream_event("token", token=closing)
+                    full_text += closing
+
+                history = list(state.get("conversation_history") or [])
+                history.append({"role": "assistant", "text": full_text})
+                state.update({
+                    "final_response": full_text,
                     "conversation_history": history,
                     "messages": history[-6:],
                 })
@@ -846,6 +940,50 @@ async def chat_stream(request: Request, user: dict = Depends(current_user)):
     return StreamingResponse(event_stream(), media_type="application/x-ndjson")
 
 
+@router.get("/records")
+def patient_records(user: dict = Depends(current_user)):
+    """The patient's own documents — processing, done or failed, with which doctors have
+    verified each — and the food handouts their doctors gave them (patient_records)."""
+    from app.services.nutrition_plan import handouts_for_patient
+    from app.services.patient_records import documents_for_patient
+
+    patient_id = str(user["patient_id"])
+    return {
+        "documents": documents_for_patient(patient_id),
+        "handouts": handouts_for_patient(patient_id),
+    }
+
+
+@router.get("/documents/{document_id}/file")
+async def patient_document_file(document_id: str, user: dict = Depends(current_user)):
+    """The patient's own uploaded file, as an attachment — the same rules as the doctors'
+    download: an allowlisted content type, never rendered inline by the browser."""
+    from fastapi.responses import Response
+
+    from app.services.blob_storage import sanitize_filename
+    from app.services.patient_records import read_own_document_file
+
+    try:
+        data, filename, content_type = await read_own_document_file(str(user["patient_id"]), document_id)
+    except PermissionError:
+        raise HTTPException(status_code=404, detail="Document not found.")
+    except ValueError as exc:
+        raise HTTPException(status_code=409, detail=str(exc))
+    except FileNotFoundError:
+        raise HTTPException(status_code=404, detail="The original file for this document is no longer available.")
+    except RuntimeError as exc:
+        logger.error("patient document download failed (document_id=%s): %s", document_id, exc)
+        raise HTTPException(status_code=502, detail="This document could not be read right now.")
+    return Response(
+        content=data,
+        media_type=content_type,
+        headers={
+            "Content-Disposition": f'attachment; filename="{sanitize_filename(filename)}"',
+            "X-Content-Type-Options": "nosniff",
+        },
+    )
+
+
 @router.get("/history")
 def chat_history(user: dict = Depends(current_user)):
     documents = list_user_documents(user["patient_id"])
@@ -916,6 +1054,14 @@ async def upload_document(
     if len(file_bytes) > 15 * 1024 * 1024:
         raise HTTPException(status_code=400, detail="Uploaded file is too large (max 15 MB).")
 
+    # Checked before the relevance check so a refused file costs no model call.
+    if len(_doc_analysis_cache.get(_doc_cache_key(str(user["patient_id"]), session_id), [])) >= MAX_DOCUMENTS_PER_MESSAGE:
+        raise HTTPException(
+            status_code=400,
+            detail=f"You can attach up to {MAX_DOCUMENTS_PER_MESSAGE} documents per message. "
+                   "Send these first, then attach more.",
+        )
+
     extracted_text: str | None = None
     if mime_type == "application/pdf":
         try:
@@ -966,6 +1112,10 @@ async def upload_document(
             "images": images,
             "page_count": page_count,
             "source": source,
+            # Ties the queued analysis to its consent decision, so one file can be declined
+            # or removed without touching the others.
+            "document_token": document_token,
+            "consented": False,
         }
         cache_key = _doc_cache_key(user_id, session_id)
         _doc_analysis_cache.setdefault(cache_key, []).append(entry)
@@ -1034,8 +1184,9 @@ async def confirm_processing(
     original_filename = str(record["original_filename"])
 
     if not body.consent_granted:
-        # Also discard the in-memory extraction cache so it doesn't bleed into a later turn.
-        _doc_analysis_cache.pop(_doc_cache_key(user_id, session_id), None)
+        # Also discard this file's queued analysis so it doesn't bleed into a later turn —
+        # this file's only; the patient may have agreed to the others.
+        _discard_cached_document(user_id, session_id, body.document_token)
         try:
             await delete_blob(staged_path)
         except Exception as exc:
@@ -1051,10 +1202,15 @@ async def confirm_processing(
         # (WinError 995). Catching here prevents the CancelledError from propagating
         # through FastAPI middleware and crashing the entire event loop.
         logger.error("confirm-processing: blob move cancelled (Windows I/O): %s", exc)
+        _discard_cached_document(user_id, session_id, body.document_token)
         raise HTTPException(status_code=502, detail="Could not vault document: connection cancelled — try again")
     except Exception as exc:
         logger.error("confirm-processing: blob move failed: %s", exc)
+        _discard_cached_document(user_id, session_id, body.document_token)
         raise HTTPException(status_code=502, detail=f"Could not vault document: {exc}")
+
+    # Stored with consent, so its queued analysis may now run with the next message.
+    _mark_cached_document_consented(user_id, session_id, body.document_token)
 
     summary_path = summary_blob_path(user_id, document_id)
     background_tasks.add_task(

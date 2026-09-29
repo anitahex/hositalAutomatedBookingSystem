@@ -128,3 +128,23 @@ def test_update_booking_note_caps_combined_length_across_repeated_calls():
         assert len(final_note) <= BOOKING_NOTE_MAX_LENGTH + len("\n[truncated]")
     finally:
         _cleanup(doctor_id)
+
+
+def test_book_selected_slot_keeps_the_summary_on_separate_lines():
+    """The note is the pre-appointment summary. It was flattened onto one line at booking,
+    leaving the doctor a single unreadable paragraph; control characters still go."""
+    _skip_if_no_database()
+    doctor_id = None
+    try:
+        with connect_db() as conn:
+            with conn.cursor() as cur:
+                doctor_id = _make_doctor(cur, "Dr. Multiline Note")
+                slot_id = _make_slot(cur, doctor_id)
+            conn.commit()
+
+        note = "PRE-AI INTAKE CHECKUP REPORT\nDOCUMENT FINDINGS:\n  - HbA1c: 8.1 % \x07— High"
+        booking = appointments_service.book_selected_slot(slot_id, patient_id="patient-note-test-3", booking_note=note)
+
+        assert booking["booking_note"] == "PRE-AI INTAKE CHECKUP REPORT\nDOCUMENT FINDINGS:\n  - HbA1c: 8.1 % — High"
+    finally:
+        _cleanup(doctor_id)

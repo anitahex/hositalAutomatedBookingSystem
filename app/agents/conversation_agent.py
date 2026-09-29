@@ -7,6 +7,7 @@ from app.agents.intake_utils import (
     compact_state_summary,
     extract_json_object,
     extract_local_intake_info,
+    looks_like_explicit_end_chat,
     looks_like_general_knowledge_question,
     looks_like_intake_wrapup,
     looks_like_non_answer,
@@ -365,6 +366,10 @@ def should_stream_intake(state: GraphState) -> bool:
         return False
     user_text = state.get("user_input") or ""
     if looks_like_non_answer(user_text) or looks_like_general_knowledge_question(user_text):
+        return False
+    # "End the chat" typed mid-intake is not an answer. This path has no concept of
+    # closing, so it asked the next question; the full graph closes the chat.
+    if looks_like_explicit_end_chat(user_text):
         return False
     existing_collected = state.get("collected_data") or state.get("collected_info") or {}
     local_collected = extract_local_intake_info(user_text)

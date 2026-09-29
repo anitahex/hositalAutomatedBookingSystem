@@ -60,6 +60,34 @@ def placeholder_filenames() -> int | None:
         return None
 
 
+def account_gaps() -> dict[str, int]:
+    """Accounts login or forgot-password cannot find (see migration 0031). All zero on a
+    healthy database; the migration and login's own fallback repair them."""
+    checks = {
+        "accounts missing from the login registry": """
+            SELECT (SELECT COUNT(*) FROM users u WHERE NOT EXISTS
+                       (SELECT 1 FROM account_email_registry r WHERE r.email = lower(btrim(u.email))))
+                 + (SELECT COUNT(*) FROM doctor_accounts d WHERE NOT EXISTS
+                       (SELECT 1 FROM account_email_registry r WHERE r.email = lower(btrim(d.email))))""",
+        "patient emails not stored in lowercase": """
+            SELECT COUNT(*) FROM users WHERE email <> lower(btrim(email))""",
+        "patient mobile numbers not searchable by forgot-password": """
+            SELECT COUNT(*) FROM patient_profiles
+             WHERE mobile_number_normalized IS NULL AND COALESCE(mobile_number, '') <> ''""",
+    }
+    found: dict[str, int] = {}
+    for label, sql in checks.items():
+        try:
+            with connect_db() as conn:
+                with conn.cursor() as cur:
+                    cur.execute(sql)
+                    found[label] = int(cur.fetchone()[0])
+                conn.commit()
+        except Exception:
+            found[label] = -1  # the table itself is missing; the schema check reports it
+    return found
+
+
 def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__.splitlines()[0])
     parser.add_argument("--write-expected", action="store_true",
@@ -86,6 +114,8 @@ def main() -> int:
     unresolved = placeholder_filenames()
     if unresolved:
         print(f"documents with no recoverable filename (original file cannot be opened): {unresolved}")
+    for label, count in account_gaps().items():
+        print(f"{label}: {count if count >= 0 else 'could not check'}")
     return 1 if (missing_tables or missing_columns) else 0
 
 

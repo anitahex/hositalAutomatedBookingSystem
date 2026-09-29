@@ -51,7 +51,9 @@ logger = logging.getLogger(__name__)
 #       first two summary sentences (which put an MRI finding on the card as a drug);
 #       abnormal results newest first with no alphabetical cut; scanned-source flag.
 #   v3: same-date readings of one analyte resolved deterministically (classified first).
-OVERVIEW_PROMPT_VERSION = "overview-v3"
+#   v4: abnormal results are no longer phrased into the card's lines; they are shown by
+#       document (overview_documents), with who verified each and what changed.
+OVERVIEW_PROMPT_VERSION = "overview-v4"
 
 # Enough to show every current abnormal result in a normal panel, bounded so a very long
 # record cannot turn the card into a lab report. Newest first, so any cut loses the oldest.
@@ -507,18 +509,25 @@ async def get_overview(doctor_id: str, patient_id: str, viewer_department: str |
                      mode="structured", reason=result["reason"], source_changed_at=changed_at)
         return result
 
-    mode, reason, lines = "structured", "", structured_lines(facts)
-    try:
-        phrased = await gpt4o_overview_phrasing(facts=facts)
-        ok, why = verify_phrasing(phrased.get("lines"), facts)
-        if ok:
-            mode, lines = "phrased", phrased["lines"]
-        else:
-            reason = why
-            logger.warning("patient_overview: phrasing rejected for %s — %s", patient_id, why)
-    except Exception as exc:
-        reason = "the summary could not be generated"
-        logger.error("patient_overview: phrasing failed for %s: %s", patient_id, exc)
+    # Abnormal results are shown by document, beside who verified that document and what
+    # changed (overview_documents), so they are not phrased into the lines as well. They stay
+    # in `facts`: the audit of this read counts them, and the selection rules stay tested here.
+    phrase_facts = [fact for fact in facts if fact["kind"] != "abnormal"]
+    mode, reason, lines = "structured", "", structured_lines(phrase_facts)
+    if not phrase_facts:
+        reason = "only results on record; shown by document"
+    else:
+        try:
+            phrased = await gpt4o_overview_phrasing(facts=phrase_facts)
+            ok, why = verify_phrasing(phrased.get("lines"), phrase_facts)
+            if ok:
+                mode, lines = "phrased", phrased["lines"]
+            else:
+                reason = why
+                logger.warning("patient_overview: phrasing rejected for %s — %s", patient_id, why)
+        except Exception as exc:
+            reason = "the summary could not be generated"
+            logger.error("patient_overview: phrasing failed for %s: %s", patient_id, exc)
 
     _write_cache(patient_id, viewer_department, lines=lines, facts=facts,
                  mode=mode, reason=reason, source_changed_at=changed_at)

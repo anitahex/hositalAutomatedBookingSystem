@@ -71,6 +71,61 @@ CRITICAL:
 - Omit fields where patient didn't provide data (don't say "unknown")"""
 
 
+# Added to the summary prompt only when documents were shared, so the symptom-only summary
+# is generated exactly as before.
+DOCUMENT_FINDINGS_INSTRUCTION = """
+
+DOCUMENTS WERE SHARED IN THIS CHAT. After **History:**, add this section:
+
+**Document Findings:**
+- [one line per document: its type and date if known, then its abnormal or key findings with the exact values given below]
+
+Use ONLY the findings listed in the input — never add a value that is not there. Use the patient's answers to the follow-up questions in Chief Complaint and History."""
+
+
+def _analyzed_documents(state: GraphState) -> list[dict]:
+    return [d for d in (state.get("analyzed_documents") or []) if isinstance(d, dict)]
+
+
+def _answered_followups(state: GraphState) -> list[dict]:
+    return [
+        q for q in (state.get("document_followup_qa") or [])
+        if isinstance(q, dict) and q.get("question") and q.get("answer")
+    ]
+
+
+def _document_context(state: GraphState) -> str:
+    """The documents and follow-up answers as a prompt block; empty when there are none."""
+    from app.agents.document_followup import describe_documents_for_prompt
+
+    documents = _analyzed_documents(state)
+    if not documents:
+        return ""
+    block = f"\nDOCUMENTS SHARED IN THIS CHAT:\n{describe_documents_for_prompt(documents)}\n"
+    answered = _answered_followups(state)
+    if answered:
+        block += "\nFOLLOW-UP QUESTIONS AND THE PATIENT'S ANSWERS:\n" + "\n".join(
+            f"Q: {q['question']}\nA: {q['answer']}" for q in answered
+        ) + "\n"
+    return block
+
+
+def _decided_by_document_followup(state: GraphState) -> tuple[str | None, list[dict]]:
+    """The department the document follow-up settled on, or the choices it left open.
+
+    The resolver's decision stands: referral, explicit request and conflicts are its job,
+    and a model writing the summary must not quietly overrule it.
+    """
+    if state.get("department_match_source") != "document_followup":
+        return None, []
+    fixed = normalize_department_name(state.get("target_department")) if state.get("target_department") else None
+    if fixed:
+        return fixed, []
+    from app.agents.appointment_booker import _bookable_candidates
+
+    return None, _bookable_candidates(list(state.get("candidate_departments") or []))
+
+
 def _build_pre_checkup_report(state: GraphState, department: str | None) -> dict:
     """Structured report stored in state and forwarded to the doctor as booking note."""
     symptoms = state.get("symptoms") or []
@@ -101,6 +156,20 @@ def _build_pre_checkup_report(state: GraphState, department: str | None) -> dict
         value = next((collected.get(a) for a in aliases if collected.get(a)), None)
         if value:
             report[key] = value
+
+    documents = _analyzed_documents(state)
+    if documents:
+        report["documents"] = [
+            {
+                "file_name": d.get("file_name") or "document",
+                "document_type": d.get("document_type") or "other",
+                "key_findings": list(d.get("key_findings") or []),
+            }
+            for d in documents
+        ]
+    answered = _answered_followups(state)
+    if answered:
+        report["followup_answers"] = [{"question": q["question"], "answer": q["answer"]} for q in answered]
 
     return report
 
@@ -158,6 +227,26 @@ def _format_report_as_clinical_note(report: dict) -> str:
     if report.get("health_issues"):
         lines.append(f"Pre-existing Health Issues: {report['health_issues']}")
 
+    if report.get("documents"):
+        lines.append("")
+        lines.append("DOCUMENT FINDINGS (read by AI from the uploaded documents — check the originals):")
+        lines.append("─" * 50)
+        for document in report["documents"]:
+            label = str(document.get("document_type") or "other").replace("_", " ")
+            lines.append(f"{document.get('file_name')} ({label})")
+            for finding in document.get("key_findings") or []:
+                lines.append(f"  - {finding}")
+            if not document.get("key_findings"):
+                lines.append("  - No findings could be read; see the document.")
+
+    if report.get("followup_answers"):
+        lines.append("")
+        lines.append("PATIENT'S ANSWERS TO FOLLOW-UP QUESTIONS:")
+        lines.append("─" * 50)
+        for item in report["followup_answers"]:
+            lines.append(f"Q: {item['question']}")
+            lines.append(f"A: {item['answer']}")
+
     lines.append("")
     lines.append("═════════════════════════════════════════════════════════════")
 
@@ -179,6 +268,8 @@ def checkup_report_node(state: GraphState):
     triggers = collected.get('triggers') or collected.get('trigger') or collected.get('cause', '')
     functional_impact = collected.get('functional_impact') or collected.get('impact_on_daily_life', '')
     severity = state.get('severity', 'moderate')
+    document_context = _document_context(state)
+    fixed_department, department_choices = _decided_by_document_followup(state)
 
     analyzer_prompt = (
         f"Patient: {profile.get('name', 'Patient')}, Age {profile.get('age', 'unknown')}\n"
@@ -192,9 +283,21 @@ def checkup_report_node(state: GraphState):
         f"Functional impact: {functional_impact if functional_impact else 'Not mentioned'}\n"
         f"Severity assessment: {severity}\n"
         f"Associated symptoms: {collected.get('associated_symptoms') or 'None'}\n"
+        f"{document_context}"
         f"\n"
         f"Analyze the FULL clinical picture and provide intelligent, personalized recommendations."
     )
+    if fixed_department:
+        analyzer_prompt += (
+            f"\n\nThe department has already been decided: {fixed_department}. "
+            f"Use exactly {fixed_department} as recommended_department and explain why it fits."
+        )
+    elif department_choices:
+        analyzer_prompt += (
+            "\n\nMore than one department applies ("
+            + ", ".join(str(c.get("department")) for c in department_choices)
+            + "); the patient will choose. Explain what each would look at."
+        )
 
     analysis_resp = generate_text(
         system_prompt=STATIC_CLINICAL_ANALYZER_PROMPT + language_prompt_context(state),
@@ -223,9 +326,17 @@ def checkup_report_node(state: GraphState):
         }
 
     department = normalize_department_name(analysis.get("recommended_department", "General Physician"))
+    if fixed_department:
+        department = fixed_department
+    elif department_choices:
+        department = None
     clinical_analysis = analysis.get("clinical_analysis", "")
     reasoning = analysis.get("reasoning", "")
     home_care = analysis.get("home_care_advice", "")
+    if isinstance(home_care, list):
+        # The prompt asks for a string, but a list of tips is a common answer; printing it
+        # raw showed the patient Python brackets and quotes.
+        home_care = "\n".join(f"- {str(tip).strip()}" for tip in home_care if str(tip).strip())
 
     # STEP 2: GENERATE COMPREHENSIVE CLINICAL SUMMARY
     user_prompt = (
@@ -243,12 +354,17 @@ def checkup_report_node(state: GraphState):
         f"Medications Tried: {collected.get('medications', '')}\n"
         f"Allergies: {profile.get('allergies') or collected.get('allergies', '')}\n"
         f"Existing Conditions: {profile.get('health_issues') or collected.get('existing_conditions', '')}\n"
-        f"Department: {department}\n"
+        f"Department: {department or 'the patient will choose between ' + ', '.join(str(c.get('department')) for c in department_choices)}\n"
+        f"{document_context}"
     )
 
     comprehensive_summary = generate_text(
         # This is the doctor-facing artifact and must remain canonical English.
-        system_prompt=STATIC_CHECKUP_PROMPT + "\n\nIMPORTANT: Generate this clinical summary in English only. Do not translate it to the patient's conversation language.",
+        system_prompt=(
+            STATIC_CHECKUP_PROMPT
+            + (DOCUMENT_FINDINGS_INSTRUCTION if document_context else "")
+            + "\n\nIMPORTANT: Generate this clinical summary in English only. Do not translate it to the patient's conversation language."
+        ),
         user_prompt=user_prompt,
         node_name="checkup_report",
         chat_summary=state.get("chat_summary"),
@@ -258,25 +374,67 @@ def checkup_report_node(state: GraphState):
         chat_session_id=str(state.get("chat_session_id") or ""),
     ).strip()
 
+    # The prompt asks for this heading but the model sometimes leaves it out. It is what
+    # the doctor's screens recognise as the AI pre-visit summary (and label as such), so it
+    # is added when missing rather than left to chance.
+    if comprehensive_summary and "PRE-APPOINTMENT AI CLINICAL SUMMARY" not in comprehensive_summary.upper():
+        comprehensive_summary = f"## PRE-APPOINTMENT AI CLINICAL SUMMARY\n\n{comprehensive_summary}"
+
     # STEP 3: BUILD STRUCTURED REPORT FOR DOCTOR
-    pre_checkup_report = _build_pre_checkup_report(state, department)
+    pre_checkup_report = _build_pre_checkup_report(
+        state,
+        department or "patient to choose: " + ", ".join(str(c.get("department")) for c in department_choices),
+    )
     clinical_note = _format_report_as_clinical_note(pre_checkup_report)
 
     # STEP 4: DISPLAY INTELLIGENT ANALYSIS + REMEDY
+    # On a conflict the resolver left open, the patient picks the department from the same
+    # menu the booker uses; otherwise they are asked whether to book the one recommended.
+    if department:
+        why_line = f"**{display_label(state, 'why_department')} {department}:** {reasoning}\n\n"
+        closing = patient_message(state, "department_booking_prompt", department=department)
+    else:
+        from app.agents.appointment_booker import _format_department_options
+
+        why_line = f"{reasoning}\n\n" if reasoning else ""
+        closing = (
+            "More than one department could help with this:\n"
+            f"{_format_department_options(department_choices)}\n\n"
+            "Please reply with the department number or name you want to book."
+        )
     response = (
         f"## {display_label(state, 'clinical_analysis')}\n\n"
         f"**{display_label(state, 'whats_happening')}:** {clinical_analysis}\n\n"
-        f"**{display_label(state, 'why_department')} {department}:** {reasoning}\n\n"
+        f"{why_line}"
         f"**{display_label(state, 'home_care')} (before your appointment):**\n"
         f"{home_care}\n\n"
         f"---\n\n"
         f"## {display_label(state, 'detailed_summary')}\n"
         f"{comprehensive_summary}\n\n"
         f"---\n\n"
-        f"{patient_message(state, 'department_booking_prompt', department=department)}"
+        f"{closing}"
     )
 
     history.append({"role": "assistant", "text": response})
+
+    if not department:
+        return {
+            "conversation_history": history,
+            "messages": history[-6:],
+            "pre_checkup_report": pre_checkup_report,
+            "pre_checkup_clinical_note": clinical_note,
+            "pre_checkup_summary": comprehensive_summary,
+            "clinical_analysis": clinical_analysis,
+            "home_care_advice": home_care,
+            "analysis_reasoning": reasoning,
+            "checkup_summary_shown": True,
+            "target_department": None,
+            "candidate_departments": department_choices,
+            "active_intent": "direct_booking",
+            "intent": "direct_booking",
+            "awaiting": "department_selection",
+            "final_response": response,
+        }
 
     return {
         "conversation_history": history,

@@ -136,6 +136,12 @@ class GraphState(TypedDict, total=False):
     # non-questions into it, so its length says nothing about what was actually asked.
     document_topics_asked: Optional[list[str]]
 
+    # The questions asked about the documents and what the patient answered, in order:
+    # [{topic, question, answer}]. The pre-appointment summary reads the answers from here.
+    document_followup_qa: Optional[list[dict[str, Any]]]
+    # Counts upload rounds. A new upload starts a new round of questions and a new summary.
+    document_followup_round: Optional[int]
+
     # What a document's analysis pointed at — a SUGGESTION, not a decision. Deliberately
     # not target_department: writing that on upload is what made a guessed department
     # behave like the patient's own request and become impossible to change.
@@ -151,6 +157,15 @@ class GraphState(TypedDict, total=False):
     pre_checkup_report: Optional[dict[str, Any]]
     pre_checkup_note: Optional[str]
     checkup_summary_shown: Optional[bool]
+    # The summary the patient was shown, and the structured note built with it. Same hazard
+    # as report_forwarding_booking_id above: checkup_report wrote these while they were
+    # undeclared, so they never reached the booking, and "yes, forward it" sent the doctor
+    # a freshly generated note instead of the summary the patient had read.
+    pre_checkup_summary: Optional[str]
+    pre_checkup_clinical_note: Optional[str]
+    clinical_analysis: Optional[str]
+    home_care_advice: Optional[str]
+    analysis_reasoning: Optional[str]
 
     # Final response
     final_response: Optional[str]

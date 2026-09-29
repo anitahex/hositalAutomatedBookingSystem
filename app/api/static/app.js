@@ -125,6 +125,15 @@ const endChatBtn = document.querySelector("#endChatBtn");
 const endChatConfirmModal = document.querySelector("#endChatConfirmModal");
 const endChatCancelBtn = document.querySelector("#endChatCancelBtn");
 const endChatConfirmBtn = document.querySelector("#endChatConfirmBtn");
+const endChatCloseBtn = document.querySelector("#endChatCloseBtn");
+const chatClosedCloseBtn = document.querySelector("#chatClosedCloseBtn");
+const documentConsentModal = document.querySelector("#documentConsentModal");
+const documentConsentTitle = document.querySelector("#documentConsentTitle");
+const documentConsentList = document.querySelector("#documentConsentList");
+const documentConsentAcceptBtn = document.querySelector("#documentConsentAcceptBtn");
+const documentConsentDiscardBtn = document.querySelector("#documentConsentDiscardBtn");
+const documentConsentCloseBtn = document.querySelector("#documentConsentCloseBtn");
+const doctorConfirmModal = document.querySelector("#doctorConfirmModal");
 
 const showLoginBtn = document.querySelector("#showLoginBtn");
 const showSignupBtn = document.querySelector("#showSignupBtn");
@@ -471,7 +480,20 @@ let bookingStudioState = {
   slotId: null,
   mode: "book",
 };
+// Documents one message can carry. The server enforces the same bound
+// (chat.py MAX_DOCUMENTS_PER_MESSAGE); this one only saves a wasted upload.
+const MAX_ATTACHMENTS_PER_MESSAGE = 3;
+// Files checked and staged by /chat/upload, waiting for consent when the message is sent.
 let pendingUploadFiles = [];
+// File -> document_token: what confirm-processing needs to store or discard each file.
+const pendingUploadTokens = new Map();
+// Relevance checks still running; Send waits for them.
+const uploadsInFlight = new Set();
+// Bumped whenever the chat ends or restarts. A reply or an upload that finishes after that
+// belongs to the old chat, and is dropped instead of appearing in the new one.
+let chatGeneration = 0;
+// The reply in flight, so End chat can stop it.
+let activeChatController = null;
 let adminAppointments = [];
 let adminAppointmentsLoaded = false;
 let adminAppointmentsLoading = false;
@@ -523,13 +545,17 @@ function setUploadStatus(text, tone = "default") {
   uploadStatus.dataset.tone = tone;
 }
 
-function showAttachPill(file) {
-  if (!attachPills) return;
+// One pill per attached file, showing where it is: being checked, ready to send, or
+// rejected with the reason. Returns handles the upload uses to move it along.
+function showAttachPill(file, initialState = "checking") {
+  const handle = { removed: false, pill: null, setState: () => {} };
+  if (!attachPills) return handle;
 
   const pill = document.createElement("div");
   pill.className = "attach-pill";
 
   const icon = document.createElement("span");
+  icon.setAttribute("aria-hidden", "true");
   icon.textContent = file.name.toLowerCase().endsWith(".pdf") ? "📄" : "🖼";
 
   const name = document.createElement("span");
@@ -537,26 +563,540 @@ function showAttachPill(file) {
   name.textContent = file.name;
   name.title = file.name;
 
+  const status = document.createElement("span");
+  status.className = "attach-pill-status";
+
   const remove = document.createElement("button");
   remove.type = "button";
   remove.className = "attach-pill-remove";
   remove.textContent = "×";
   remove.title = "Remove file";
+  remove.setAttribute("aria-label", `Remove ${file.name}`);
   remove.addEventListener("click", () => {
-    const idx = pendingUploadFiles.indexOf(file);
-    if (idx > -1) pendingUploadFiles.splice(idx, 1);
+    handle.removed = true;
+    // Discarded on the server too: removing the pill used to leave the file staged, and it
+    // was analysed with the next message anyway.
+    discardPendingUpload(file);
     pill.remove();
-    if (documentUpload && pendingUploadFiles.length === 0) documentUpload.value = "";
+    syncComposerRequired();
     setUploadStatus("", "default");
   });
 
-  pill.append(icon, name, remove);
+  handle.setState = (nextState, text = "") => {
+    pill.dataset.state = nextState;
+    status.textContent = nextState === "checking" ? "Checking…" : nextState === "ready" ? "Ready" : (text || "Not added");
+    pill.title = nextState === "error" && text ? `${file.name}: ${text}` : file.name;
+  };
+  handle.setState(initialState);
+  handle.pill = pill;
+
+  pill.append(icon, name, status, remove);
   attachPills.appendChild(pill);
+  return handle;
 }
 
 function clearAttachPill() {
   if (attachPills) attachPills.replaceChildren();
   pendingUploadFiles = [];
+  pendingUploadTokens.clear();
+  syncComposerRequired();
+}
+
+// The message box is `required`, which also blocked sending documents with no text typed.
+function syncComposerRequired() {
+  if (input) input.required = pendingUploadFiles.length === 0 && uploadsInFlight.size === 0;
+}
+
+// Tells the server whether the patient agreed to store one staged file. Refresh-aware: this
+// call carries the patient's consent decision, and losing it to an expired token would leave
+// the file staged with no recorded choice either way.
+function sendConsentDecision(documentToken, consentGranted) {
+  return patientFetchWithRefresh("/chat/confirm-processing", () => ({
+    method: "POST",
+    headers: { "Content-Type": "application/json", Authorization: `Bearer ${accessToken}` },
+    body: JSON.stringify({ document_token: documentToken, consent_granted: consentGranted }),
+  }));
+}
+
+function discardPendingUpload(file) {
+  const token = pendingUploadTokens.get(file);
+  pendingUploadTokens.delete(file);
+  const index = pendingUploadFiles.indexOf(file);
+  if (index > -1) pendingUploadFiles.splice(index, 1);
+  if (token) sendConsentDecision(token, false).catch((err) => console.warn("discard upload:", err));
+}
+
+// Every attached file that was not sent: discarded on the server, and the pills cleared.
+// A check still running is dropped when it returns, because chatGeneration has moved on.
+function discardAllPendingUploads() {
+  for (const file of [...pendingUploadFiles]) discardPendingUpload(file);
+  clearAttachPill();
+}
+
+// Checks one file with /chat/upload (medical-relevance check and staging). Consent is asked
+// later, once for every attached file, when the message is sent.
+function stageUpload(file) {
+  const generation = chatGeneration;
+  const pill = showAttachPill(file, "checking");
+  const job = (async () => {
+    try {
+      // The FormData is built inside the callback so a retry after a token refresh gets a
+      // fresh body; a FormData that has already been sent cannot be replayed.
+      const uploadResp = await patientFetchWithRefresh("/chat/upload", () => {
+        const uploadForm = new FormData();
+        uploadForm.append("file", file);
+        uploadForm.append("session_id", currentSessionId() || "");
+        return {
+          method: "POST",
+          headers: { Authorization: `Bearer ${accessToken}` },
+          body: uploadForm,
+        };
+      });
+      if (!uploadResp.ok) {
+        throw await chatRequestError(uploadResp);
+      }
+      const { document_token } = await uploadResp.json();
+      if (generation !== chatGeneration || pill.removed) {
+        // The chat ended, or the pill was removed, while the check ran.
+        sendConsentDecision(document_token, false).catch(() => {});
+        return;
+      }
+      pendingUploadTokens.set(file, document_token);
+      pendingUploadFiles.push(file);
+      pill.setState("ready");
+    } catch (err) {
+      if (generation !== chatGeneration || pill.removed) return;
+      pill.setState("error", err.message);
+      setUploadStatus(`"${file.name}" was not added: ${err.message}`, "error");
+    }
+  })();
+  uploadsInFlight.add(job);
+  syncComposerRequired();
+  job.finally(() => {
+    uploadsInFlight.delete(job);
+    syncComposerRequired();
+    if (generation !== chatGeneration) return;
+    if (uploadsInFlight.size === 0 && pendingUploadFiles.length > 0) {
+      const count = pendingUploadFiles.length;
+      setUploadStatus(
+        `${count} document${count === 1 ? "" : "s"} ready — ${count === 1 ? "it is" : "they are"} analysed when you send.`,
+        "default",
+      );
+    }
+  });
+  return job;
+}
+
+// Chat dialogs share one behaviour: focus moves in, Tab stays inside, Esc and a click on the
+// backdrop cancel, and focus goes back where it was. Returns the function that closes it.
+function openChatDialog(modal, { initialFocus = null, onCancel = null } = {}) {
+  const opener = document.activeElement;
+  const focusables = () => Array.from(
+    modal.querySelectorAll("button, [href], input, textarea, select, [tabindex]:not([tabindex='-1'])")
+  ).filter((el) => !el.disabled && el.offsetParent !== null);
+  const onKey = (event) => {
+    if (event.key === "Escape") {
+      event.preventDefault();
+      if (onCancel) onCancel();
+      return;
+    }
+    if (event.key !== "Tab") return;
+    const items = focusables();
+    if (!items.length) return;
+    const first = items[0];
+    const last = items[items.length - 1];
+    if (event.shiftKey && document.activeElement === first) {
+      event.preventDefault();
+      last.focus();
+    } else if (!event.shiftKey && document.activeElement === last) {
+      event.preventDefault();
+      first.focus();
+    }
+  };
+  const onBackdrop = (event) => {
+    if (event.target === modal && onCancel) onCancel();
+  };
+  modal.classList.remove("hidden");
+  modal.addEventListener("keydown", onKey);
+  modal.addEventListener("click", onBackdrop);
+  (initialFocus || focusables()[0])?.focus();
+  let open = true;
+  return function closeChatDialog({ restoreFocus = true } = {}) {
+    if (!open) return;
+    open = false;
+    modal.classList.add("hidden");
+    modal.removeEventListener("keydown", onKey);
+    modal.removeEventListener("click", onBackdrop);
+    if (restoreFocus && opener && document.contains(opener) && typeof opener.focus === "function") {
+      opener.focus();
+    }
+  };
+}
+
+// One consent for every attached file, asked when the message is sent.
+// Resolves "store", "discard", or "cancel" (go back to the message without sending).
+function askDocumentConsent(files) {
+  return new Promise((resolve) => {
+    if (!documentConsentModal) {
+      resolve("store");
+      return;
+    }
+    documentConsentTitle.textContent = files.length === 1
+      ? "Store and analyse this document?"
+      : `Store and analyse these ${files.length} documents?`;
+    documentConsentList.replaceChildren(...files.map((file) => {
+      const item = document.createElement("li");
+      item.textContent = file.name;
+      return item;
+    }));
+    let close = null;
+    const finish = (answer) => {
+      documentConsentAcceptBtn.removeEventListener("click", onAccept);
+      documentConsentDiscardBtn.removeEventListener("click", onDiscard);
+      documentConsentCloseBtn?.removeEventListener("click", onCancel);
+      if (close) close();
+      resolve(answer);
+    };
+    const onAccept = () => finish("store");
+    const onDiscard = () => finish("discard");
+    const onCancel = () => finish("cancel");
+    documentConsentAcceptBtn.addEventListener("click", onAccept);
+    documentConsentDiscardBtn.addEventListener("click", onDiscard);
+    documentConsentCloseBtn?.addEventListener("click", onCancel);
+    close = openChatDialog(documentConsentModal, { initialFocus: documentConsentAcceptBtn, onCancel });
+  });
+}
+
+// A doctor's confirmation in the app's own dialog, rather than the browser's confirm().
+// `items` are short facts listed under the explanation. Resolves true only on Confirm;
+// Cancel, ×, Esc and a click outside all resolve false.
+function askDoctorConfirm({ title, body, items = [], confirmLabel = "Confirm" }) {
+  return new Promise((resolve) => {
+    if (!doctorConfirmModal) {
+      resolve(window.confirm(`${title}\n\n${body}`));
+      return;
+    }
+    const okBtn = doctorConfirmModal.querySelector("#doctorConfirmOkBtn");
+    const cancelBtn = doctorConfirmModal.querySelector("#doctorConfirmCancelBtn");
+    const closeBtn = doctorConfirmModal.querySelector("#doctorConfirmCloseBtn");
+    const list = doctorConfirmModal.querySelector("#doctorConfirmList");
+    doctorConfirmModal.querySelector("#doctorConfirmTitle").textContent = title;
+    doctorConfirmModal.querySelector("#doctorConfirmBody").textContent = body;
+    list.replaceChildren(...items.map((text) => {
+      const item = document.createElement("li");
+      item.textContent = text;
+      return item;
+    }));
+    list.classList.toggle("hidden", !items.length);
+    okBtn.textContent = confirmLabel;
+    let close = null;
+    const finish = (answer) => {
+      okBtn.removeEventListener("click", onOk);
+      cancelBtn.removeEventListener("click", onCancel);
+      closeBtn.removeEventListener("click", onCancel);
+      if (close) close();
+      resolve(answer);
+    };
+    const onOk = () => finish(true);
+    const onCancel = () => finish(false);
+    okBtn.addEventListener("click", onOk);
+    cancelBtn.addEventListener("click", onCancel);
+    closeBtn.addEventListener("click", onCancel);
+    close = openChatDialog(doctorConfirmModal, { initialFocus: okBtn, onCancel });
+  });
+}
+
+// ---- The patient's own records (app/services/patient_records.py) ----
+// Every document they uploaded — processing, done or failed — with the doctors who have
+// checked it against the original, and the food handouts their doctors gave them.
+
+let patientRecords = { loaded: false, documents: [], handouts: [] };
+
+const PATIENT_DOCUMENT_STATUS = {
+  verified: { chip: "Verified by a doctor", tone: "is-verified" },
+  not_reviewed: { chip: "Not yet reviewed", tone: "is-pending" },
+  under_review: { chip: "Being checked", tone: "is-review" },
+  processing: { chip: "Processing…", tone: "is-pending" },
+  failed: { chip: "Could not be processed", tone: "is-failed" },
+};
+
+function resetPatientRecords() {
+  patientRecords = { loaded: false, documents: [], handouts: [] };
+}
+
+async function loadPatientRecords() {
+  if (!accessToken || !patientId) return;
+  const forPatient = patientId;
+  try {
+    const data = await authedJson("/chat/records");
+    // A late answer for someone who has since signed out must never paint.
+    if (patientId !== forPatient) return;
+    patientRecords = {
+      loaded: true,
+      documents: Array.isArray(data.documents) ? data.documents : [],
+      handouts: Array.isArray(data.handouts) ? data.handouts : [],
+    };
+    renderPatientDocuments(analyzedDocsList);
+    renderPatientDocuments(dashboardDocsList, { limit: 3, compact: true });
+    renderPatientHandouts();
+  } catch (error) {
+    console.warn("patient records:", error);
+  }
+}
+
+function describePatientVerifiers(doc) {
+  return (doc.verified_by || []).map((person) => {
+    const department = person.department ? ` (${person.department})` : "";
+    const when = person.at ? `, ${formatBriefDate(person.at)}` : "";
+    return `${person.name || "A doctor"}${department}${when}`;
+  }).join(" · ");
+}
+
+function describePatientDocumentStatus(doc) {
+  switch (doc.status) {
+    case "verified": return `Checked against your original by ${describePatientVerifiers(doc)}.`;
+    case "under_review": return "Your care team is double-checking what was read from this document.";
+    case "processing": return "We are reading this document. It will appear here with its results shortly.";
+    case "failed": return "This document could not be read. Try uploading it again.";
+    default: return "Read by our assistant. No doctor has reviewed it yet.";
+  }
+}
+
+/** Downloads the patient's own file (attachment only, as the server sends it). */
+async function openOwnDocumentFile(doc, button) {
+  const original = button.textContent;
+  button.disabled = true;
+  button.textContent = "Preparing…";
+  try {
+    const response = await patientFetchWithRefresh(
+      `/chat/documents/${encodeURIComponent(doc.document_id)}/file`,
+      () => ({ headers: { Authorization: `Bearer ${accessToken}` } }),
+    );
+    if (!response.ok) throw await chatRequestError(response);
+    const blob = await response.blob();
+    const url = URL.createObjectURL(blob);
+    if (doc.content_type && doc.content_type.startsWith("image/")) {
+      showPatientImagePreview(doc, url);
+    } else {
+      const link = document.createElement("a");
+      link.href = url;
+      link.download = doc.original_filename || "document";
+      document.body.appendChild(link);
+      link.click();
+      link.remove();
+      window.setTimeout(() => URL.revokeObjectURL(url), 30000);
+    }
+    button.textContent = original;
+  } catch (error) {
+    button.textContent = error && error.message ? error.message : "Could not open the file";
+  } finally {
+    button.disabled = false;
+  }
+}
+
+/** An image the patient uploaded, shown in the app's own dialog. The object URL is an
+ *  <img> source only — never navigated to — and released when the dialog closes. */
+function showPatientImagePreview(doc, url) {
+  const modal = document.querySelector("#patientPreviewModal");
+  if (!modal) return;
+  modal.querySelector("#patientPreviewTitle").textContent = doc.original_filename || "Document";
+  const image = modal.querySelector("#patientPreviewImage");
+  image.src = url;
+  image.alt = `${formatDocumentType(doc.document_type)} you uploaded`;
+  const closeBtn = modal.querySelector("#patientPreviewCloseBtn");
+  let close = null;
+  const finish = () => {
+    closeBtn.removeEventListener("click", finish);
+    if (close) close();
+    image.removeAttribute("src");
+    URL.revokeObjectURL(url);
+  };
+  closeBtn.addEventListener("click", finish);
+  close = openChatDialog(modal, { initialFocus: closeBtn, onCancel: finish });
+}
+
+function renderPatientDocuments(container, { limit = 0, compact = false } = {}) {
+  if (!container) return;
+  container.replaceChildren();
+  const documents = limit ? patientRecords.documents.slice(0, limit) : patientRecords.documents;
+  if (!documents.length) {
+    const note = document.createElement("p");
+    note.className = "panel-note";
+    note.textContent = compact
+      ? "No documents yet. Upload from Records & History."
+      : "No documents yet. Use 📎 in the chat to attach a file.";
+    container.appendChild(note);
+    return;
+  }
+  documents.forEach((doc) => {
+    const spec = PATIENT_DOCUMENT_STATUS[doc.status] || PATIENT_DOCUMENT_STATUS.not_reviewed;
+    const card = document.createElement("article");
+    card.className = `patient-doc-card ${spec.tone}${compact ? " is-compact" : ""}`;
+
+    const head = document.createElement("div");
+    head.className = "patient-doc-head";
+    const titles = document.createElement("div");
+    const name = document.createElement("p");
+    name.className = "patient-doc-name";
+    name.textContent = doc.original_filename;
+    name.title = doc.original_filename;
+    const meta = document.createElement("p");
+    meta.className = "patient-doc-meta";
+    meta.textContent = [
+      formatDocumentType(doc.document_type),
+      doc.clinical_date ? formatBriefDate(doc.clinical_date) : "",
+      doc.copies > 1 ? `uploaded ${doc.copies} times` : "",
+    ].filter(Boolean).join(" · ");
+    titles.append(name, meta);
+    const chip = document.createElement("span");
+    chip.className = "patient-doc-chip";
+    chip.textContent = doc.status === "verified" && (doc.verified_by || []).length > 1
+      ? `Verified by ${doc.verified_by.length} doctors` : spec.chip;
+    head.append(titles, chip);
+    card.appendChild(head);
+
+    const status = document.createElement("p");
+    status.className = "patient-doc-status";
+    status.textContent = describePatientDocumentStatus(doc);
+    card.appendChild(status);
+
+    if (!compact && doc.status !== "processing" && doc.status !== "failed") {
+      const actions = document.createElement("div");
+      actions.className = "patient-doc-actions";
+      const open = document.createElement("button");
+      open.type = "button";
+      open.className = "secondary";
+      open.textContent = doc.content_type && doc.content_type.startsWith("image/") ? "View" : "Download";
+      open.setAttribute("aria-label", `${open.textContent} ${doc.original_filename}`);
+      open.addEventListener("click", () => { void openOwnDocumentFile(doc, open); });
+      actions.appendChild(open);
+      if (doc.session_id) {
+        const chat = document.createElement("button");
+        chat.type = "button";
+        chat.className = "secondary";
+        chat.textContent = "Open the chat";
+        chat.addEventListener("click", () => {
+          showWorkspacePage("records");
+          showChatHistory(String(doc.session_id));
+        });
+        actions.appendChild(chat);
+      }
+      card.appendChild(actions);
+    }
+    container.appendChild(card);
+  });
+}
+
+function renderPatientHandouts() {
+  const container = document.querySelector("#patientHandoutsList");
+  if (!container) return;
+  container.replaceChildren();
+  if (!patientRecords.handouts.length) {
+    const note = document.createElement("p");
+    note.className = "panel-note";
+    note.textContent = "No food suggestions yet. When a doctor makes a food handout for you, it appears here.";
+    container.appendChild(note);
+    return;
+  }
+  patientRecords.handouts.forEach((item) => {
+    const handout = item.content || {};
+    const card = document.createElement("article");
+    card.className = "patient-doc-card is-verified";
+    const head = document.createElement("div");
+    head.className = "patient-doc-head";
+    const titles = document.createElement("div");
+    const name = document.createElement("p");
+    name.className = "patient-doc-name";
+    name.textContent = `Food suggestions from ${item.doctor_name || "your doctor"}`;
+    const meta = document.createElement("p");
+    meta.className = "patient-doc-meta";
+    meta.textContent = [item.department, item.created_at ? formatBriefDate(item.created_at) : "",
+      handout.diet === "non_veg" ? "Non-vegetarian" : "Vegetarian"].filter(Boolean).join(" · ");
+    titles.append(name, meta);
+    head.appendChild(titles);
+    card.appendChild(head);
+
+    const summary = document.createElement("p");
+    summary.className = "patient-doc-status";
+    summary.textContent = `Covers: ${(handout.themes || []).map((t) => t.title).join(", ")}.`;
+    card.appendChild(summary);
+
+    const details = document.createElement("div");
+    details.className = "patient-handout-details hidden";
+    const detailsId = `patientHandout-${item.id}`;
+    details.id = detailsId;
+    (handout.themes || []).forEach((theme) => {
+      const title = document.createElement("h4");
+      title.textContent = theme.title;
+      details.appendChild(title);
+      if ((theme.foods || []).length) {
+        const foods = document.createElement("p");
+        foods.textContent = `Try to include: ${theme.foods.join(", ")}`;
+        details.appendChild(foods);
+      }
+      if ((theme.go_easy || []).length) {
+        const easy = document.createElement("p");
+        easy.textContent = `Go easy on: ${theme.go_easy.join(", ")}`;
+        details.appendChild(easy);
+      }
+      (theme.tips || []).forEach((tip) => {
+        const line = document.createElement("p");
+        line.className = "patient-handout-tip";
+        line.textContent = tip;
+        details.appendChild(line);
+      });
+    });
+    if ((handout.sample_day || []).length) {
+      const title = document.createElement("h4");
+      title.textContent = "A sample day";
+      details.appendChild(title);
+      handout.sample_day.forEach((meal) => {
+        const line = document.createElement("p");
+        line.textContent = `${meal.label}: ${meal.foods.join(", ")}`;
+        details.appendChild(line);
+      });
+    }
+    if (handout.note) {
+      const note = document.createElement("p");
+      note.className = "patient-handout-note";
+      note.textContent = handout.note;
+      details.appendChild(note);
+    }
+    card.appendChild(details);
+
+    const actions = document.createElement("div");
+    actions.className = "patient-doc-actions";
+    const toggle = document.createElement("button");
+    toggle.type = "button";
+    toggle.className = "secondary";
+    toggle.textContent = "Show";
+    toggle.setAttribute("aria-expanded", "false");
+    toggle.setAttribute("aria-controls", detailsId);
+    toggle.addEventListener("click", () => {
+      const open = details.classList.toggle("hidden") === false;
+      toggle.textContent = open ? "Hide" : "Show";
+      toggle.setAttribute("aria-expanded", String(open));
+    });
+    const print = document.createElement("button");
+    print.type = "button";
+    print.className = "secondary";
+    print.textContent = "Print";
+    print.addEventListener("click", () => {
+      const win = window.open("", "_blank");
+      if (!win) {
+        print.textContent = "Allow pop-ups to print";
+        return;
+      }
+      writeNutritionHandout(win, handout, [
+        item.doctor_name ? `from ${item.doctor_name}` : "",
+        item.created_at ? formatBriefDate(item.created_at) : "",
+        handout.diet === "non_veg" ? "Non-vegetarian" : "Vegetarian",
+      ].filter(Boolean).join(" · "));
+    });
+    actions.append(toggle, print);
+    card.appendChild(actions);
+    container.appendChild(card);
+  });
 }
 
 function normalizeDocumentEntry(doc) {
@@ -617,6 +1157,10 @@ function buildDocumentCard(doc, options = {}) {
 
 function renderDocumentsPanel(docs, container = analyzedDocsList) {
   if (!container) return;
+  if (container === analyzedDocsList && patientRecords.loaded) {
+    renderPatientDocuments(container);
+    return;
+  }
   container.replaceChildren();
 
   const normalized = (Array.isArray(docs) ? docs : [])
@@ -674,35 +1218,6 @@ function renderChatSessionDocuments(session, container) {
 
   box.appendChild(row);
   container.appendChild(box);
-}
-
-function showUploadMessage(filename, status = "Uploading...") {
-  const { node, body } = addAssistantMessage(status, { noAnimation: false });
-  node.classList.add("uploading-message");
-  body.innerHTML = "";
-
-  const label = document.createElement("div");
-  label.className = "uploading-message-label";
-  label.textContent = status;
-
-  const file = document.createElement("div");
-  file.className = "uploading-message-file";
-  file.textContent = filename;
-
-  body.append(label, file);
-  return {
-    node,
-    body,
-    setStatus(nextStatus) {
-      label.textContent = nextStatus;
-    },
-    setFile(nextFile) {
-      file.textContent = nextFile;
-    },
-    remove() {
-      node.remove();
-    },
-  };
 }
 
 function addUserMessageWithFile(text, filenames) {
@@ -1102,8 +1617,11 @@ function setPatientAuthenticated(user, token, refreshTokenValue) {
   document.body.classList.remove("admin-authenticated");
   showWorkspacePage("assistant");
   setPatientSummary(user);
+  resetPatientRecords();
   resetChat();
   refreshActiveAppointments();
+  // The dashboard's Documents panel and Records read the patient's own records.
+  void loadPatientRecords();
   setSidebarOpen(sidebarOpen);
 }
 
@@ -1145,6 +1663,7 @@ function clearAuthenticated() {
   if (documentUpload) documentUpload.value = "";
   clearAttachPill();
   setUploadStatus("", "default");
+  resetPatientRecords();
   renderDocumentsPanel([]);
   currentUser = null;
   currentAdmin = null;
@@ -1699,6 +2218,7 @@ function relativeAge(isoString) {
 /** `background` marks an automatic refresh — see loadDoctorAiActivity. A failed refresh
  *  must not wipe a queue the doctor is working from. */
 async function loadDoctorReviews({ background = false } = {}) {
+  void loadDoctorDocumentActions({ background });
   if (!background && doctorReviewsCount) doctorReviewsCount.textContent = "Loading...";
   const scope = doctorReviewScope;
   try {
@@ -1734,6 +2254,122 @@ async function loadDoctorReviews({ background = false } = {}) {
     }
     doctorReviewLanes?.classList.add("hidden");
   }
+}
+
+// Document work for "Your next actions" (app/services/doctor_next_actions.py): documents a
+// colleague reported inaccurate, new abnormal results for patients seen soon, and their
+// recent documents nobody has verified. Loaded with the review queue, on its schedule.
+let doctorDocumentActions = { reported: [], new_abnormal: [], to_verify: [] };
+
+async function loadDoctorDocumentActions({ background = false } = {}) {
+  try {
+    const data = await doctorAuthedJson("/doctor/ai/document-actions");
+    doctorDocumentActions = {
+      reported: Array.isArray(data.reported) ? data.reported : [],
+      new_abnormal: Array.isArray(data.new_abnormal) ? data.new_abnormal : [],
+      to_verify: Array.isArray(data.to_verify) ? data.to_verify : [],
+    };
+  } catch (error) {
+    // A failed background refresh keeps what is on screen, as the review queue does.
+    if (background) return;
+    doctorDocumentActions = { reported: [], new_abnormal: [], to_verify: [] };
+  }
+  renderDoctorOverviewReviews();
+}
+
+/** Reported first (everyone treating the patient is reading those values), then new
+ *  abnormal results, then documents to verify; soonest appointment first within each. */
+function documentActionItems() {
+  return [
+    ...doctorDocumentActions.reported,
+    ...doctorDocumentActions.new_abnormal,
+    ...doctorDocumentActions.to_verify,
+  ];
+}
+
+function describeFindingForAction(finding) {
+  const change = { new: "new", worse: "worse", flipped: "changed direction" }[(finding.change || {}).kind] || "";
+  return `${finding.name} ${finding.flag}${change ? ` (${change})` : ""}`;
+}
+
+function buildDocumentActionCard(item) {
+  const spec = {
+    reported_document: { chip: ["Reported inaccurate", "is-bad"], icon: "is-bad", action: "Review" },
+    new_abnormal: { chip: ["New abnormal results", "is-warn"], icon: "is-warn", action: "View results" },
+    verify_document: { chip: ["Not verified", "is-ai"], icon: "", action: "Verify" },
+  }[item.kind] || { chip: ["Document", ""], icon: "", action: "Open" };
+  const doc = item.document || {};
+
+  const card = document.createElement("article");
+  card.className = "doctor-ai-item is-clickable";
+
+  const icon = document.createElement("div");
+  icon.className = `doctor-ai-item-ico ${spec.icon}`.trim();
+  icon.innerHTML = '<svg class="ai-i" viewBox="0 0 24 24" aria-hidden="true">'
+    + '<path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"/>'
+    + '<path d="M14 2v6h6"/><path d="M9 15l2 2 4-4"/></svg>';
+
+  const body = document.createElement("div");
+  body.className = "doctor-ai-item-body";
+  const title = document.createElement("div");
+  title.className = "doctor-ai-item-title";
+  title.textContent = item.patient_name || "Unknown patient";
+  const when = item.appointment_start ? formatDateTime(item.appointment_start) : "";
+  if (when) {
+    const meta = document.createElement("span");
+    meta.className = "doctor-ai-item-meta";
+    meta.textContent = ` · ${when}`;
+    title.appendChild(meta);
+  }
+  body.appendChild(title);
+
+  const chips = document.createElement("div");
+  chips.className = "doctor-ai-item-chips";
+  chips.appendChild(buildAiChip(spec.chip[0], spec.chip[1]));
+  const docLine = document.createElement("span");
+  docLine.className = "doctor-ai-item-meta";
+  docLine.textContent = `${formatDocumentType(doc.document_type)}${doc.clinical_date ? ` · ${formatBriefDate(doc.clinical_date)}` : ""}`;
+  chips.appendChild(docLine);
+  body.appendChild(chips);
+
+  let detailText = "";
+  if (item.kind === "new_abnormal") {
+    detailText = (item.findings || []).slice(0, 3).map(describeFindingForAction).join(" · ");
+  } else if (item.kind === "reported_document") {
+    const person = ((item.review || {}).flagged_by || [])[0];
+    if (person) detailText = `${formatReviewer(person)}: “${person.reason || ""}”`;
+  } else {
+    detailText = `${doc.original_filename || "Document"}: read by AI, not yet checked against the original.`;
+  }
+  if (detailText) {
+    const detail = document.createElement("div");
+    detail.className = "doctor-ai-item-meta";
+    detail.style.marginTop = "6px";
+    detail.textContent = detailText;
+    body.appendChild(detail);
+  }
+
+  // Results open the patient's page, where At a glance shows each report with what changed;
+  // the other two open the document itself, with its Verify and Report controls.
+  const open = () => {
+    if (item.kind === "new_abnormal") {
+      void loadDoctorPatientDetail(item.patient_id);
+    } else {
+      void openDoctorDocumentViewer(item.patient_id, { ...doc, review: item.review });
+    }
+  };
+  const actionBtn = document.createElement("button");
+  actionBtn.type = "button";
+  actionBtn.className = `doctor-ai-btn is-sm${item.kind === "verify_document" ? " is-soft" : ""}`;
+  actionBtn.textContent = spec.action;
+  actionBtn.setAttribute("aria-label", `${spec.action}: ${item.patient_name || "this patient"}, ${formatDocumentType(doc.document_type)}`);
+  actionBtn.addEventListener("click", (event) => {
+    event.stopPropagation();
+    open();
+  });
+  card.addEventListener("click", open);
+  card.append(icon, body, actionBtn);
+  return card;
 }
 
 function acceptPendingPayload(data) {
@@ -2040,8 +2676,9 @@ function renderDoctorOverviewReviews() {
   // Reviews pane, and this preview must not become a second place to work through it.
   // Always the PENDING queue, whatever tab the Reviews pane was left on.
   const preview = doctorPendingQueue.slice(0, 4);
+  const documentItems = documentActionItems().slice(0, 4);
 
-  if (!preview.length) {
+  if (!preview.length && (doctorPendingState !== "ready" || !documentItems.length)) {
     // Three different statements. "Nothing is waiting" is a claim about the doctor's work
     // and must not be made while the queue is still loading or could not be loaded.
     doctorOverviewReviews.appendChild(buildDoctorEmptyState(
@@ -2049,10 +2686,17 @@ function renderDoctorOverviewReviews() {
         : doctorPendingState === "error" ? "Your next actions could not be loaded. They will retry shortly."
           : "Nothing is waiting for your review."
     ));
-    return;
   }
 
   preview.forEach((review) => doctorOverviewReviews.appendChild(buildReviewCard(review)));
+
+  if (documentItems.length) {
+    const heading = document.createElement("p");
+    heading.className = "doctor-next-actions-subhead";
+    heading.textContent = "Documents and results";
+    doctorOverviewReviews.appendChild(heading);
+    documentItems.forEach((item) => doctorOverviewReviews.appendChild(buildDocumentActionCard(item)));
+  }
 }
 
 /** "Start AI review" opens the top-ranked item directly. It used to do exactly what "See
@@ -2613,14 +3257,23 @@ function renderDoctorActivityLog(events, { loading = false, error = false } = {}
     const openable = Boolean(event.openable);
     const row = document.createElement(openable ? "button" : "div");
     row.className = "doctor-ai-feed-row";
+    // A document action (verified, reported, summarised) opens its document, not a consult.
+    const eventDocument = event.document || null;
     if (openable) {
       row.type = "button";
       row.classList.add("is-openable");
       // The accessible name says what opens, without the patient's name — the log does not
       // show names on the dashboard, and a screen reader announcing them would.
       row.setAttribute("aria-label",
-        `${event.label || "Activity"}, ${event.occurred_at ? formatDateTime(event.occurred_at) : ""}. Open this consultation`);
-      row.addEventListener("click", () => { void openReviewFromQueue(event); });
+        `${event.label || "Activity"}, ${event.occurred_at ? formatDateTime(event.occurred_at) : ""}. `
+        + (eventDocument ? "Open this document" : "Open this consultation"));
+      row.addEventListener("click", () => {
+        if (eventDocument) {
+          void openDoctorDocumentViewer(eventDocument.patient_id, eventDocument);
+        } else {
+          void openReviewFromQueue(event);
+        }
+      });
     }
 
     const time = document.createElement("div");
@@ -2648,6 +3301,13 @@ function renderDoctorActivityLog(events, { loading = false, error = false } = {}
     if (detail.style) bits.push(`${detail.style} note`);
     if (detail.section) bits.push(detail.section);
     if (detail.reason === "transcript_labels_corrected") bits.push("transcript labels were corrected");
+    if (eventDocument) {
+      bits.push(`${eventDocument.original_filename} · ${formatDocumentType(eventDocument.document_type)}`);
+    }
+    // The doctor's own words when they reported a document inaccurate.
+    if (event.action === "document_flagged_inaccurate" && detail.reason) bits.push(`“${detail.reason}”`);
+    if (detail.theme_title) bits.push(detail.theme_title);
+    if (detail.diet) bits.push(detail.diet === "non_veg" ? "non-vegetarian" : "vegetarian");
     // Said on the row, so "Drafted a clinical note" for a consult that was later discarded
     // does not send the doctor looking for a note that is no longer anywhere to be found.
     if (event.consult_status === "discarded" && event.action !== "consult_discarded") {
@@ -3116,6 +3776,12 @@ function buildBriefRow(text, { chips = [], action = null, tone = "", content = n
   return item;
 }
 
+// The assistant's summary written into a booking note, as opposed to words the patient typed.
+// Labelled so a doctor does not read an AI summary as the patient's own account.
+function isAiPreVisitSummary(note) {
+  return /PRE-APPOINTMENT (AI )?CLINICAL SUMMARY|PRE-AI INTAKE CHECKUP REPORT|DOCUMENTS SHARED IN THE BOOKING CHAT/i.test(String(note || ""));
+}
+
 function buildVisitBrief(brief) {
   const root = document.createElement("div");
   root.className = "doctor-visit-brief-content";
@@ -3126,7 +3792,12 @@ function buildVisitBrief(brief) {
   if (why.booking_note) {
     whyRows.push(buildBriefRow("", {
       content: renderBookingNoteMarkdown(why.booking_note),
-      chips: [{ text: why.label || "Patient reports", modifier: "is-warn" }],
+      chips: [{
+        text: isAiPreVisitSummary(why.booking_note)
+          ? "AI pre-visit summary · from the patient's chat"
+          : (why.label || "Patient reports"),
+        modifier: "is-warn",
+      }],
     }));
   }
   if (why.recorded) {
@@ -3225,6 +3896,7 @@ function buildVisitBrief(brief) {
     root.appendChild(buildNutritionSection(
       `/doctor/appointments/${encodeURIComponent(brief.booking_id)}/nutrition`,
       "From their latest abnormal results and the symptoms in the booking note.",
+      { bookingId: brief.booking_id, patientName: brief.patient_name },
     ));
   }
   return root;
@@ -3241,7 +3913,9 @@ function buildVisitBrief(brief) {
 let nutritionDiet = "veg";
 
 /** A collapsed "AI nutritionist" section that loads its guidance the first time it opens. */
-function buildNutritionSection(url, intro) {
+/** @param context - { bookingId, patientName }: what "Mark discussed" and the handout
+ *                    record against. The document viewer passes no booking. */
+function buildNutritionSection(url, intro, context = {}) {
   const section = document.createElement("section");
   section.className = "doctor-brief-section doctor-nutrition";
 
@@ -3271,7 +3945,7 @@ function buildNutritionSection(url, intro) {
     try {
       // Generous: guidance for a result nobody has had before is written on this request.
       const payload = await doctorAuthedJson(url, { timeoutMs: 120000 });
-      renderNutritionGuidance(body, payload, intro);
+      renderNutritionGuidance(body, payload, intro, context);
     } catch (error) {
       loaded = false;
       body.replaceChildren(Object.assign(document.createElement("p"), {
@@ -3293,7 +3967,458 @@ function describeNutritionEvidence(because) {
   return `${because.printed_name} ${because.value_text}, ${because.flag}${where ? ` — ${where}` : ""}`;
 }
 
-function renderNutritionGuidance(host, payload, intro = "") {
+// ---- The AI nutritionist, organised (app/services/nutrition_plan.py) ----
+// Themes, the foods that help most, what to go easy on, a sample day, and which themes were
+// discussed. Every food here passed the server's checks for one of this patient's results or
+// symptoms; the page only groups and counts them. All text is rendered as text nodes.
+
+// Which theme each nutrition panel on the page has open, by panel.
+const nutritionThemeByHost = new WeakMap();
+
+function nutritionChip(text, modifier = "") {
+  const chip = document.createElement("span");
+  chip.className = `doctor-nutri-chip${modifier ? ` ${modifier}` : ""}`;
+  chip.textContent = text;
+  return chip;
+}
+
+function nutritionHeading(text) {
+  const heading = document.createElement("p");
+  heading.className = "doctor-nutri-eyebrow";
+  heading.textContent = text;
+  return heading;
+}
+
+function describeDiscussion(discussed) {
+  if (!discussed) return "";
+  const who = discussed.is_me ? "you" : (discussed.name || "a clinician");
+  return `Discussed by ${who}${discussed.at ? `, ${formatBriefDate(discussed.at)}` : ""}`;
+}
+
+function renderNutritionPlan(host, payload, intro, context) {
+  host.replaceChildren();
+  const plan = payload.plan;
+  const diet = nutritionDiet === "non_veg" ? "non_veg" : "veg";
+  const rerender = () => renderNutritionPlan(host, payload, intro, context);
+
+  // Header: what this is, what it is built from, the diet, and the handout.
+  const header = document.createElement("div");
+  header.className = "doctor-nutri-header";
+  const headText = document.createElement("div");
+  const label = document.createElement("p");
+  label.className = "doctor-nutrition-label";
+  label.textContent = "AI generated · food suggestions to discuss, not a diet prescription";
+  const counts = plan.counts || {};
+  const summary = document.createElement("p");
+  summary.className = "doctor-nutri-summary";
+  const parts = [];
+  if (counts.results) parts.push(`${counts.results} abnormal result${counts.results === 1 ? "" : "s"}`);
+  if (counts.symptoms) parts.push(`${counts.symptoms} symptom${counts.symptoms === 1 ? "" : "s"}`);
+  summary.textContent = `${parts.join(" and ") || "Guidance"}, grouped into ${counts.themes} theme${counts.themes === 1 ? "" : "s"}.${intro ? ` ${intro}` : ""}`;
+  headText.append(label, summary);
+
+  const controls = document.createElement("div");
+  controls.className = "doctor-nutri-controls";
+  const diets = document.createElement("div");
+  diets.className = "doctor-nutrition-diets";
+  diets.setAttribute("role", "group");
+  diets.setAttribute("aria-label", "Diet");
+  [["veg", "Vegetarian"], ["non_veg", "Non-vegetarian"]].forEach(([value, text]) => {
+    const button = document.createElement("button");
+    button.type = "button";
+    button.className = "doctor-nutrition-diet";
+    button.textContent = text;
+    button.setAttribute("aria-pressed", String(diet === value));
+    button.addEventListener("click", () => {
+      nutritionDiet = value;
+      rerender();
+      host.querySelector(".doctor-nutrition-diet[aria-pressed='true']")?.focus();
+    });
+    diets.appendChild(button);
+  });
+  const handout = document.createElement("button");
+  handout.type = "button";
+  handout.className = "doctor-ai-btn is-sm";
+  handout.textContent = "Create patient handout";
+  handout.addEventListener("click", () => { void openNutritionHandout(payload, diet, context, handout); });
+  controls.append(diets, handout);
+  header.append(headText, controls);
+  host.appendChild(header);
+
+  const notices = [...(payload.cautions || [])];
+  if (payload.reported_inaccurate) notices.push("This document was reported inaccurate by a clinician, so no guidance is based on it.");
+  if (payload.excluded_documents) {
+    notices.push(`Results from ${payload.excluded_documents} document${payload.excluded_documents === 1 ? "" : "s"} reported inaccurate are left out.`);
+  }
+  notices.forEach((text) => {
+    const caution = document.createElement("p");
+    caution.className = "doctor-nutrition-caution";
+    caution.textContent = text;
+    host.appendChild(caution);
+  });
+
+  const grid = document.createElement("div");
+  grid.className = "doctor-nutri-grid";
+
+  // 1. Foods that help most, and what to go easy on.
+  const left = document.createElement("div");
+  left.className = "doctor-nutri-card";
+  left.appendChild(nutritionHeading("Start here"));
+  const leftTitle = document.createElement("h5");
+  leftTitle.className = "doctor-nutri-title";
+  leftTitle.textContent = "Foods that help most";
+  const leftNote = document.createElement("p");
+  leftNote.className = "doctor-nutri-muted";
+  const total = (payload.items || []).length;
+  // `total` counts guidance topics, not results: a lipid panel's six results are one topic,
+  // so saying "of the 9 findings" beside "12 abnormal results" read as a contradiction.
+  leftNote.textContent = `Ranked by how many of the ${total} guidance topics each one helps (a lab panel counts once).`;
+  left.append(leftTitle, leftNote);
+  const ranked = document.createElement("ol");
+  ranked.className = "doctor-nutri-ranked";
+  ((plan.top_foods || {})[diet] || []).slice(0, 9).forEach((entry) => {
+    const row = document.createElement("li");
+    const name = document.createElement("span");
+    name.textContent = entry.food;
+    const meter = document.createElement("span");
+    meter.className = "doctor-nutri-meter";
+    meter.setAttribute("aria-hidden", "true");
+    for (let i = 0; i < Math.min(total, 8); i += 1) {
+      const dot = document.createElement("span");
+      if (i < entry.count) dot.className = "is-on";
+      meter.appendChild(dot);
+    }
+    const helps = document.createElement("span");
+    helps.className = "doctor-nutri-muted";
+    helps.textContent = `helps ${entry.count}`;
+    row.append(name, meter, helps);
+    ranked.appendChild(row);
+  });
+  left.appendChild(ranked);
+  if ((plan.go_easy || []).length) {
+    const easyTitle = document.createElement("h5");
+    easyTitle.className = "doctor-nutri-title";
+    easyTitle.textContent = "Go easy on";
+    left.appendChild(easyTitle);
+    const easy = document.createElement("ul");
+    easy.className = "doctor-nutri-easy";
+    plan.go_easy.slice(0, 8).forEach((entry) => {
+      const row = document.createElement("li");
+      const name = document.createElement("span");
+      name.textContent = entry.food;
+      row.append(name, nutritionChip(`${entry.themes} theme${entry.themes === 1 ? "" : "s"}`, "is-warn"));
+      easy.appendChild(row);
+    });
+    left.appendChild(easy);
+  }
+
+  // 2. Themes: tabs, then the open theme — why, what to add, what to go easy on.
+  const middle = document.createElement("div");
+  middle.className = "doctor-nutri-themes";
+  const themes = plan.themes || [];
+  let current = nutritionThemeByHost.get(host);
+  if (!themes.some((theme) => theme.id === current)) current = themes[0] && themes[0].id;
+  const tabs = document.createElement("div");
+  tabs.className = "doctor-nutri-tabs";
+  tabs.setAttribute("role", "tablist");
+  tabs.setAttribute("aria-label", "Nutrition themes");
+  themes.forEach((theme) => {
+    const tab = document.createElement("button");
+    tab.type = "button";
+    tab.className = "doctor-nutri-tab";
+    tab.setAttribute("role", "tab");
+    tab.setAttribute("aria-selected", String(theme.id === current));
+    tab.tabIndex = theme.id === current ? 0 : -1;
+    const title = document.createElement("span");
+    title.className = "doctor-nutri-tab-title";
+    title.textContent = theme.title;
+    const meta = document.createElement("span");
+    meta.className = "doctor-nutri-muted";
+    const bits = [];
+    if (theme.results.length) bits.push(`${theme.results.length} result${theme.results.length === 1 ? "" : "s"}`);
+    if (theme.symptoms.length) bits.push(`${theme.symptoms.length} symptom${theme.symptoms.length === 1 ? "" : "s"}`);
+    meta.textContent = bits.join(" · ");
+    tab.append(title, meta);
+    if (theme.discussed) tab.appendChild(nutritionChip("Discussed", "is-ok"));
+    tab.addEventListener("click", () => {
+      nutritionThemeByHost.set(host, theme.id);
+      rerender();
+      host.querySelector(".doctor-nutri-tab[aria-selected='true']")?.focus();
+    });
+    tab.addEventListener("keydown", (event) => {
+      if (event.key !== "ArrowRight" && event.key !== "ArrowLeft") return;
+      event.preventDefault();
+      const index = themes.findIndex((t) => t.id === theme.id);
+      const next = themes[(index + (event.key === "ArrowRight" ? 1 : themes.length - 1)) % themes.length];
+      nutritionThemeByHost.set(host, next.id);
+      rerender();
+      host.querySelector(".doctor-nutri-tab[aria-selected='true']")?.focus();
+    });
+    tabs.appendChild(tab);
+  });
+  middle.appendChild(tabs);
+
+  const theme = themes.find((t) => t.id === current);
+  if (theme) {
+    const panel = document.createElement("div");
+    panel.className = "doctor-nutri-card doctor-nutri-panel";
+    panel.setAttribute("role", "tabpanel");
+    const panelHead = document.createElement("div");
+    panelHead.className = "doctor-nutri-panel-head";
+    const titles = document.createElement("div");
+    const panelTitle = document.createElement("h5");
+    panelTitle.className = "doctor-nutri-title is-large";
+    panelTitle.textContent = theme.title;
+    const blurb = document.createElement("p");
+    blurb.className = "doctor-nutri-muted";
+    blurb.textContent = theme.blurb;
+    titles.append(panelTitle, blurb);
+    panelHead.appendChild(titles);
+
+    // Mark discussed: recorded against this patient (and visit), shown next time, audited.
+    const discussedWrap = document.createElement("div");
+    discussedWrap.className = "doctor-nutri-discussed";
+    const status = document.createElement("span");
+    status.className = "doctor-nutri-muted";
+    status.setAttribute("role", "status");
+    status.textContent = describeDiscussion(theme.discussed);
+    const mineHere = theme.discussed && theme.discussed.is_me
+      && (theme.discussed.booking_id || null) === (context.bookingId || null);
+    const discussBtn = document.createElement("button");
+    discussBtn.type = "button";
+    discussBtn.className = "doctor-ai-btn is-ghost is-sm";
+    discussBtn.textContent = mineHere ? "Undo discussed" : "Mark discussed";
+    discussBtn.addEventListener("click", async () => {
+      discussBtn.disabled = true;
+      status.textContent = "Saving…";
+      try {
+        const data = await doctorAuthedJson(
+          `/doctor/patients/${encodeURIComponent(payload.patient_id)}/nutrition/discussed`,
+          { method: "POST", headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({ theme: theme.id, discussed: !mineHere, booking_id: context.bookingId || null }) },
+        );
+        const byTheme = (data && data.discussed) || {};
+        plan.themes.forEach((t) => { t.discussed = byTheme[t.id] || null; });
+        rerender();
+        host.querySelector(".doctor-nutri-discussed button")?.focus();
+      } catch (error) {
+        status.textContent = error && error.message ? error.message : "That could not be saved.";
+        discussBtn.disabled = false;
+      }
+    });
+    discussedWrap.append(status, discussBtn);
+    panelHead.appendChild(discussedWrap);
+    panel.appendChild(panelHead);
+
+    panel.appendChild(nutritionHeading("Why the AI suggested this"));
+    const why = document.createElement("div");
+    why.className = "doctor-nutri-why";
+    theme.results.forEach((result) => {
+      const card = document.createElement("div");
+      card.className = "doctor-nutri-why-card";
+      const top = document.createElement("div");
+      top.className = "doctor-nutri-why-top";
+      const name = document.createElement("strong");
+      name.textContent = result.printed_name || result.canonical_name;
+      top.append(name, nutritionChip(result.flag, "is-warn"));
+      const bottom = document.createElement("div");
+      bottom.className = "doctor-nutri-why-bottom";
+      const value = document.createElement("span");
+      value.textContent = result.value_text || "";
+      const source = document.createElement("span");
+      source.className = "doctor-nutri-muted";
+      source.textContent = [formatDocumentType(result.document_type),
+        result.clinical_date ? formatBriefDate(result.clinical_date) : "",
+        result.page_no ? `p${result.page_no}` : ""].filter(Boolean).join(" · ");
+      bottom.append(value, source);
+      card.append(top, bottom);
+      why.appendChild(card);
+    });
+    theme.symptoms.forEach((symptom) => {
+      const card = document.createElement("div");
+      card.className = "doctor-nutri-why-card";
+      const top = document.createElement("div");
+      top.className = "doctor-nutri-why-top";
+      const name = document.createElement("strong");
+      name.textContent = `${symptom.charAt(0).toUpperCase()}${symptom.slice(1)}`;
+      top.append(name, nutritionChip("reported"));
+      const bottom = document.createElement("div");
+      bottom.className = "doctor-nutri-why-bottom";
+      const kind = document.createElement("span");
+      kind.textContent = "Symptom";
+      const source = document.createElement("span");
+      source.className = "doctor-nutri-muted";
+      // Where it was found: the booking note, or the patient's own words in the booking chat.
+      const found = (theme.symptom_sources || {})[symptom] || "booking note";
+      source.textContent = `${found.charAt(0).toUpperCase()}${found.slice(1)}`;
+      bottom.append(kind, source);
+      card.append(top, bottom);
+      why.appendChild(card);
+    });
+    panel.appendChild(why);
+
+    const columns = document.createElement("div");
+    columns.className = "doctor-nutri-columns";
+    const addCol = document.createElement("div");
+    addCol.appendChild(nutritionHeading("Add more"));
+    const addChips = document.createElement("div");
+    addChips.className = "doctor-nutri-chips";
+    (theme.foods[diet] || []).forEach((food) => addChips.appendChild(nutritionChip(food, "is-ok")));
+    addCol.appendChild(addChips);
+    columns.appendChild(addCol);
+    if ((theme.go_easy || []).length) {
+      const easyCol = document.createElement("div");
+      easyCol.appendChild(nutritionHeading("Go easy on"));
+      const easyChips = document.createElement("div");
+      easyChips.className = "doctor-nutri-chips";
+      theme.go_easy.forEach((food) => easyChips.appendChild(nutritionChip(food, "is-warn")));
+      easyCol.appendChild(easyChips);
+      columns.appendChild(easyCol);
+    }
+    panel.appendChild(columns);
+
+    (theme.tips || []).forEach((tip) => {
+      const line = document.createElement("p");
+      line.className = "doctor-nutri-tip";
+      line.textContent = tip;
+      panel.appendChild(line);
+    });
+    middle.appendChild(panel);
+  }
+
+  // 3. A sample day, built only from the foods on this page.
+  const right = document.createElement("div");
+  right.className = "doctor-nutri-card";
+  right.appendChild(nutritionHeading("A sample day"));
+  const dayNote = document.createElement("p");
+  dayNote.className = "doctor-nutri-muted";
+  dayNote.textContent = "Built only from the foods on this page.";
+  right.appendChild(dayNote);
+  const meals = ((plan.sample_day || {})[diet]) || [];
+  if (!meals.length) {
+    const none = document.createElement("p");
+    none.className = "doctor-nutri-muted";
+    none.textContent = "Not enough everyday foods here to suggest a day.";
+    right.appendChild(none);
+  }
+  meals.forEach((meal) => {
+    const row = document.createElement("div");
+    row.className = "doctor-nutri-meal";
+    const when = document.createElement("p");
+    when.className = "doctor-nutri-eyebrow";
+    when.textContent = meal.label;
+    const foods = document.createElement("p");
+    foods.className = "doctor-nutri-meal-foods";
+    foods.textContent = meal.foods.join(", ");
+    row.append(when, foods);
+    if ((meal.helps || []).length) {
+      const helps = document.createElement("p");
+      helps.className = "doctor-nutri-muted";
+      helps.textContent = `Helps: ${meal.helps.join(", ")}`;
+      row.appendChild(helps);
+    }
+    right.appendChild(row);
+  });
+
+  grid.append(left, middle, right);
+  host.appendChild(grid);
+
+  if ((payload.unavailable || []).length) {
+    const missing = document.createElement("p");
+    missing.className = "doctor-brief-empty";
+    missing.textContent = `No guidance could be prepared for: ${payload.unavailable.join(", ")}.`;
+    host.appendChild(missing);
+  }
+}
+
+/** Writes a food handout into a document (a new window, for printing). Shared by the doctor,
+ *  who makes it, and the patient, who finds it in their account: both print the same stored
+ *  handout (nutrition_plan.build_handout). Text nodes only. */
+function writeNutritionHandout(win, handout, metaLine) {
+  const doc = win.document;
+  doc.title = "Food suggestions";
+  const style = doc.createElement("style");
+  style.textContent = [
+    "body{font:15px/1.55 system-ui,-apple-system,'Segoe UI',sans-serif;color:#1f1e1d;max-width:760px;margin:32px auto;padding:0 20px}",
+    "h1{font-size:24px;margin:0 0 4px}h2{font-size:17px;margin:22px 0 6px}",
+    ".meta{color:#555;margin:0 0 18px}.label{font-weight:600}ul{margin:4px 0 8px 18px;padding:0}",
+    ".note{margin-top:28px;padding:12px 14px;border:1px solid #ccc;border-radius:8px;color:#333}",
+    ".print{margin:0 0 18px;padding:8px 16px;font:inherit;cursor:pointer}@media print{.print{display:none}}",
+  ].join("");
+  doc.head.appendChild(style);
+  const add = (tag, text, className) => {
+    const el = doc.createElement(tag);
+    if (text) el.textContent = text;
+    if (className) el.className = className;
+    doc.body.appendChild(el);
+    return el;
+  };
+  const list = (items) => {
+    const ul = doc.createElement("ul");
+    items.forEach((text) => { const li = doc.createElement("li"); li.textContent = text; ul.appendChild(li); });
+    doc.body.appendChild(ul);
+  };
+  const print = add("button", "Print or save as PDF", "print");
+  print.type = "button";
+  print.addEventListener("click", () => win.print());
+  add("h1", "Food suggestions from your visit");
+  if (metaLine) add("p", metaLine, "meta");
+  (handout.themes || []).forEach((theme) => {
+    add("h2", theme.title);
+    add("p", theme.blurb);
+    if ((theme.foods || []).length) {
+      add("p", "Try to include:", "label");
+      list(theme.foods);
+    }
+    if ((theme.go_easy || []).length) {
+      add("p", "Go easy on:", "label");
+      list(theme.go_easy);
+    }
+    (theme.tips || []).forEach((tip) => add("p", tip));
+  });
+  if ((handout.sample_day || []).length) {
+    add("h2", "A sample day");
+    list(handout.sample_day.map((meal) => `${meal.label}: ${meal.foods.join(", ")}`));
+  }
+  if (handout.note) add("p", handout.note, "note");
+}
+
+/** Makes the patient's handout on the server — kept in their account — and prints it. The
+ *  server builds it from the same guidance as this page, so the printout and what the
+ *  patient later reads in their account are the same. */
+async function openNutritionHandout(payload, diet, context, button) {
+  const win = window.open("", "_blank");
+  if (!win) {
+    button.textContent = "Allow pop-ups to open the handout";
+    return;
+  }
+  let result;
+  try {
+    result = await doctorAuthedJson(
+      `/doctor/patients/${encodeURIComponent(payload.patient_id)}/nutrition/handout`,
+      { method: "POST", headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ diet, booking_id: context.bookingId || null, document_id: context.documentId || null }) },
+    );
+  } catch (error) {
+    win.close();
+    button.textContent = "The handout could not be made. Try again";
+    return;
+  }
+  const doctorName = (doctorProfileName && doctorProfileName.textContent.trim()) || "";
+  writeNutritionHandout(win, result.handout, [
+    context.patientName, doctorName ? `from ${doctorName}` : "", new Date().toLocaleDateString(),
+    result.handout.diet === "non_veg" ? "Non-vegetarian" : "Vegetarian",
+  ].filter(Boolean).join(" · "));
+  button.textContent = "Handout saved to the patient's account · make another";
+}
+
+function renderNutritionGuidance(host, payload, intro = "", context = {}) {
+  // The organised page (nutrition_plan) whenever the server sent one; the plain list is
+  // the fallback it replaced.
+  if (payload && payload.plan && (payload.items || []).length) {
+    renderNutritionPlan(host, payload, intro, context);
+    return;
+  }
   host.replaceChildren();
   const items = (payload && payload.items) || [];
 
@@ -5094,11 +6219,14 @@ function renderDoctorOverview(payload) {
   }
 
   const lines = (payload && payload.lines) || [];
-  if (!lines.length) {
+  const documents = (payload && payload.documents) || [];
+  if (!lines.length && !documents.length) {
     const empty = document.createElement("p");
     empty.className = "panel-note";
     empty.textContent = "Nothing on record for this patient yet.";
     doctorOverviewLines.appendChild(empty);
+  } else if (!lines.length) {
+    // Only results on record: they are shown by document below.
   } else if (phrased) {
     const factsById = new Map(((payload && payload.facts) || []).map((fact) => [fact.id, fact]));
     lines.forEach((line) => {
@@ -5140,6 +6268,8 @@ function renderDoctorOverview(payload) {
     });
   }
 
+  renderOverviewDocuments(doctorPatientDetailId, documents);
+
   if (doctorOverviewNote) {
     doctorOverviewNote.textContent = phrased
       ? "Drafted by AI from this patient's record and checked against it line by line. "
@@ -5148,6 +6278,158 @@ function renderDoctorOverview(payload) {
           ? `Showing the facts directly: the AI summary could not be verified (${payload.reason}).`
           : "Showing the facts directly from this patient's record.");
   }
+}
+
+// ---- At a glance, by document ----
+// app/services/overview_documents.py: each block is one report's current findings, who has
+// verified it against the original (or reported it), and what changed since the previous
+// reading of each result. Every value here is model- or patient-derived text, rendered as
+// text nodes only.
+
+const FINDING_CHANGE_SUMMARY = {
+  new: "new out of range",
+  worse: "worse",
+  better: "improving",
+  unchanged: "unchanged",
+  flipped: "changed direction",
+  back_to_normal: "back in range",
+};
+
+function formatReading(value, unit) {
+  if (value === null || value === undefined || value === "") return "";
+  return `${Number.isFinite(Number(value)) ? String(Number(value)) : String(value)}${unit ? ` ${unit}` : ""}`;
+}
+
+/** "worse — was 18.2 ng/mL on 12 May". Written from the stored readings, never inferred. */
+function describeFindingChange(change) {
+  if (!change) return "";
+  const before = formatReading(change.previous_value, change.previous_unit);
+  const when = change.previous_date ? ` on ${formatBriefDate(change.previous_date)}` : "";
+  switch (change.kind) {
+    // Every row of a patient's first report would say it; only real changes are shown.
+    case "first": return "";
+    case "new": return `new: was in range${before ? ` (${before}${when})` : when}`;
+    case "worse": return `worse: was ${before}${when}`;
+    case "better": return `improving: was ${before}${when}`;
+    case "unchanged": return `unchanged since${when || " the previous report"}`;
+    case "flipped": return `was ${change.previous_flag}${before ? ` (${before})` : ""}${when}`;
+    case "back_to_normal": return `back in range: was ${change.previous_flag}${before ? ` at ${before}` : ""}${when}`;
+    default: return "";
+  }
+}
+
+function describeDocumentReviewLine(review) {
+  const state = review || { status: "unverified", verified_by: [], flagged_by: [] };
+  // formatReviewer says "You" to start a line; mid-sentence it reads "by you".
+  const who = (person) => formatReviewer(person).replace(/^You\b/, "you");
+  if (state.status === "flagged") {
+    return (state.flagged_by || []).map((person) => `Reported inaccurate by ${who(person)}: “${person.reason || ""}”`).join(" · ");
+  }
+  if (state.status === "verified") {
+    return `Verified against the original by ${(state.verified_by || []).map(who).join(" · ")}`;
+  }
+  return "Read by AI. No doctor has checked it against the original yet.";
+}
+
+function buildOverviewDocumentBlock(patientId, block) {
+  const status = (block.review && block.review.status) || "unverified";
+  const card = document.createElement("section");
+  card.className = `doctor-glance-doc is-${status}`;
+
+  const head = document.createElement("div");
+  head.className = "doctor-glance-doc-head";
+  const titles = document.createElement("div");
+  const title = document.createElement("p");
+  title.className = "doctor-glance-doc-title";
+  title.textContent = `${formatDocumentType(block.document_type)} · ${block.clinical_date ? formatBriefDate(block.clinical_date) : "date unknown"}`;
+  const meta = document.createElement("p");
+  meta.className = "doctor-glance-doc-meta";
+  meta.textContent = `${block.original_filename}${block.copies > 1 ? ` · uploaded ${block.copies} times` : ""}`;
+  titles.append(title, meta);
+  head.append(titles, buildDocumentReviewChip(block.document_id, block.review));
+  card.appendChild(head);
+
+  const reviewLine = document.createElement("p");
+  reviewLine.className = "doctor-glance-doc-review";
+  reviewLine.textContent = describeDocumentReviewLine(block.review);
+  card.appendChild(reviewLine);
+
+  if ((block.findings || []).length) {
+    const list = document.createElement("ul");
+    list.className = "doctor-glance-findings";
+    block.findings.forEach((finding) => {
+      const item = document.createElement("li");
+      const name = document.createElement("span");
+      name.className = "doctor-glance-finding-name";
+      name.textContent = finding.name;
+      const value = document.createElement("span");
+      value.className = "doctor-glance-finding-value";
+      value.textContent = formatReading(finding.value, finding.unit) || finding.value_text || "";
+      item.append(name, value);
+      const inRange = finding.flag !== "low" && finding.flag !== "high";
+      item.appendChild(buildAiChip(inRange ? "in range" : finding.flag, inRange ? "is-ok" : "is-warn"));
+      const changeText = describeFindingChange(finding.change);
+      if (changeText) {
+        const change = document.createElement("span");
+        change.className = `doctor-glance-finding-change is-${finding.change.kind}`;
+        change.textContent = changeText;
+        item.appendChild(change);
+      }
+      list.appendChild(item);
+    });
+    card.appendChild(list);
+    if (block.more_findings) {
+      const more = document.createElement("p");
+      more.className = "doctor-glance-doc-meta";
+      more.textContent = `and ${block.more_findings} more in the document`;
+      card.appendChild(more);
+    }
+  } else if ((block.summary || []).length) {
+    const list = document.createElement("ul");
+    list.className = "doctor-glance-findings is-summary";
+    block.summary.forEach((sentence) => {
+      const item = document.createElement("li");
+      item.textContent = sentence;
+      list.appendChild(item);
+    });
+    card.appendChild(list);
+  }
+
+  const counts = Object.entries(block.changes || {}).filter(([, count]) => count > 0);
+  if (counts.length) {
+    const changes = document.createElement("p");
+    changes.className = "doctor-glance-doc-changes";
+    changes.textContent = "Since the previous reading: "
+      + counts.map(([kind, count]) => `${count} ${FINDING_CHANGE_SUMMARY[kind] || kind}`).join(" · ");
+    card.appendChild(changes);
+  }
+
+  const open = document.createElement("button");
+  open.type = "button";
+  open.className = "secondary compact";
+  open.textContent = status === "unverified" ? "Open to review" : "Open document";
+  open.setAttribute("aria-label", `${open.textContent}: ${block.original_filename}`);
+  open.addEventListener("click", () => {
+    void openDoctorDocumentViewer(patientId, {
+      document_id: block.document_id,
+      original_filename: block.original_filename,
+      document_type: block.document_type,
+      clinical_date: block.clinical_date,
+      content_type: block.content_type,
+      review: block.review,
+    });
+  });
+  card.appendChild(open);
+  return card;
+}
+
+function renderOverviewDocuments(patientId, documents) {
+  if (!doctorOverviewLines || !(documents || []).length) return;
+  const heading = document.createElement("p");
+  heading.className = "doctor-glance-docs-heading";
+  heading.textContent = "Documents and results";
+  doctorOverviewLines.appendChild(heading);
+  documents.forEach((block) => doctorOverviewLines.appendChild(buildOverviewDocumentBlock(patientId, block)));
 }
 
 async function loadDoctorOverview(patientId) {
@@ -5295,7 +6577,9 @@ function buildTimelineEncounter(encounter) {
     const reason = document.createElement("div");
     reason.className = "clinical-note-line";
     const label = document.createElement("strong");
-    label.textContent = "Reason for booking";
+    label.textContent = isAiPreVisitSummary(encounter.reason)
+      ? "Reason for booking — AI pre-visit summary from the patient's chat"
+      : "Reason for booking";
     reason.append(label, renderBookingNoteMarkdown(encounter.reason));
     body.appendChild(reason);
   }
@@ -5872,6 +7156,7 @@ function renderDocumentClinical(container, payload, context = {}) {
     container.appendChild(buildNutritionSection(
       `/doctor/patients/${encodeURIComponent(context.patientId)}/documents/${encodeURIComponent(payload.document_id)}/nutrition`,
       "From this document's abnormal results.",
+      { documentId: payload.document_id },
     ));
   }
 }
@@ -6050,6 +7335,11 @@ function renderDocumentReview(host, patientId, documentId, review) {
       if (viewerState.doc && viewerState.doc.document_id !== documentId) return;
       renderDocumentReview(host, patientId, documentId, data.review);
       refreshDocumentReviewChips(documentId, data.review);
+      // At a glance names who verified each document and relabels what came from it, so it
+      // is reloaded rather than patched chip by chip.
+      if (doctorPatientDetailId === patientId) void loadDoctorOverview(patientId);
+      // A verified or reported document moves between the Next actions lists.
+      void loadDoctorDocumentActions({ background: true });
     } catch (error) {
       message.textContent = error && error.message ? error.message : "That could not be saved.";
       buttons.forEach((button) => { button.disabled = false; });
@@ -6059,12 +7349,21 @@ function renderDocumentReview(host, patientId, documentId, review) {
   if (state.mine === "verified") {
     makeButton("Withdraw my verification", () => { void send("withdraw"); });
   } else {
-    makeButton("Mark verified", () => {
-      const ok = window.confirm(
-        "Mark verified?\n\nThis records, under your name, that you have checked this summary and "
-        + "these values against the original document. It is not a clinical interpretation. "
-        + "Every doctor treating this patient will see it."
-      );
+    makeButton("Mark verified", async () => {
+      const doc = viewerState.doc && viewerState.doc.document_id === documentId ? viewerState.doc : null;
+      const doctorName = (doctorProfileName && doctorProfileName.textContent.trim()) || "you";
+      const ok = await askDoctorConfirm({
+        title: "Mark this document verified?",
+        body: "You are confirming that you checked this summary and these values against the "
+          + "original document. It is not a clinical interpretation.",
+        items: [
+          doc ? `Document: ${doc.original_filename || "this document"} · ${formatDocumentType(doc.document_type)}` : "Document: this document",
+          `Recorded under: ${doctorName}, today`,
+          "Shown to every doctor treating this patient, until the document is re-processed",
+          "Saved in your audit log. You can withdraw it later",
+        ],
+        confirmLabel: "Mark verified",
+      });
       if (ok) void send("verify");
     }, "primary");
   }
@@ -6380,16 +7679,26 @@ async function insertFromSignedPlan() {
     const result = await doctorAuthedJson(
       `/doctor/consult/${doctorActiveConsult.id}/soap/plan-medications`
     );
-    const lines = result.lines || [];
-    if (!lines.length) {
-      setClinicalItemMessage("The signed plan has no medication lines to copy.");
+    // Medicines, then the tests or reports the plan asks for under their own label. An older
+    // server sends only `lines` (medicines).
+    const medications = Array.isArray(result.medications) ? result.medications : (result.lines || []);
+    const tests = Array.isArray(result.tests) ? result.tests : [];
+    if (!medications.length && !tests.length) {
+      setClinicalItemMessage("The signed plan has no medicines, tests or reports to copy.");
       return;
     }
+    const blocks = [];
+    if (medications.length) blocks.push(medications.join("\n"));
+    if (tests.length) blocks.push(`Tests / reports advised:\n${tests.join("\n")}`);
     const existing = doctorClinicalItemText.value.trim();
-    doctorClinicalItemText.value = (existing ? `${existing}\n` : "") + lines.join("\n");
+    doctorClinicalItemText.value = (existing ? `${existing}\n` : "") + blocks.join("\n\n");
     doctorClinicalItemText.focus();
+    const counts = [
+      medications.length ? `${medications.length} medicine line${medications.length === 1 ? "" : "s"}` : "",
+      tests.length ? `${tests.length} test${tests.length === 1 ? "" : "s"} or report${tests.length === 1 ? "" : "s"}` : "",
+    ].filter(Boolean).join(" and ");
     setClinicalItemMessage(
-      `Copied ${lines.length} line${lines.length === 1 ? "" : "s"} from your signed plan. `
+      `Copied ${counts} from your signed plan. `
       + "Nothing has been checked or corrected — review before approving."
     );
   } catch (error) {
@@ -7073,16 +8382,27 @@ function setComposerDisabled(disabled) {
   form.querySelector("button[type='submit']").disabled = disabled;
 }
 
+let closeChatClosedDialog = null;
+
 function showChatClosed() {
   clearQuickActions();
   setComposerDisabled(true);
   setStatus("Closed");
-  chatClosedModal.classList.remove("hidden");
-  startNewChatBtn.focus();
+  if (closeChatClosedDialog) return;
+  // Every way out — ×, Esc, the backdrop, Start new chat — clears the ended conversation.
+  closeChatClosedDialog = openChatDialog(chatClosedModal, {
+    initialFocus: startNewChatBtn,
+    onCancel: () => resetChat(),
+  });
 }
 
 function hideChatClosed() {
-  chatClosedModal.classList.add("hidden");
+  if (closeChatClosedDialog) {
+    closeChatClosedDialog({ restoreFocus: false });
+    closeChatClosedDialog = null;
+  } else {
+    chatClosedModal.classList.add("hidden");
+  }
   setComposerDisabled(false);
 }
 
@@ -9693,8 +11013,12 @@ async function sendMessage(message) {
 
   // One controller for the whole turn, including the post-refresh retry. readChatStream
   // aborts it if the stream stalls, so a dead request releases its connection instead of
-  // being abandoned open.
+  // being abandoned open. End chat aborts it too.
   const controller = new AbortController();
+  activeChatController = controller;
+  // The chat this turn belongs to. If it ends or restarts before the reply lands, the reply
+  // is dropped rather than rendered into the next conversation.
+  const generation = chatGeneration;
 
   try {
     // buildChatRequest() is re-run per attempt so the retry carries the refreshed token.
@@ -9713,6 +11037,7 @@ async function sendMessage(message) {
     }
 
     const data = await readChatStream(response, assistantMessage, controller);
+    if (generation !== chatGeneration) return;
     if (!data?.state) {
       throw new Error("The assistant did not return a final chat state.");
     }
@@ -9727,14 +11052,13 @@ async function sendMessage(message) {
       showChatClosed();
     } else {
       renderQuickActions();
-      if (pendingUploadFiles.length > 0) {
-        if (documentUpload) documentUpload.value = "";
-        clearAttachPill();
-        setUploadStatus("", "default");
-      }
+      // Attachments are cleared when the message is sent, not here: files attached while
+      // this reply streamed belong to the next message.
       setStatus("Ready");
     }
   } catch (error) {
+    // Ended or restarted mid-reply: the abort is ours, and there is nothing to report.
+    if (generation !== chatGeneration) return;
     // Branch on the status, not on whether the message text happens to contain "401".
     // It never did — the thrown message was the response body — so an expired session
     // used to leave the patient in a UI that still looked signed in while every message
@@ -9758,7 +11082,8 @@ async function sendMessage(message) {
     }
     setStatus("Error");
   } finally {
-    if (!state?.chat_closed) {
+    if (activeChatController === controller) activeChatController = null;
+    if (generation === chatGeneration && !state?.chat_closed) {
       setComposerDisabled(false);
       input.focus();
     }
@@ -9858,11 +11183,23 @@ function validateSignupStepTwo() {
   return true;
 }
 
-function resetChat() {
-  hideChatClosed();
+// Stops everything the current chat still has running: the reply in flight, voice capture,
+// and attachments that were never sent (discarded on the server, not only hidden).
+function stopCurrentChat() {
+  chatGeneration += 1;
+  if (activeChatController) {
+    activeChatController.abort();
+    activeChatController = null;
+  }
+  if (voiceListening) void stopVoiceCapture(false);
+  discardAllPendingUploads();
   if (documentUpload) documentUpload.value = "";
-  clearAttachPill();
   setUploadStatus("", "default");
+}
+
+function resetChat() {
+  stopCurrentChat();
+  hideChatClosed();
   renderDocumentsPanel([]);
   const greeting = currentUser
     ? `Hello ${currentUser.name}. Describe your symptoms, book an appointment, or ask to cancel an appointment.`
@@ -10240,34 +11577,78 @@ form.addEventListener("submit", async (event) => {
   if (voiceListening) {
     await stopVoiceCapture(false);
   }
-  const message = input.value.trim();
-  const hasFiles = pendingUploadFiles.length > 0;
-
-  if (!message && !hasFiles) return;
-
   if (state?.chat_closed) {
     showChatClosed();
     return;
   }
 
+  const generation = chatGeneration;
+  // Documents still being checked belong to this message, so wait for them.
+  if (uploadsInFlight.size > 0) {
+    setComposerDisabled(true);
+    setUploadStatus("Checking your documents…", "sending");
+    await Promise.allSettled([...uploadsInFlight]);
+    if (generation !== chatGeneration) return;
+    setComposerDisabled(false);
+  }
+
+  const message = input.value.trim();
+  let files = [...pendingUploadFiles];
+  if (!message && !files.length) return;
+
+  if (files.length) {
+    // One consent for every attached file, asked now rather than per file at upload.
+    const decision = await askDocumentConsent(files);
+    if (generation !== chatGeneration) return;
+    if (decision === "cancel") {
+      input.focus();
+      return;
+    }
+    if (decision === "discard") {
+      discardAllPendingUploads();
+      setUploadStatus("Documents discarded.", "default");
+      files = [];
+      if (!message) return;
+    } else {
+      setComposerDisabled(true);
+      setUploadStatus(`Storing ${files.length === 1 ? "your document" : `${files.length} documents`} securely…`, "sending");
+      const stored = await Promise.all(files.map(async (file) => {
+        try {
+          const response = await sendConsentDecision(pendingUploadTokens.get(file), true);
+          return response.ok;
+        } catch (err) {
+          console.warn("confirm-processing error:", err);
+          return false;
+        }
+      }));
+      if (generation !== chatGeneration) return;
+      setComposerDisabled(false);
+      const failed = files.filter((file, index) => !stored[index]);
+      files = files.filter((file, index) => stored[index]);
+      // Every token is spent now, stored or not.
+      clearAttachPill();
+      setUploadStatus(
+        failed.length
+          ? `Could not store ${failed.map((file) => `"${file.name}"`).join(", ")}. Please attach ${failed.length === 1 ? "it" : "them"} again.`
+          : "",
+        failed.length ? "error" : "default",
+      );
+      if (!files.length && !message) return;
+    }
+  }
+
   const effectiveMessage = message || (
-    pendingUploadFiles.length === 1
+    files.length === 1
       ? "Please analyze this medical document."
-      : `Please analyze these ${pendingUploadFiles.length} medical documents.`
+      : `Please analyze these ${files.length} medical documents.`
   );
 
   input.value = "";
   adjustComposerHeight();
   clearQuickActions();
 
-  if (hasFiles) {
-    const uploadPreview = showUploadMessage(
-      pendingUploadFiles.map((file) => file.name).join(", "),
-      "Uploading document..."
-    );
-    addUserMessageWithFile(message, pendingUploadFiles.map(f => f.name));
-    uploadPreview.setStatus("Document attached and sent to the assistant.");
-    uploadPreview.setFile(pendingUploadFiles.map((file) => file.name).join(", "));
+  if (files.length) {
+    addUserMessageWithFile(message, files.map((file) => file.name));
   } else {
     addUserMessage(message);
   }
@@ -10324,25 +11705,47 @@ resetBtn.addEventListener("click", () => {
   resetChat();
 });
 
+// Ends the chat in the page, at any point. It used to send "End the chat" as a message,
+// which only worked where the assistant happened to recognise it: mid-intake it was taken as
+// an answer and the next question came back, and during a reply it raced the reply.
+function endChatNow() {
+  stopCurrentChat();
+  state = { ...(state || {}), chat_closed: true, awaiting: null };
+  renderState(state);
+  showChatClosed();
+}
+
 if (endChatBtn && endChatConfirmModal && endChatCancelBtn && endChatConfirmBtn) {
+  let closeEndChatDialog = null;
+  const cancelEndChat = () => {
+    if (closeEndChatDialog) closeEndChatDialog();
+    closeEndChatDialog = null;
+  };
+
   endChatBtn.addEventListener("click", () => {
     if (state?.chat_closed) {
       showChatClosed();
       return;
     }
-    endChatConfirmModal.classList.remove("hidden");
-    endChatConfirmBtn.focus();
+    if (closeEndChatDialog) return;
+    closeEndChatDialog = openChatDialog(endChatConfirmModal, {
+      initialFocus: endChatConfirmBtn,
+      onCancel: cancelEndChat,
+    });
   });
 
-  endChatCancelBtn.addEventListener("click", () => {
-    endChatConfirmModal.classList.add("hidden");
-  });
+  endChatCancelBtn.addEventListener("click", cancelEndChat);
+  if (endChatCloseBtn) endChatCloseBtn.addEventListener("click", cancelEndChat);
 
   endChatConfirmBtn.addEventListener("click", () => {
-    endChatConfirmModal.classList.add("hidden");
-    input.value = "End the chat";
-    form.requestSubmit();
+    if (closeEndChatDialog) closeEndChatDialog({ restoreFocus: false });
+    closeEndChatDialog = null;
+    endChatNow();
   });
+}
+
+if (chatClosedCloseBtn) {
+  chatClosedCloseBtn.addEventListener("click", () => resetChat());
 }
 
 if (bookAppointmentBtn) {
@@ -11714,75 +13117,27 @@ logoutBtn.addEventListener("click", () => {
 window.addEventListener("resize", adjustComposerHeight);
 
 if (documentUpload) {
-  documentUpload.addEventListener("change", async () => {
-    const file = documentUpload.files?.[0] || null;
-    if (!file) return;
-
-    const uploadNotice = showUploadMessage(file.name, "Uploading document...");
-    setUploadStatus(`Validating "${file.name}"…`, "sending");
-    setComposerDisabled(true);
-    clearAttachPill();
-
-    try {
-      // Step 1: POST /chat/upload — OpenAI vision medical relevance check + staging.
-      // The FormData is built inside the callback so a retry after a token refresh gets a
-      // fresh body; a FormData that has already been sent cannot be replayed.
-      const uploadResp = await patientFetchWithRefresh("/chat/upload", () => {
-        const uploadForm = new FormData();
-        uploadForm.append("file", file);
-        uploadForm.append("session_id", currentSessionId() || "");
-        return {
-          method: "POST",
-          headers: { Authorization: `Bearer ${accessToken}` },
-          body: uploadForm,
-        };
-      });
-
-      if (!uploadResp.ok) {
-        throw await chatRequestError(uploadResp);
-      }
-
-      const { document_token } = await uploadResp.json();
-
-      // Step 2: Consent dialog
-      const consent = confirm(
-        `"${file.name}" has been verified as a valid medical document.\n\n` +
-        `Store securely in your health vault for AI-assisted analysis?\n\n` +
-        `OK = store & analyze  |  Cancel = discard`
-      );
-
-      // Step 3: Confirm/discard — fire and forget, but still refresh-aware: this call
-      // carries the patient's CONSENT decision, and silently losing it to an expired
-      // token would leave the document staged with no recorded choice either way.
-      patientFetchWithRefresh("/chat/confirm-processing", () => ({
-        method: "POST",
-        headers: { "Content-Type": "application/json", Authorization: `Bearer ${accessToken}` },
-        body: JSON.stringify({ document_token, consent_granted: consent }),
-      })).catch(err => console.warn("confirm-processing error:", err));
-
-      if (!consent) {
-        setUploadStatus("Document discarded.", "default");
-        uploadNotice.setStatus("Document discarded.");
-        clearAttachPill();
-        documentUpload.value = "";
-        setComposerDisabled(false);
-        return;
-      }
-
-      // Step 4: Stage pill — wait for user to type a question or just click Send
-      pendingUploadFiles.push(file);
-      showAttachPill(file);
-      uploadNotice.setStatus("Document ready to send in chat.");
-      setUploadStatus("", "default");
-      setComposerDisabled(false);
-      input.focus();
-
-    } catch (err) {
-      setUploadStatus(`Upload error: ${err.message}`, "error");
-      uploadNotice.setStatus(`Upload failed: ${err.message}`);
-      documentUpload.value = "";
-      setComposerDisabled(false);
+  // Several files at once, up to MAX_ATTACHMENTS_PER_MESSAGE per message. Each is checked
+  // as soon as it is chosen; consent for all of them is asked when the message is sent.
+  documentUpload.addEventListener("change", () => {
+    const chosen = Array.from(documentUpload.files || []);
+    // Cleared at once so choosing the same file again still fires "change".
+    documentUpload.value = "";
+    if (!chosen.length) return;
+    if (state?.chat_closed) {
+      showChatClosed();
+      return;
     }
+    const room = Math.max(0, MAX_ATTACHMENTS_PER_MESSAGE - pendingUploadFiles.length - uploadsInFlight.size);
+    const accepted = chosen.slice(0, room);
+    const skipped = chosen.length - accepted.length;
+    setUploadStatus(
+      skipped
+        ? `You can attach up to ${MAX_ATTACHMENTS_PER_MESSAGE} documents per message; ${skipped} ${skipped === 1 ? "was" : "were"} not added. Send these first, then attach the rest.`
+        : `Checking ${accepted.length === 1 ? `"${accepted[0].name}"` : `${accepted.length} documents`}…`,
+      skipped ? "error" : "sending",
+    );
+    for (const file of accepted) stageUpload(file);
   });
 }
 
@@ -11829,6 +13184,7 @@ document.querySelectorAll("[data-nav]").forEach((button) => {
   if (button.dataset.nav === "records") {
     button.addEventListener("click", () => {
       void loadRecordsArchive();
+      void loadPatientRecords();
     });
   }
   if (button.dataset.nav === "appointments") {

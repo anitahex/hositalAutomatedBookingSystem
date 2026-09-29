@@ -12,7 +12,8 @@ sees a patient. It writes guidance for ONE term at a time —
 and the prompt version. Every patient with that term then gets that exact stored entry.
 
 WHAT IS PATIENT-SPECIFIC IS WRITTEN BY CODE. Which terms apply (the patient's latest flagged
-results and the diet-relevant symptoms in their booking note), the "because" evidence beside
+results and the diet-relevant symptoms in their booking note and in their own words in the
+booking chat), the "because" evidence beside
 each (value, document, date, page — from the record), and the conflict rules between terms
 (kidney results, uric acid, blood sugar) are all decided here, deterministically.
 
@@ -24,7 +25,8 @@ WHAT THE CHECKS GUARANTEE, per entry, before it is stored:
   - bounded lists of short items
 
 WHAT IT IS NOT. A diet prescription. The UI labels it "AI generated · food suggestions to
-discuss, not a diet prescription", and it is shown to doctors only.
+discuss, not a diet prescription", and it is shown to doctors. The patient sees only the
+handout a doctor chooses to make (nutrition_plan.build_handout): foods and tips, no values.
 """
 from __future__ import annotations
 
@@ -422,8 +424,13 @@ def _latest_flagged_results(patient_id: str, document_id: str | None, excluded: 
     ]
 
 
-async def build_guidance(results: list[dict], symptoms: list[str]) -> dict:
-    """Items for these results and symptoms: stored guidance plus the evidence behind it."""
+async def build_guidance(results: list[dict], symptoms: list[str],
+                         symptom_sources: dict[str, str] | None = None) -> dict:
+    """Items for these results and symptoms: stored guidance plus the evidence behind it.
+
+    `symptom_sources` says where each symptom was found ("booking note", "booking chat");
+    shown beside it so the doctor can see what the suggestion rests on.
+    """
     items: dict[tuple[str, str, str], dict] = {}
     for result in results:
         term, direction = _term_for(result["canonical_name"], result["flag"])
@@ -432,8 +439,9 @@ async def build_guidance(results: list[dict], symptoms: list[str]) -> dict:
         items[key]["because"].append(result)
     for symptom in symptoms:
         key = (KIND_SYMPTOM, symptom, DIRECTION_PRESENT)
+        source = (symptom_sources or {}).get(symptom, "booking note")
         items.setdefault(key, {"kind": KIND_SYMPTOM, "term": symptom, "direction": DIRECTION_PRESENT,
-                               "because": [{"symptom": symptom}]})
+                               "because": [{"symptom": symptom, "source": source}]})
 
     entries = await entries_for(list(items))
     ready, unavailable = [], []
@@ -471,6 +479,30 @@ def _audit(doctor_id: str, metadata: dict) -> None:
         logger.error("nutrition: could not audit view by doctor=%s: %s", doctor_id, exc)
 
 
+def _booking_chat_patient_text(patient_id: str, booking_id: str) -> str:
+    """What the patient wrote in the conversation that made this booking — their messages
+    only, inside the window the booking pinned (booking_context), never the assistant's
+    replies, which would put the model's own words back in as symptoms."""
+    from app.services.booking_context import get_snapshot
+
+    snapshot = get_snapshot(booking_id)
+    if not snapshot or not snapshot.get("chat_session_id") or not snapshot.get("transcript_to_at"):
+        return ""
+    with connect_db() as conn:
+        with conn.cursor() as cur:
+            cur.execute(
+                """SELECT text FROM chat_messages
+                   WHERE patient_id = %s AND chat_session_id::text = %s AND role = 'patient'
+                     AND created_at BETWEEN %s::timestamp AND %s::timestamp
+                   ORDER BY created_at""",
+                (patient_id, snapshot["chat_session_id"], snapshot["transcript_from_at"],
+                 snapshot["transcript_to_at"]),
+            )
+            rows = cur.fetchall()
+        conn.commit()
+    return "\n".join(str(row[0] or "") for row in rows)
+
+
 async def guidance_for_appointment(doctor_id: str, booking_id: str) -> dict:
     """For the visit brief: the patient's latest flagged results, from documents nobody has
     reported inaccurate, and the diet-relevant symptoms in this booking's note.
@@ -496,9 +528,18 @@ async def guidance_for_appointment(doctor_id: str, booking_id: str) -> dict:
 
     excluded = _flagged_documents(patient_id)
     results = _latest_flagged_results(patient_id, None, excluded)
-    symptoms = symptoms_in(booking_note)
-    guidance = await build_guidance(results, symptoms)
+    # The booking note, and the patient's own words in the chat that made this booking.
+    # Reading only the note missed every symptom the patient described once the note stopped
+    # being filled in without their consent — they said it in the chat, not in a note.
+    sources: dict[str, str] = {}
+    for symptom in symptoms_in(booking_note):
+        sources.setdefault(symptom, "booking note")
+    for symptom in symptoms_in(_booking_chat_patient_text(patient_id, str(safe_booking))):
+        sources.setdefault(symptom, "booking chat")
+    guidance = await build_guidance(results, list(sources), sources)
     guidance["excluded_documents"] = len(excluded)
+    # The organised page (nutrition_plan) records discussions against the patient.
+    guidance["patient_id"] = patient_id
     _audit(doctor_id, {"patient_id": patient_id, "booking_id": str(safe_booking),
                        "terms": len(guidance["items"])})
     return guidance

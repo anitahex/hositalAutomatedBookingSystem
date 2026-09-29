@@ -219,6 +219,20 @@ def looks_like_end_chat(text: str) -> bool:
     )
 
 
+_EXPLICIT_END_CHAT_PHRASES = ("end the chat", "end chat", "close the chat", "close chat", "end this chat")
+
+
+def looks_like_explicit_end_chat(text: str) -> bool:
+    """Only an explicit request to end the chat — not "nothing else" or "no more".
+
+    Mid-intake, "nothing else" and "no more" are ordinary answers ("any other symptoms?"),
+    so the streaming intake path must keep treating them as answers; looks_like_end_chat
+    matches them and would close the chat on a patient who was only answering.
+    """
+    lowered = " ".join((text or "").lower().replace("'", "").split()).strip(" .!")
+    return any(phrase in lowered for phrase in _EXPLICIT_END_CHAT_PHRASES)
+
+
 def looks_like_thanks(text: str) -> bool:
     lowered = " ".join((text or "").lower().replace("'", "").split())
     if not lowered:

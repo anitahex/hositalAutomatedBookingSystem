@@ -16,7 +16,7 @@ from app.services.users import (
 from app.services.language import normalize_language
 from app.api.dependencies import bearer_scheme, current_user, pending_patient_email, pending_patient_mfa
 from app.db.connection import connect_db
-from app.services.account_registry import audit, dummy_verify, ensure_registry_schema, lookup
+from app.services.account_registry import audit, dummy_verify, ensure_registry_schema, lookup, register_existing_account
 from app.services.doctor_auth import authenticate_doctor_password, check_rate_limit
 from app.services.login_lockout import (
     AccountLockedError,
@@ -137,7 +137,11 @@ def unified_login(request: LoginRequest, http_request: Request):
     with connect_db() as conn:
         ensure_registry_schema(conn)
         with conn.cursor() as cur:
-            registered = lookup(cur, email)
+            # An account missing from the registry (older than it, on a database where
+            # its backfill never ran) is registered here rather than refused — it used to
+            # get "Invalid email or password" with the right password, and again after a
+            # successful reset. See account_registry.register_existing_account.
+            registered = lookup(cur, email) or register_existing_account(cur, email)
     if not registered:
         dummy_verify(request.password)
         # An unregistered email is counted and locked on exactly the same schedule as a

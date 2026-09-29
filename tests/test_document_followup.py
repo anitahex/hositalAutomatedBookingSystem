@@ -44,6 +44,12 @@ def _no_database(monkeypatch):
     monkeypatch.setattr(
         appointments_service, "routable_departments", lambda *a, **k: list(REAL_DEPARTMENTS)
     )
+    # The model that words the later questions is unavailable here, so every question comes
+    # from the templates — the floor the flow must keep when the model is down.
+    def _no_model(*args, **kwargs):
+        raise RuntimeError("no model in unit tests")
+
+    monkeypatch.setattr(followup, "_ask_model", _no_model)
 
 
 def _referral_document(**overrides):
@@ -220,10 +226,11 @@ def test_the_upload_turn_no_longer_forces_a_booking_intent():
 
 def test_when_the_budget_runs_out_the_patient_is_asked_to_choose_not_booked_silently():
     """Endocrinology from the findings and Psychiatry from the referral both apply, so the
-    patient decides — the resolver returns "ask" and both are offered."""
+    patient decides — the resolver returns "ask" and both are offered. The summary comes
+    first (checkup_report), and it ends with that choice rather than a booking."""
     state = _state(document_topics_asked=["a", "b", "c", "d"])
     result = supervisor._handle_document_follow_up(state, "yes")
-    assert result["next_agent"] == "appointment_booker"
+    assert result["next_agent"] == "checkup_report"
     offered = {c["department"] for c in result.get("candidate_departments", [])}
     assert {"Psychiatry", "Endocrinology"} <= offered
     assert result.get("target_department") is None
@@ -244,7 +251,7 @@ def test_the_follow_up_state_is_routed_in_both_supervisor_tables():
 def test_a_document_with_nothing_useful_does_not_crash_or_invent_a_department():
     state = _state(analyzed_documents=[{"document_type": "other"}], document_topics_asked=["a", "b", "c", "d"])
     result = supervisor._handle_document_follow_up(state, "ok")
-    assert result["next_agent"] == "appointment_booker"
+    assert result["next_agent"] == "checkup_report"
     assert result.get("target_department") in (None, "General Physician")
 
 
@@ -252,4 +259,4 @@ def test_no_document_at_all_is_handled():
     state = _state(analyzed_documents=[])
     assert followup.latest_document(state) == {}
     result = supervisor._handle_document_follow_up(state, "ok")
-    assert result["next_agent"] in {"finish", "appointment_booker"}
+    assert result["next_agent"] in {"finish", "checkup_report"}

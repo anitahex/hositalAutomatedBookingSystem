@@ -172,6 +172,17 @@ def _issue_otp(email: str, purpose: str) -> None:
     threading.Thread(target=_send_otp_email_safe, args=(email, otp, purpose), daemon=True).start()
 
 
+# users.normalize_mobile_number_india in SQL, for rows whose normalized column was never
+# filled (it is written at signup; older accounts depended on a manual backfill).
+_NORMALIZE_STORED_MOBILE_SQL = """
+    CASE
+        WHEN length(d) = 10 THEN '+91' || d
+        WHEN length(d) = 11 AND left(d, 1) = '0' THEN '+91' || substr(d, 2)
+        WHEN length(d) = 12 AND left(d, 2) = '91' THEN '+' || d
+    END
+"""
+
+
 def _find_email_by_mobile(mobile_number: str) -> str | None:
     normalized = normalize_mobile_number_india(mobile_number)
     if normalized is None:
@@ -188,6 +199,24 @@ def _find_email_by_mobile(mobile_number: str) -> str | None:
                 (normalized,),
             )
             row = cur.fetchone()
+            if row is None:
+                # A profile whose normalized number was never filled in — an account
+                # older than that column — matched on its stored number instead. Only
+                # when exactly one profile matches: a number shared by two accounts
+                # cannot say whose password is being reset.
+                cur.execute(
+                    f"""
+                    SELECT u.email FROM users u
+                    JOIN (SELECT user_id, regexp_replace(COALESCE(mobile_number, ''), '\\D', '', 'g') AS d
+                            FROM patient_profiles WHERE mobile_number_normalized IS NULL) p
+                      ON p.user_id = u.user_id
+                    WHERE {_NORMALIZE_STORED_MOBILE_SQL} = %s
+                    LIMIT 2;
+                    """,
+                    (normalized,),
+                )
+                rows = cur.fetchall()
+                row = rows[0] if len(rows) == 1 else None
     return row[0] if row else None
 
 

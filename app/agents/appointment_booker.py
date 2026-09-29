@@ -517,40 +517,6 @@ def _format_department_options(departments: list[dict]) -> str:
     return "\n".join(lines)
 
 
-def _document_booking_note(state: GraphState) -> str | None:
-    # Priority 1: Pre-checkup clinical note from AI intake (most comprehensive)
-    if state.get("pre_checkup_clinical_note"):
-        return str(state["pre_checkup_clinical_note"])
-
-    # Priority 2: Pre-checkup note (legacy)
-    if state.get("pre_checkup_note"):
-        return str(state["pre_checkup_note"])
-
-    # Priority 3: Pre-checkup summary
-    if state.get("pre_checkup_summary"):
-        return str(state["pre_checkup_summary"])
-
-    # Fallback: Build from collected data (document uploads, etc.)
-    collected = state.get("collected_facts") or state.get("collected_data") or state.get("collected_info") or {}
-    if not isinstance(collected, dict):
-        collected = {}
-
-    parts: list[str] = []
-    summary = collected.get("document_summary") or collected.get("document_note")
-    relief = collected.get("document_temporary_relief")
-    advice = collected.get("document_specialist_advice")
-    context = state.get("file_clarification_context")
-
-    for value in (summary, relief, advice, context):
-        if value and str(value).strip():
-            parts.append(str(value).strip())
-
-    if not parts:
-        return None
-
-    return " | ".join(dict.fromkeys(parts))
-
-
 def ask_cancellation_choice(state: GraphState):
     bookings = _booking_list(state)
     if not bookings:
@@ -822,12 +788,31 @@ def ask_reschedule_date(state: GraphState):
     }
 
 
+# Replies that end the department menu. Exact (after normalising), so "no, orthopedics"
+# still picks a department.
+_STOP_REPLIES = {
+    "no", "nope", "no thanks", "no thank you", "stop", "not now", "none", "done",
+    "thats all", "that is all", "nothing else", "no more",
+}
+
+
 def choose_department_candidate(state: GraphState):
     candidates = list(state.get("candidate_departments") or [])
     if not candidates:
         return ask_preferred_doctor(state)
 
     text = state.get("user_input", "").strip().lower()
+    # The menu says "or say no to stop here". A "no" used to be answered with "Please reply
+    # with one of the listed department numbers", so the patient could not stop.
+    if " ".join(text.replace("'", "").split()).strip(" .!") in _STOP_REPLIES:
+        return {
+            "awaiting": "end_confirmation",
+            "candidate_departments": [],
+            "final_response": (
+                "No problem, nothing else is booked. Your confirmed appointments stay as they are. "
+                "Is there anything else I can help you with?"
+            ),
+        }
     selected_index = None
     if text.isdigit():
         index = int(text) - 1
@@ -1362,7 +1347,10 @@ def book_preferred_slot(state: GraphState):
             )
         }
 
-    booking_note = _document_booking_note(state)
+    # Nothing the assistant wrote is attached without the patient's consent. The booking is
+    # made bare, and the pre-appointment summary is sent only if they answer yes to the
+    # question below (supervisor.continue_current_node, "report_forwarding_decision").
+    # This used to attach the plain-text intake report automatically, without asking.
     # The pre-visit context. Built here, where the conversation state still exists — by
     # the time the doctor opens the appointment, this is the only surviving record of what
     # the assistant recommended and what the patient chose instead.
@@ -1371,18 +1359,17 @@ def book_preferred_slot(state: GraphState):
         booked = book_selected_slot(
             slot_id=selected["slot_id"],
             patient_id=state.get("patient_id"),
-            booking_note=booking_note,
+            booking_note=None,
             booking_context=snapshot_context,
         )
     except TypeError:
-        # Legacy-signature fallback. It now also drops the booking note AND the pre-visit
-        # context, so if it ever fires the appointment is recorded without any of the
-        # conversation behind it — and that context cannot be reconstructed later. Logged
-        # at error rather than swallowed: a silent degrade here looks identical to a
-        # patient who simply booked without saying anything.
+        # Legacy-signature fallback. It drops the pre-visit context, so if it ever fires
+        # the appointment is recorded without the conversation behind it — and that context
+        # cannot be reconstructed later. Logged at error rather than swallowed: a silent
+        # degrade here looks identical to a patient who simply booked without saying anything.
         logger.error(
             "appointment_booker: book_selected_slot rejected the current signature — "
-            "booking WITHOUT note or pre-visit context (patient=%s)",
+            "booking WITHOUT pre-visit context (patient=%s)",
             state.get("patient_id"),
         )
         booked = book_selected_slot(
@@ -1412,44 +1399,17 @@ def book_preferred_slot(state: GraphState):
     }
     confirmed_bookings = _booking_list(state)
     confirmed_bookings.append(confirmed_booking)
+    # Offered AFTER the patient answers the question below, so each booking gets its own
+    # consent: "yes" sends the summary to this doctor only.
     remaining_departments = [
         candidate
         for candidate in (state.get("candidate_departments") or [])
         if str(candidate.get("department") or "") != confirmed_booking["department"]
     ]
-
-    # Build confirmation message with clinical summary notice
-    clinical_note_suffix = (
-        "\n✓ Your clinical intake summary has been attached to this appointment "
-        "and will be available to the doctor before you arrive."
-    ) if state.get("pre_checkup_clinical_note") or state.get("pre_checkup_summary") else ""
-
-    if remaining_departments:
-        next_departments = _format_department_options(remaining_departments)
-        return {
-            "awaiting": "department_selection",
-            "booking_active": False,
-            "candidate_departments": remaining_departments,
-            "upcoming_bookings": confirmed_bookings,
-            "confirmed_booking": confirmed_booking,
-            "confirmed_bookings": confirmed_bookings,
-            "doctor_options": [],
-            "slot_options": [],
-            "selected_doctor_id": None,
-            "selected_doctor_name": None,
-            "selected_slot_id": slot_reference,
-            "final_response": (
-                f"{patient_message(state, 'appointment_confirmed', doctor=doctor_name, date_time=start_time, reference=booking_reference)}\n\n"
-                f"{display_label(state, 'doctor')}: {doctor_name}\n"
-                f"{display_label(state, 'department')}: {department_name}\n"
-                f"{display_label(state, 'date_time')}: {start_time}\n"
-                f"{display_label(state, 'reference')}: {booking_reference}\n"
-                f"{clinical_note_suffix}\n\n"
-                "I can also help with the other department(s) we identified.\n"
-                f"{next_departments}\n\n"
-                "Please reply with the department number or name you want to book next, or say no to stop here."
-            ),
-        }
+    includes_documents = (
+        "Your pre-appointment summary includes the findings from the documents you shared.\n\n"
+        if state.get("analyzed_documents") else ""
+    )
 
     return {
         "awaiting": "report_forwarding_decision",
@@ -1457,6 +1417,7 @@ def book_preferred_slot(state: GraphState):
         # not re-select by list order when the patient has multiple bookings.
         "report_forwarding_booking_id": booking_reference,
         "booking_active": False,
+        "candidate_departments": remaining_departments,
         "upcoming_bookings": confirmed_bookings,
         "confirmed_booking": confirmed_booking,
         "confirmed_bookings": confirmed_bookings,
@@ -1472,6 +1433,7 @@ def book_preferred_slot(state: GraphState):
             f"**{display_label(state, 'date_time')}:** {start_time}\n"
             f"**{display_label(state, 'reference')}:** {booking_reference}\n\n"
             "---\n\n"
+            f"{includes_documents}"
             f"{patient_message(state, 'report_forward_prompt', doctor=doctor_name)}"
         ),
     }
@@ -1567,7 +1529,7 @@ def _appointment_booker_node(state: GraphState):
 
     if awaiting == "department_selection":
         choice = choose_department_candidate(state)
-        if choice.get("awaiting") == "department_selection":
+        if choice.get("awaiting") in {"department_selection", "end_confirmation"}:
             return choice
         state = {**state, **choice}
 

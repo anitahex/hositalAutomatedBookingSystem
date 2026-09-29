@@ -80,6 +80,44 @@ def lookup(cur, email: str):
     cur.execute("SELECT account_type, account_id FROM account_email_registry WHERE email=%s", (email.lower(),))
     return cur.fetchone()
 
+
+# Where each kind of account lives, for register_existing_account.
+_ACCOUNT_TABLES = (("patient", "users", "user_id"), ("doctor", "doctor_accounts", "id"),
+                   ("admin", "admin_accounts", "admin_id"))
+
+
+def register_existing_account(cur, email: str):
+    """Registers an account that exists but is missing from the registry, and returns
+    (account_type, account_id) — or None when there is no such account.
+
+    Login finds accounts ONLY through the registry, so an account missing from it cannot
+    log in at all, even with the right password, and even after resetting it: "forgot
+    password does not recover old accounts". Accounts created before the registry were
+    meant to be copied in by migration 0005, which did not run on every database.
+    Migration 0031 repairs the existing gap; this keeps a future one from locking anyone
+    out.
+
+    Registers only when exactly ONE account table has the email — two accounts sharing an
+    address is not something to settle by guessing which one is logging in.
+    """
+    email = str(email or "").strip().lower()
+    matches = []
+    for account_type, table, id_column in _ACCOUNT_TABLES:
+        cur.execute("SELECT to_regclass(%s) IS NOT NULL", (table,))
+        if not cur.fetchone()[0]:
+            continue
+        cur.execute(f"SELECT {id_column} FROM {table} WHERE lower(btrim(email)) = %s", (email,))
+        matches.extend((account_type, row[0]) for row in cur.fetchall())
+    if len(matches) != 1:
+        return None
+    account_type, account_id = matches[0]
+    cur.execute(
+        "INSERT INTO account_email_registry (email, account_type, account_id) VALUES (%s, %s, %s) "
+        "ON CONFLICT (email) DO NOTHING",
+        (email, account_type, account_id),
+    )
+    return lookup(cur, email)
+
 def dummy_verify(password: str): verify_password(password, _DUMMY)
 
 def audit(cur, email, account_type, action):

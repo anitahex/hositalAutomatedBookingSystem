@@ -118,6 +118,52 @@ _FEED_ACTIONS = {
         "ai": False,
         "fields": (),
     },
+    # A doctor's review of a patient document (document_reviews). Recorded in the audit table
+    # since that feature shipped, but absent from this allowlist, so a doctor who verified a
+    # document could find no trace of it in their own audit log.
+    "document_verified": {
+        "label": "You verified a document",
+        "ai": False,
+        "fields": ("document_id",),
+    },
+    "document_verification_withdrawn": {
+        "label": "You withdrew your verification",
+        "ai": False,
+        "fields": ("document_id",),
+    },
+    "document_flagged_inaccurate": {
+        "label": "You reported a document inaccurate",
+        "ai": False,
+        # The doctor's own words about the document, shown back to that same doctor.
+        "fields": ("document_id", "reason"),
+    },
+    "document_flag_cleared": {
+        "label": "You cleared your inaccuracy report",
+        "ai": False,
+        "fields": ("document_id",),
+    },
+    # The AI nutritionist (nutrition_plan): what the doctor did with its suggestions.
+    "nutrition_theme_discussed": {
+        "label": "You discussed a nutrition topic",
+        "ai": False,
+        "fields": ("theme_title",),
+    },
+    "nutrition_theme_discussion_withdrawn": {
+        "label": "You withdrew a nutrition discussion",
+        "ai": False,
+        "fields": ("theme_title",),
+    },
+    "nutrition_handout_created": {
+        "label": "You created a nutrition handout",
+        "ai": False,
+        "fields": ("diet",),
+    },
+}
+
+# The feed actions whose metadata names a patient document: their rows open the document.
+_DOCUMENT_ACTIONS = {
+    "patient_document_summarised", "document_verified", "document_verification_withdrawn",
+    "document_flagged_inaccurate", "document_flag_cleared",
 }
 
 
@@ -565,12 +611,15 @@ def get_activity_items(
     }
 
 
-def _project_event(action_type: str, metadata, created_at, consultation_id, consult_row=None) -> dict | None:
+def _project_event(action_type: str, metadata, created_at, consultation_id, consult_row=None,
+                   document_row=None) -> dict | None:
     """Projects one audit row onto the feed through the per-action allowlist. Returns None
     for an action that does not belong on the feed.
 
     `consult_row` is the _CONSULT_ITEM_COLUMNS tuple for the event's consult, when it has
-    one; it adds what the UI needs to open that appointment (see get_activity_log)."""
+    one; it adds what the UI needs to open that appointment (see get_activity_log).
+    `document_row` is _DOCUMENT_COLUMNS for an event about a patient document: it names the
+    file and lets the row open it in the viewer."""
     spec = _FEED_ACTIONS.get(action_type)
     if spec is None:
         return None
@@ -594,7 +643,25 @@ def _project_event(action_type: str, metadata, created_at, consultation_id, cons
         # The consultation_id from the audit row stays authoritative.
         event.update({key: value for key, value in _consult_item(consult_row).items()
                       if key != "consultation_id"})
+    if action_type in _DOCUMENT_ACTIONS and document_row is not None and document_row[0] is not None:
+        from app.services.document_catalog import _content_type_for
+
+        document_id, filename, document_type, clinical_date, patient_id = document_row
+        event["document"] = {
+            "document_id": str(document_id),
+            "original_filename": filename or str(document_id),
+            "document_type": document_type or "other",
+            "clinical_date": clinical_date.isoformat() if hasattr(clinical_date, "isoformat") else clinical_date,
+            "patient_id": str(patient_id) if patient_id else None,
+            "content_type": _content_type_for(filename),
+        }
+        event["openable"] = bool(patient_id)
     return event
+
+
+# The patient document an audit row names, for the document actions. document_catalog's key
+# is TEXT; the audit metadata stores it as text too.
+_DOCUMENT_COLUMNS = "dc.document_id, dc.original_filename, dc.document_type, dc.clinical_date, dc.user_id"
 
 
 def get_activity_log(doctor_id: str, limit: int = ACTIVITY_LOG_DEFAULT_LIMIT) -> dict:
@@ -627,11 +694,14 @@ def get_activity_log(doctor_id: str, limit: int = ACTIVITY_LOG_DEFAULT_LIMIT) ->
             cur.execute(
                 f"""
                 SELECT a.action_type, a.metadata, a.created_at, a.consultation_id,
+                       {_DOCUMENT_COLUMNS},
                        {_CONSULT_ITEM_COLUMNS}
                 FROM consult_audit_log a
                 LEFT JOIN consultations c ON c.id = a.consultation_id
                 LEFT JOIN soap_notes sn ON sn.consultation_id = c.id
                 {_CONSULT_ITEM_JOINS}
+                -- One-to-one too: document_id is document_catalog's primary key.
+                LEFT JOIN document_catalog dc ON dc.document_id = a.metadata->>'document_id'
                 WHERE a.doctor_id = %s AND a.action_type = ANY(%s)
                 ORDER BY a.created_at DESC
                 LIMIT %s
@@ -641,7 +711,9 @@ def get_activity_log(doctor_id: str, limit: int = ACTIVITY_LOG_DEFAULT_LIMIT) ->
             rows = cur.fetchall()
 
     events = [
-        event for event in (_project_event(*row[:4], consult_row=row[4:]) for row in rows)
+        event for event in (
+            _project_event(*row[:4], document_row=row[4:9], consult_row=row[9:]) for row in rows
+        )
         if event is not None
     ]
     return {"events": events}
