@@ -568,8 +568,34 @@ def save_findings(document_id: str, patient_id: str, rows: list[dict], clinical_
             row.get("flag_source"), bool(row.get("critical")),
         ))
 
+    from app.services.document_versions import (
+        REPLACED_BY_EXTRACTION, archive_findings, ensure_document_versions_schema,
+    )
+
     with connect_db() as conn:
+        ensure_document_versions_schema(conn)
         with conn.cursor() as cur:
+            # A measurement this run changes is kept as it stood first (document_versions):
+            # a re-extraction must not erase the value a doctor read or verified.
+            cur.execute(
+                """SELECT finding_id, printed_name, canonical_name, value_text, value_num, unit,
+                          abnormal, clinical_date
+                   FROM document_findings WHERE document_id = %s""",
+                (document_id,),
+            )
+            incoming = {item[3]: item for item in payload}
+            changed = []
+            for finding_id, printed, canonical, value_text, value_num, unit, abnormal, stored_date in cur.fetchall():
+                new = incoming.get(printed)
+                if new is None:
+                    continue
+                before = (canonical, value_text or "", _comparable(value_num), unit, abnormal,
+                          str(stored_date) if stored_date else None)
+                after = (new[4], new[5], _comparable(new[6]), new[8], new[11],
+                         str(new[12]) if new[12] else None)
+                if before != after:
+                    changed.append(finding_id)
+            archive_findings(cur, changed, REPLACED_BY_EXTRACTION)
             cur.executemany(
                 """
                 INSERT INTO document_findings (
@@ -675,6 +701,13 @@ def rederive_stored_findings(*, dry_run: bool = False, patient_id: str | None = 
                     changes.append((finding_id, row_patient, printed, before, after))
 
             if changes and not dry_run:
+                from app.services.document_versions import (
+                    REPLACED_BY_REFLAG, archive_findings, ensure_document_versions_schema,
+                )
+
+                ensure_document_versions_schema(conn)
+                # Each row is kept as it stood before this re-derivation rewrites it.
+                archive_findings(cur, [finding_id for finding_id, *_rest in changes], REPLACED_BY_REFLAG)
                 cur.executemany(
                     f"""UPDATE document_findings
                         SET {", ".join(f"{key} = %s" for key in columns)}

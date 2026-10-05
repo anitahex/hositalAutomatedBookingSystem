@@ -118,6 +118,14 @@ _FEED_ACTIONS = {
         "ai": False,
         "fields": (),
     },
+    # Migration 0035: a consult discarded AFTER its note was signed was put back, because the
+    # signed note is the patient's record. Without this the log ended at "You discarded the
+    # consult" while the note was visible again.
+    "consult_restored_signed": {
+        "label": "Your discarded consult was restored: its note was already signed",
+        "ai": False,
+        "fields": (),
+    },
     # A doctor's review of a patient document (document_reviews). Recorded in the audit table
     # since that feature shipped, but absent from this allowlist, so a doctor who verified a
     # document could find no trace of it in their own audit log.
@@ -154,7 +162,7 @@ _FEED_ACTIONS = {
         "fields": ("theme_title",),
     },
     "nutrition_handout_created": {
-        "label": "You created a nutrition handout",
+        "label": "You shared a food handout with the patient",
         "ai": False,
         "fields": ("diet",),
     },

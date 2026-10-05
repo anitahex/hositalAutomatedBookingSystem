@@ -59,15 +59,15 @@ def test_a_theme_keeps_the_evidence_and_the_tips():
     vitamins = next(t for t in np_.organize(GUIDANCE)["themes"] if t["id"] == "vitamins")
     assert vitamins["results"][0]["value_text"] == "13.8 ng/mL"
     assert vitamins["tips"] == ["Sit in the morning sun."]
-    assert vitamins["go_easy"] == ["fried foods", "alcohol"]
+    assert vitamins["go_easy"] == ["Fried foods", "Alcohol"]
 
 
 # ---- foods that help most ----
 
 def test_foods_are_ranked_by_how_many_findings_list_them():
     top = np_.organize(GUIDANCE)["top_foods"]["veg"]
-    assert (top[0]["food"], top[0]["count"]) == ("almonds", 3)  # "Almonds" counted with "almonds"
-    assert ("turmeric", 2) in [(e["food"], e["count"]) for e in top]
+    assert (top[0]["food"], top[0]["count"]) == ("Almonds", 3)  # "Almonds" counted with "almonds"
+    assert ("Turmeric", 2) in [(e["food"], e["count"]) for e in top]
 
 
 def test_nothing_is_ranked_that_no_item_listed():
@@ -77,7 +77,7 @@ def test_nothing_is_ranked_that_no_item_listed():
 
 def test_go_easy_counts_the_themes_a_food_comes_from():
     easy = {e["food"]: e["themes"] for e in np_.organize(GUIDANCE)["go_easy"]}
-    assert easy["fried foods"] == 2 and easy["alcohol"] == 1
+    assert easy["Fried foods"] == 2 and easy["Alcohol"] == 1
 
 
 # ---- the sample day ----
@@ -111,7 +111,7 @@ def test_the_vegetarian_day_never_places_meat_fish_or_egg():
 def test_a_meal_says_which_themes_its_foods_help():
     plan = np_.organize(GUIDANCE)
     morning = next(m for m in plan["sample_day"]["veg"] if m["meal"] == "morning")
-    assert "oats" in morning["foods"]
+    assert "Oats" in morning["foods"]
     assert "Inflammation & pain" in morning["helps"]
 
 
@@ -225,7 +225,7 @@ def test_nutrition_actions_appear_in_the_doctors_audit_log(people):
     np_.save_handout(people["ortho"], people["patient"], None, None, np_.build_handout(np_.organize(GUIDANCE), "veg"))
     events = get_activity_log(people["ortho"])["events"]
     labels = [e["label"] for e in events[:2]]
-    assert labels == ["You created a nutrition handout", "You discussed a nutrition topic"]
+    assert labels == ["You shared a food handout with the patient", "You discussed a nutrition topic"]
     assert events[1]["detail"] == {"theme_title": "Vitamins & blood"}
 
 
@@ -239,8 +239,8 @@ def test_a_qualified_food_is_the_same_food_shown_plainly():
         _item("Blood lipids", [], [], limit=["too much caffeine"]),
     ]}
     easy = {e["food"]: e["themes"] for e in np_.organize(guidance)["go_easy"]}
-    assert easy["alcohol"] == 2 and "excessive alcohol" not in easy
-    assert "too much caffeine" in easy  # one spelling only: shown as written
+    assert easy["Alcohol"] == 2 and "Excessive alcohol" not in easy
+    assert "Too much caffeine" in easy  # one spelling only: shown as written
 
 
 def test_a_qualifier_that_changes_the_meaning_is_kept():
@@ -259,3 +259,228 @@ def test_the_same_tip_from_related_findings_is_shown_once():
     [theme] = np_.organize(guidance)["themes"]
     assert theme["tips"] == ["Include turmeric and ginger in cooking for their anti-inflammatory properties.",
                              "Stay active with gentle stretching."]
+
+
+def test_a_tip_reworded_from_its_first_word_is_still_shown_once():
+    """Live v2 page: "Add turmeric and ginger to your dishes..." and "Use turmeric and ginger in
+    cooking..." both showed; they start differently but say the same thing."""
+    assert np_._distinct_tips([
+        "Add turmeric and ginger to your dishes for their anti-inflammatory properties.",
+        "Use turmeric and ginger in cooking for their anti-inflammatory properties.",
+    ]) == ["Add turmeric and ginger to your dishes for their anti-inflammatory properties."]
+
+
+def test_a_tip_that_starts_the_same_and_ends_differently_is_shown_once():
+    """Few words in common once filler is gone, but plainly the same advice."""
+    assert np_._distinct_tips(["Stay hydrated with water throughout the day.",
+                               "Stay hydrated with water and herbal teas."]) == [
+        "Stay hydrated with water throughout the day."]
+
+
+def test_different_tips_about_the_same_nutrient_all_stay():
+    tips = ["Include a source of vitamin C with meals to enhance iron absorption.",
+            "Have your tea between meals, not with them, to improve iron absorption.",
+            "Cook in iron utensils to increase iron content in food.",
+            "Spend some time in sunlight daily to help your body make Vitamin D.",
+            "Sit in the morning sun on the balcony with your tea."]
+    assert np_._distinct_tips(tips) == tips
+
+
+
+# ---- v2: a day of real dishes per region, easy swaps, why it matters, habits ----
+
+def _meals(prefix, regions=("north", "south", "east", "west")):
+    """Distinct dishes per region and diet, named after their topic so the day can be traced."""
+    return {region: {
+        "veg": [{"meal": slot, "dish": f"{prefix} {region} veg {slot}"} for slot in ("breakfast", "lunch", "snack", "dinner")],
+        "non_veg": [{"meal": slot, "dish": f"{prefix} {region} nonveg {slot}"} for slot in ("breakfast", "lunch", "snack", "dinner")],
+    } for region in regions}
+
+
+def _v2_item(term, prefix, *, kind="finding", why="", swaps=(), habits=(), meals=None):
+    item = _item(term, ["curd"], ["eggs"], kind=kind,
+                 because=[{"symptom": term}] if kind == "symptom" else None)
+    return {**item, "why": why, "swaps": list(swaps), "habits": list(habits),
+            "meals": meals if meals is not None else _meals(prefix)}
+
+
+V2_GUIDANCE = {"items": [
+    _v2_item("Vitamin D", "VitD", why="Vitamin D helps your bones use calcium.",
+             swaps=[{"instead_of": "white bread", "try": "whole-wheat roti"}],
+             habits=["Sit in the morning sun with your tea."]),
+    _v2_item("ESR", "ESR", why="Calmer inflammation helps you feel better.",
+             swaps=[{"instead_of": "White bread", "try": "multigrain roti"},
+                    {"instead_of": "fried namkeen", "try": "roasted chana"}],
+             habits=["Cook with turmeric and ginger."]),
+    _v2_item("joint or back pain", "Joint", kind="symptom"),
+]}
+
+
+def test_a_day_takes_one_dish_per_meal_from_several_themes():
+    day = np_.organize(V2_GUIDANCE)["sample_days"]["south"]["veg"]
+    assert [meal["meal"] for meal in day] == ["breakfast", "lunch", "snack", "dinner"]
+    # Inflammation & pain (ESR, joint pain) comes before Vitamins in the page's theme order;
+    # each meal starts one topic further along, so three topics contribute.
+    assert [meal["dish"] for meal in day] == ["ESR south veg breakfast", "Joint south veg lunch",
+                                              "VitD south veg snack", "ESR south veg dinner"]
+    assert day[2]["helps"] == ["Vitamins & blood"] and all(meal["region"] == "south" for meal in day)
+
+
+def test_each_region_gets_its_own_dishes_and_all_india_mixes_them():
+    days = np_.organize(V2_GUIDANCE)["sample_days"]
+    assert set(days) == {"all", "north", "south", "east", "west"}
+    assert all(" east " in meal["dish"] for meal in days["east"]["non_veg"])
+    assert [meal["region"] for meal in days["all"]["veg"]] == ["north", "south", "east", "west"]
+
+
+def test_a_vegetarian_day_never_carries_a_non_vegetarian_dish():
+    """The entry check forbids it; the day checks again, in case anything ever slips."""
+    meals = _meals("Bad")
+    meals["north"]["veg"][0] = {"meal": "breakfast", "dish": "Egg bhurji with roti"}
+    plan = np_.organize({"items": [_v2_item("Vitamin D", "Bad", meals=meals)]})
+    dishes = [meal["dish"] for meal in plan["sample_days"]["north"]["veg"]]
+    assert "Egg bhurji with roti" not in dishes and len(dishes) == 3
+
+
+def test_the_same_guidance_makes_the_same_day():
+    assert np_.organize(V2_GUIDANCE)["sample_days"] == np_.organize(V2_GUIDANCE)["sample_days"]
+
+
+def test_swaps_are_listed_once_with_their_theme():
+    for diet in ("veg", "non_veg"):
+        swaps = np_.organize(V2_GUIDANCE)["swaps"][diet]
+        # "White bread" from two topics is one swap: the first theme's wording.
+        assert [s["instead_of"] for s in swaps] == ["White bread", "fried namkeen"]
+        assert swaps[0] == {"instead_of": "White bread", "try": "multigrain roti", "theme": "Inflammation & pain"}
+
+
+EGG_SWAPS = [{"instead_of": "plain dosa", "try": "egg dosa"},
+             {"instead_of": "mutton curry", "try": "rajma with brown rice"},
+             {"instead_of": "tea with biscuits", "try": "a glass of buttermilk with roasted chana"}]
+
+
+def test_a_vegetarian_is_never_offered_a_swap_with_meat_fish_or_egg():
+    """Live: low B12 guidance offered "plain dosa → egg dosa" to every patient. Swaps are
+    written for both diets at once, so the vegetarian list is filtered — page, theme, handout."""
+    plan = np_.organize({"items": [_v2_item("Vitamin B12", "B12", swaps=EGG_SWAPS)]})
+    [theme] = plan["themes"]
+    assert theme["swaps"]["veg"] == [EGG_SWAPS[2]]
+    assert theme["swaps"]["non_veg"] == EGG_SWAPS
+    assert [s["try"] for s in plan["swaps"]["veg"]] == ["a glass of buttermilk with roasted chana"]
+    assert len(plan["swaps"]["non_veg"]) == 3
+    assert np_.build_handout(plan, "veg", "all")["themes"][0]["swaps"] == [EGG_SWAPS[2]]
+    assert np_.build_handout(plan, "non_veg", "all")["themes"][0]["swaps"] == EGG_SWAPS
+
+
+def test_a_theme_keeps_a_few_swaps_taking_one_from_each_topic_in_turn():
+    """Live: three topics in one theme brought eleven swaps to the patient's handout."""
+    def swaps(prefix):
+        return [{"instead_of": f"{prefix} plain {n}", "try": f"{prefix} better {n}"} for n in ("one", "two", "three")]
+    guidance = {"items": [_v2_item("Vitamin D", "D", swaps=swaps("D")),
+                          _v2_item("Vitamin B12", "B", swaps=swaps("B")),
+                          _v2_item("Red Cell Distribution Width", "R", swaps=swaps("R"))]}
+    [theme] = np_.organize(guidance)["themes"]
+    assert [s["instead_of"] for s in theme["swaps"]["veg"]] == ["D plain one", "B plain one", "R plain one", "D plain two"]
+
+
+def test_a_theme_shows_a_swap_once_however_many_of_its_topics_suggest_it():
+    """The theme panel and the patient's handout list the theme's own swaps, not the page's."""
+    guidance = {"items": [
+        _v2_item("ESR", "ESR", swaps=[{"instead_of": "white rice", "try": "brown rice"}]),
+        _v2_item("hs-CRP", "CRP", swaps=[{"instead_of": "White rice", "try": "red rice"},
+                                         {"instead_of": "sweet tea", "try": "masala chaas"}]),
+    ]}
+    [theme] = np_.organize(guidance)["themes"]
+    assert theme["swaps"]["veg"] == [{"instead_of": "white rice", "try": "brown rice"},
+                                     {"instead_of": "sweet tea", "try": "masala chaas"}]
+
+
+def test_a_dish_is_eaten_once_in_a_day():
+    meals = _meals("X", regions=("north", "east", "west"))
+    meals["south"] = {"veg": [{"meal": "lunch", "dish": "Moong dal khichdi"},
+                              {"meal": "dinner", "dish": "Moong dal khichdi"},
+                              {"meal": "dinner", "dish": "Palak paneer with phulka"}],
+                      "non_veg": []}
+    plan = np_.organize({"items": [_v2_item("Vitamin D", "X", meals=meals)]})
+    assert [meal["dish"] for meal in plan["sample_days"]["south"]["veg"]] == [
+        "Moong dal khichdi", "Palak paneer with phulka"]
+
+
+def test_the_same_dish_with_different_sides_is_still_eaten_once():
+    """Live: "Rajma with brown rice and a squeeze of lemon" for lunch, "Rajma with brown rice"
+    for dinner; "Egg bhurji with whole-wheat toast" for breakfast and "... with roti" for dinner."""
+    meals = _meals("X", regions=("south", "east", "west"))
+    meals["north"] = {
+        "veg": [{"meal": "lunch", "dish": "Rajma with brown rice and a squeeze of lemon"},
+                {"meal": "dinner", "dish": "Rajma with brown rice"},
+                {"meal": "dinner", "dish": "Palak paneer with whole-wheat roti"}],
+        "non_veg": [{"meal": "breakfast", "dish": "Egg bhurji with whole-wheat toast"},
+                    {"meal": "dinner", "dish": "Egg bhurji with whole-wheat roti"},
+                    {"meal": "dinner", "dish": "Fish curry with brown rice"}],
+    }
+    plan = np_.organize({"items": [_v2_item("Vitamin D", "X", meals=meals)]})
+    days = plan["sample_days"]["north"]
+    assert [meal["dish"] for meal in days["veg"]] == ["Rajma with brown rice and a squeeze of lemon",
+                                                      "Palak paneer with whole-wheat roti"]
+    assert [meal["dish"] for meal in days["non_veg"]] == ["Egg bhurji with whole-wheat toast",
+                                                          "Fish curry with brown rice"]
+
+
+def test_different_dishes_that_start_alike_are_both_kept():
+    assert np_._dish_key("A handful of roasted almonds") != np_._dish_key("A handful of walnuts")
+    assert np_._dish_key("Fish curry with rice") != np_._dish_key("Fish tikka with salad")
+
+
+def test_a_theme_says_why_it_matters_and_keeps_its_habits():
+    themes = {t["title"]: t for t in np_.organize(V2_GUIDANCE)["themes"]}
+    assert themes["Vitamins & blood"]["why"] == ["Vitamin D helps your bones use calcium."]
+    assert themes["Vitamins & blood"]["tips"] == ["Sit in the morning sun with your tea."]
+    assert themes["Inflammation & pain"]["swaps"]["veg"][1] == {"instead_of": "fried namkeen", "try": "roasted chana"}
+
+
+def test_guidance_written_before_v2_still_makes_the_older_day():
+    plan = np_.organize(GUIDANCE)
+    assert plan["sample_days"]["all"]["veg"] == [] and plan["sample_day"]["veg"]
+    handout = np_.build_handout(plan, "veg", "south")
+    assert handout["sample_day"] and all(meal["dish"] is None for meal in handout["sample_day"])
+
+
+def test_the_handout_follows_the_region_and_diet_the_doctor_chose():
+    plan = np_.organize(V2_GUIDANCE)
+    handout = np_.build_handout(plan, "non_veg", "east")
+    assert handout["region"] == "east" and handout["region_label"] == "East Indian"
+    assert [meal["dish"] for meal in handout["sample_day"]] == [m["dish"] for m in plan["sample_days"]["east"]["non_veg"]]
+    vitamins = next(t for t in handout["themes"] if t["title"] == "Vitamins & blood")
+    assert vitamins["why"] == ["Vitamin D helps your bones use calcium."]
+    assert vitamins["swaps"] == [{"instead_of": "white bread", "try": "whole-wheat roti"}]
+    # No values or documents reach the patient.
+    assert "13.8" not in str(handout) and "d1" not in str(handout)
+    assert np_.build_handout(plan, "veg", "atlantis")["region"] == "all"
+
+
+def test_seeds_never_crowd_out_everyday_food():
+    """Each topic may name two seeds; nine topics each naming flax and chia made a "foods that
+    help most" list of seeds — the textbook list the client asked to be rid of."""
+    items = [_item(term, ["Flaxseeds", "Chia seeds", "curd"], ["eggs"]) for term in ("Vitamin D", "ESR", "Vitamin B12")]
+    items.append(_item("hs-CRP", ["Pumpkin seeds", "Sunflower seeds", "paneer"], ["eggs"]))
+    plan = np_.organize({"items": items})
+    good = plan["good_to_include"]["veg"]
+    assert sum("seed" in food.lower() for food in good) == 2
+    assert "Curd" in good and "Paneer" in good
+    inflammation = next(t for t in plan["themes"] if t["title"] == "Inflammation & pain")
+    assert sum("seed" in food.lower() for food in inflammation["foods"]["veg"]) == 2
+
+def test_foods_from_several_topics_read_as_one_list():
+    """Live page: "almonds" and "amla" among "Walnuts" and "Paneer"; "sugary snacks" above
+    "Fried foods". Each topic capitalises its own way; the page shows one way."""
+    guidance = {"items": [
+        _item("Vitamin D", ["almonds", "omega-3 rich fish"], [], limit=["sugary snacks"]),
+        _item("ESR", ["Walnuts", "Vitamin D-fortified milk"], [], limit=["Fried foods"]),
+    ]}
+    plan = np_.organize(guidance)
+    foods = [e["food"] for e in plan["top_foods"]["veg"]]
+    assert foods == ["Almonds", "Omega-3 rich fish", "Walnuts", "Vitamin D-fortified milk"]
+    assert {e["food"] for e in plan["go_easy"]} == {"Sugary snacks", "Fried foods"}
+    # The handout reads the same.
+    handout_foods = [food for theme in np_.build_handout(plan, "veg")["themes"] for food in theme["foods"]]
+    assert all(food[:1].isupper() for food in handout_foods)

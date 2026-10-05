@@ -150,10 +150,22 @@ def _copy_key(filename, document_type, clinical_date) -> tuple:
     return (name, document_type, _iso(clinical_date))
 
 
-def document_blocks(doctor_id: str | None, patient_id: str, viewer_department: str | None) -> list[dict]:
-    """The document blocks for the at-a-glance card, newest document first."""
+# Why a complete document is not one of the blocks (scripts/check_document_display.py).
+HIDDEN_NO_CURRENT_VALUES = "lab values, none out of range now (all normal, or a newer report replaced them)"
+HIDDEN_NO_SUMMARY = "no summary stored (never made, or it failed its check against the document)"
+HIDDEN_COPY = "another upload of a report already shown"
+HIDDEN_OVER_LIMIT = f"beyond the newest {MAX_DOCUMENT_BLOCKS} documents shown"
+
+
+def document_blocks(doctor_id: str | None, patient_id: str, viewer_department: str | None,
+                    explain: list | None = None) -> list[dict]:
+    """The document blocks for the at-a-glance card, newest document first.
+
+    `explain`, when given, receives {"document_id", "reason"} for every complete document
+    left out, by the same rules that left it out — so a check can never disagree with the
+    screen."""
     from app.services.document_catalog import _content_type_for
-    from app.services.document_reviews import review_states
+    from app.services.document_reviews import STATUS_UNVERIFIED, merged_review_states, review_states
 
     with connect_db() as conn:
         with conn.cursor() as cur:
@@ -171,8 +183,11 @@ def document_blocks(doctor_id: str | None, patient_id: str, viewer_department: s
             rows = cur.fetchall()
             readings = _latest_and_previous(rows)
             # Documents that carry measured values. When none of their readings is current,
-            # they have nothing to say here — even if they have a summary.
-            numeric_documents = {str(row[8]) for row in rows if row[2] is not None}
+            # they have nothing to say here — even if they have a summary. A reading counts
+            # only when it was judged against a range (normal, high or low): a prescription
+            # whose "Age/Gender 23/M" was read as the number 23 is not a lab report, and
+            # counting it hid the prescription's summary entirely.
+            numeric_documents = {str(row[8]) for row in rows if row[2] is not None and row[5] != "unknown"}
 
             cur.execute(
                 """
@@ -206,12 +221,26 @@ def document_blocks(doctor_id: str | None, patient_id: str, viewer_department: s
 
     # How many times each report was uploaded: the same file saved twice by a browser comes
     # back as "report (1).pdf", which is still the same report.
-    copies: dict[tuple, int] = {}
-    for _id, filename, document_type, clinical_date, _created, _sentences in documents:
-        key = _copy_key(filename, document_type, clinical_date)
-        copies[key] = copies.get(key, 0) + 1
+    ids_by_key: dict[tuple, list[str]] = {}
+    for document_id, filename, document_type, clinical_date, _created, _sentences in documents:
+        ids_by_key.setdefault(_copy_key(filename, document_type, clinical_date), []).append(str(document_id))
+    copies = {key: len(ids) for key, ids in ids_by_key.items()}
+
+    # Within one report's copies, a copy a doctor reviewed comes first: a prescription or
+    # scan speaks through ONE copy's summary, and it should be the summary that was checked
+    # (the newest copy otherwise — a re-upload must not hide a verification).
+    reviewed = {
+        document_id for document_id, state in review_states(
+            [str(row[0]) for row in documents], doctor_id, viewer_department).items()
+        if state["status"] != STATUS_UNVERIFIED
+    }
+    first_seen = {key: index for index, key in enumerate(dict.fromkeys(
+        _copy_key(row[1], row[2], row[3]) for row in documents))}
+    documents = sorted(documents, key=lambda row: (
+        first_seen[_copy_key(row[1], row[2], row[3])], str(row[0]) not in reviewed))
 
     blocks: list[dict] = []
+    block_keys: dict[str, tuple] = {}
     shown: set[tuple] = set()
     for document_id, filename, document_type, clinical_date, created_at, sentences in documents:
         document_id = str(document_id)
@@ -225,12 +254,22 @@ def document_blocks(doctor_id: str | None, patient_id: str, viewer_department: s
             for item in (sentences or []) if isinstance(item, dict) and str(item.get("text") or "").strip()
         ][:MAX_SUMMARY_SENTENCES] if not findings and document_id not in numeric_documents else []
         if not findings and not summary:
+            if explain is not None:
+                explain.append({"document_id": document_id, "reason": HIDDEN_NO_CURRENT_VALUES
+                                if document_id in numeric_documents else HIDDEN_NO_SUMMARY})
             continue
         # The same report uploaded more than once is one block, counted.
         key = _copy_key(filename, document_type, clinical_date)
         if key in shown and not findings:
+            if explain is not None:
+                explain.append({"document_id": document_id, "reason": HIDDEN_COPY})
+            continue
+        if len(blocks) >= MAX_DOCUMENT_BLOCKS:
+            if explain is not None:
+                explain.append({"document_id": document_id, "reason": HIDDEN_OVER_LIMIT})
             continue
         shown.add(key)
+        block_keys[document_id] = key
         # Abnormal first, then the ones back in range; highs and lows keep the report's order.
         findings.sort(key=lambda f: (f["flag"] not in ABNORMAL, f["name"] or ""))
         block = {
@@ -248,13 +287,57 @@ def document_blocks(doctor_id: str | None, patient_id: str, viewer_department: s
             "review": None,
         }
         blocks.append(block)
-        if len(blocks) >= MAX_DOCUMENT_BLOCKS:
-            break
 
-    states = review_states([b["document_id"] for b in blocks], doctor_id, viewer_department)
+    if explain is not None:
+        # An older upload of a lab report that IS shown has no current readings of its own
+        # because its copy holds them — it is that report, not a report with nothing to say.
+        key_of = {str(row[0]): _copy_key(row[1], row[2], row[3]) for row in documents}
+        for entry in explain:
+            if entry["reason"] == HIDDEN_NO_CURRENT_VALUES and key_of.get(entry["document_id"]) in shown:
+                entry["reason"] = HIDDEN_COPY
+
+    # Verified on any copy is verified: the review shown is the whole report's.
+    states = merged_review_states(
+        {b["document_id"]: ids_by_key[block_keys[b["document_id"]]] for b in blocks},
+        doctor_id, viewer_department,
+    )
     for block in blocks:
         block["review"] = states.get(block["document_id"])
     return blocks
+
+
+def copy_groups(document_ids) -> dict[str, list[str]]:
+    """Each document id -> every complete copy of the same report by the same patient
+    (itself included; just itself when it has no other copy or is not complete)."""
+    ids = [str(document_id) for document_id in dict.fromkeys(document_ids or []) if document_id]
+    if not ids:
+        return {}
+    with connect_db() as conn:
+        with conn.cursor() as cur:
+            cur.execute(
+                """
+                SELECT dc.document_id, dc.user_id, dc.original_filename, dc.document_type, dc.clinical_date
+                FROM document_catalog dc
+                WHERE dc.ingestion_status = 'complete'
+                  AND dc.user_id IN (SELECT user_id FROM document_catalog WHERE document_id = ANY(%s))
+                """,
+                (ids,),
+            )
+            rows = cur.fetchall()
+        conn.commit()
+    key_of: dict[str, tuple] = {}
+    by_key: dict[tuple, list[str]] = {}
+    for document_id, user_id, filename, document_type, clinical_date in rows:
+        key = (str(user_id), _copy_key(filename, document_type, clinical_date))
+        key_of[str(document_id)] = key
+        by_key.setdefault(key, []).append(str(document_id))
+    return {document_id: by_key[key_of[document_id]] if document_id in key_of else [document_id]
+            for document_id in ids}
+
+
+# Facts read off a document whose label follows that document's review: a medicine list, and
+# a report's findings in the summary.
+LABELLED_KINDS = frozenset({"medication", "finding"})
 
 
 def _document_label(state: dict | None) -> str | None:
@@ -262,7 +345,14 @@ def _document_label(state: dict | None) -> str | None:
     if not state:
         return None
     if state.get("status") == "flagged":
-        return "From a document · reported inaccurate"
+        # Who objected and why, beside the line itself — the reason is written for doctors,
+        # and this card is shown only to doctors treating the patient.
+        objections = [
+            f"{person.get('name') or 'a clinician'}: “{person['reason']}”" if person.get("reason")
+            else (person.get("name") or "a clinician")
+            for person in state.get("flagged_by") or []
+        ]
+        return "From a document · reported inaccurate" + (f" by {'; '.join(objections)}" if objections else "")
     if state.get("status") == "verified":
         names = ", ".join(
             "you" if person.get("is_me") else (person.get("name") or "a clinician")
@@ -281,16 +371,17 @@ def apply_review_labels(overview: dict, doctor_id: str | None, viewer_department
     is cached on. Covers both renderings: the facts (phrased lines read labels from their
     cited facts) and the structured lines' own copies.
     """
-    from app.services.document_reviews import review_states
+    from app.services.document_reviews import merged_review_states
 
     facts = overview.get("facts") or []
     document_ids = [
         str(fact["source_id"]) for fact in facts
-        if fact.get("kind") == "medication" and fact.get("source_type") == "document" and fact.get("source_id")
+        if fact.get("kind") in LABELLED_KINDS and fact.get("source_type") == "document" and fact.get("source_id")
     ]
     if not document_ids:
         return overview
-    states = review_states(document_ids, doctor_id, viewer_department)
+    # A medicine read off one copy of a prescription is verified when any copy is.
+    states = merged_review_states(copy_groups(document_ids), doctor_id, viewer_department)
 
     def relabel(item: dict) -> dict:
         if item.get("source_type") != "document":
@@ -298,7 +389,8 @@ def apply_review_labels(overview: dict, doctor_id: str | None, viewer_department
         label = _document_label(states.get(str(item.get("source_id"))))
         return {**item, "label": label} if label else item
 
-    relabelled = {**overview, "facts": [relabel(fact) if fact.get("kind") == "medication" else fact for fact in facts]}
+    relabelled = {**overview, "facts": [relabel(fact) if fact.get("kind") in LABELLED_KINDS else fact
+                                        for fact in facts]}
     if overview.get("mode") != "phrased":
         relabelled["lines"] = [
             {**group, "items": [relabel(item) for item in group.get("items") or []]}

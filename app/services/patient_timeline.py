@@ -37,7 +37,7 @@ an N+1 here would take the workspace down under a handful of doctors, not hundre
 from __future__ import annotations
 
 import logging
-from datetime import datetime
+from datetime import date, datetime, timezone
 
 from app.db.connection import connect_db
 
@@ -45,6 +45,9 @@ logger = logging.getLogger(__name__)
 
 TIMELINE_DEFAULT_LIMIT = 20
 TIMELINE_MAX_LIMIT = 100
+
+# A document's own out-of-range values shown in its history entry; the rest are counted.
+MAX_HISTORY_VALUES = 8
 
 # Specialties whose note content is withheld from doctors outside them. Lowercase; matched
 # case-insensitively against doctors.department.
@@ -70,6 +73,68 @@ def may_read_note(viewer_department: str | None, encounter_department: str | Non
         return True
     return " ".join(str(viewer_department or "").lower().split()) == \
         " ".join(str(encounter_department or "").lower().split())
+
+
+def _instant(value):
+    """A comparable UTC instant from a datetime, a date or an ISO string. Naive values are the
+    server's local time (bookings are stored naive, notes with a zone)."""
+    if value is None or value == "":
+        return None
+    if isinstance(value, str):
+        try:
+            value = datetime.fromisoformat(value)
+        except ValueError:
+            return None
+    if isinstance(value, date) and not isinstance(value, datetime):
+        value = datetime(value.year, value.month, value.day)
+    if value.tzinfo is None:
+        value = value.astimezone()
+    return value.astimezone(timezone.utc)
+
+
+def is_after(value, since) -> bool:
+    """Whether `value` happened after `since`; False when either is unknown."""
+    a, b = _instant(value), _instant(since)
+    return bool(a and b and a > b)
+
+
+def viewer_last_seen(doctor_id: str | None, patient_id: str):
+    """When this doctor last saw this patient — their latest signed note or past visit with
+    them — or None if they never have. What "New since your last visit" is measured from.
+    Per doctor, so never part of a cache shared across doctors."""
+    if not doctor_id:
+        return None
+    with connect_db() as conn:
+        with conn.cursor() as cur:
+            cur.execute(
+                """
+                SELECT GREATEST(
+                    (SELECT MAX(signed_at) FROM soap_notes
+                      WHERE doctor_id::text = %(d)s AND patient_id = %(p)s AND status = 'signed'),
+                    (SELECT MAX(start_time)::timestamptz FROM appointment_bookings
+                      WHERE doctor_id::text = %(d)s AND patient_id = %(p)s
+                        AND status <> 'cancelled' AND start_time < NOW())
+                )
+                """,
+                {"d": str(doctor_id), "p": str(patient_id)},
+            )
+            row = cur.fetchone()
+        conn.commit()
+    return row[0] if row else None
+
+
+def _clip(text, limit: int) -> str:
+    text = " ".join(str(text or "").split())
+    return text if len(text) <= limit else text[:limit].rsplit(" ", 1)[0] + "…"
+
+
+def _first_sentences(text, count: int) -> str:
+    """The first sentences of a plan, list markers removed: enough to say what was decided."""
+    import re
+
+    parts = [re.sub(r"^\s*(?:[-*•·]|\d+[.)])\s+", "", part).strip()
+             for part in re.split(r"(?<=[.;])\s+|\n+", str(text or ""))]
+    return " ".join([part for part in parts if part][:count])
 
 
 def _note_summary(note_row) -> str:
@@ -191,18 +256,28 @@ def get_patient_timeline(
         ) latest_copy
     """ if include_documents else ""
 
+    items_cte = f"""
+        WITH encounter_documents AS ({_ENCOUNTER_DOCUMENTS}),
+        items AS (
+            SELECT 'encounter' AS kind, b.start_time AS at, b.booking_id::text AS item_id
+            FROM appointment_bookings b
+            JOIN doctors d ON d.doctor_id = b.doctor_id
+            WHERE {" AND ".join(encounter_conditions)}
+            {document_items}
+        )
+    """
+    # Read outside the block below: a connect_db() nested on one thread hands back the SAME
+    # connection (app/db/connection.py), so nothing that opens its own may run inside it.
+    since = viewer_last_seen(doctor_id, patient_id)
+    enrich_ids: list[str] = []
+    own_findings: dict[str, list] = {}
+    own_summaries: dict[str, list] = {}
+
     with connect_db() as conn:
         with conn.cursor() as cur:
             cur.execute(
                 f"""
-                WITH encounter_documents AS ({_ENCOUNTER_DOCUMENTS}),
-                items AS (
-                    SELECT 'encounter' AS kind, b.start_time AS at, b.booking_id::text AS item_id
-                    FROM appointment_bookings b
-                    JOIN doctors d ON d.doctor_id = b.doctor_id
-                    WHERE {" AND ".join(encounter_conditions)}
-                    {document_items}
-                )
+                {items_cte}
                 SELECT kind, at, item_id FROM items
                 WHERE %(cursor)s::timestamp IS NULL OR at < %(cursor)s::timestamp
                 ORDER BY at DESC, item_id
@@ -211,6 +286,11 @@ def get_patient_timeline(
                 params,
             )
             ordered = cur.fetchall()
+            # "Showing 3 of 7": counted on the first page only, where the page says it.
+            total = None
+            if cursor is None:
+                cur.execute(f"{items_cte} SELECT COUNT(*) FROM items", params)
+                total = int(cur.fetchone()[0])
 
             # One extra row was requested to detect a further page without counting the
             # whole history on every request.
@@ -247,9 +327,10 @@ def get_patient_timeline(
             if consultation_ids:
                 cur.execute(
                     """
-                    SELECT consultation_id, assessment, plan, signed_at
-                    FROM soap_notes
-                    WHERE consultation_id = ANY(%s::uuid[]) AND status = 'signed'
+                    SELECT sn.consultation_id, sn.assessment, sn.plan, sn.signed_at, sd.name
+                    FROM soap_notes sn
+                    LEFT JOIN doctors sd ON sd.doctor_id = sn.doctor_id
+                    WHERE sn.consultation_id = ANY(%s::uuid[]) AND sn.status = 'signed'
                     """,
                     (consultation_ids,),
                 )
@@ -305,14 +386,79 @@ def get_patient_timeline(
                     (standalone_ids, patient_id),
                 )
                 standalone = {row[0]: row for row in cur.fetchall()}
+
+            # What each listed document ITSELF recorded: its own out-of-range values and its
+            # verified summary. Not the latest reading of each measurement — a May value a
+            # September report superseded stays on May's entry, so history loses nothing.
+            # Documents under a RESTRICTED visit stay names only: their content would carry a
+            # sensitive specialty's findings to doctors the note itself is withheld from.
+            readable_bookings = {
+                booking_id for booking_id, row in bookings.items() if may_read_note(viewer_department, row[6])
+            }
+            enrich_ids = sorted(
+                {doc["document_id"] for booking_id, docs in documents.items()
+                 if booking_id in readable_bookings for doc in docs}
+                | {str(document_id) for document_id in standalone}
+            )
+            if enrich_ids:
+                cur.execute(
+                    """
+                    SELECT document_id, printed_name, value_num, value_text, unit, abnormal
+                    FROM document_findings
+                    WHERE document_id = ANY(%s) AND abnormal IN ('low', 'high')
+                    ORDER BY document_id, printed_name
+                    """,
+                    (enrich_ids,),
+                )
+                for document_id, name, value_num, value_text, unit, flag in cur.fetchall():
+                    own_findings.setdefault(str(document_id), []).append({
+                        "name": name, "value": float(value_num) if value_num is not None else None,
+                        "value_text": value_text, "unit": unit, "flag": flag,
+                    })
+                cur.execute(
+                    "SELECT document_id, sentences FROM document_summaries WHERE document_id = ANY(%s)",
+                    (enrich_ids,),
+                )
+                for document_id, sentences in cur.fetchall():
+                    own_summaries[str(document_id)] = [
+                        str(item.get("text") or "").strip()
+                        for item in (sentences or [])
+                        if isinstance(item, dict) and str(item.get("text") or "").strip()
+                    ][:3]
         conn.commit()
+
+    # Who verified or objected to each, merged across a report's copies, with earlier-version
+    # positions kept — read after the block (each opens its own connection).
+    reviews: dict = {}
+    if enrich_ids:
+        from app.services.document_reviews import merged_review_states
+        from app.services.overview_documents import copy_groups
+
+        reviews = merged_review_states(copy_groups(enrich_ids), doctor_id, viewer_department)
+    enriched = set(enrich_ids)
+
+    def enrich(doc: dict) -> dict:
+        document_id = str(doc["document_id"])
+        if document_id not in enriched:
+            return doc
+        findings = own_findings.get(document_id, [])
+        return {
+            **doc,
+            "findings": findings[:MAX_HISTORY_VALUES],
+            "more_findings": max(0, len(findings) - MAX_HISTORY_VALUES),
+            # A lab report speaks through its values; a text report through its summary.
+            "summary": [] if findings else own_summaries.get(document_id, []),
+            "review": reviews.get(document_id),
+        }
+
+    documents = {booking_id: [enrich(doc) for doc in docs] for booking_id, docs in documents.items()}
 
     items = []
     for kind, at, item_id in ordered:
         if kind == "document":
             row = standalone.get(item_id)
             if row:
-                items.append({
+                items.append(enrich({
                     "kind": "document",
                     "at": at.isoformat() if at else None,
                     "document_id": str(row[0]),
@@ -321,17 +467,25 @@ def get_patient_timeline(
                     "clinical_date": row[3].isoformat() if row[3] else None,
                     "uploaded_at": row[4].isoformat() if row[4] else None,
                     "copies": int(row[5] or 1),
-                })
+                    # When it reached the record, not the date printed on it.
+                    "is_new": bool(since) and is_after(row[4], since),
+                }))
             continue
         row = bookings.get(item_id)
         if row:
-            items.append(_encounter(row, doctor_id, viewer_department, notes, prescriptions, documents))
+            encounter = _encounter(row, doctor_id, viewer_department, notes, prescriptions, documents)
+            note = encounter.get("note") or {}
+            encounter["is_new"] = bool(since) and (
+                is_after(encounter.get("start_time"), since) or is_after(note.get("signed_at"), since))
+            items.append(encounter)
 
     return {
         "items": items,
         "encounters": [item for item in items if item["kind"] == "encounter"],
         "next_cursor": ordered[-1][1].isoformat() if (has_more and ordered) else None,
         "has_more": has_more,
+        "total": total,
+        "new_since": since.isoformat() if since else None,
     }
 
 
@@ -364,7 +518,10 @@ def _encounter(row, doctor_id, viewer_department, notes, prescriptions, document
     elif readable:
         encounter["note"] = {
             "summary": _note_summary((note_row[1], note_row[2])),
+            "assessment": _clip(note_row[1], 600),
+            "plan": _first_sentences(note_row[2], 2),
             "signed_at": note_row[3].isoformat() if note_row[3] else None,
+            "signed_by": note_row[4] if len(note_row) > 4 else None,
         }
     else:
         encounter["note"] = {"restricted": True, "summary": RESTRICTED_NOTE_LABEL}

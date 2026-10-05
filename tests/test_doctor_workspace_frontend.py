@@ -386,8 +386,13 @@ def test_phrased_overview_lines_carry_their_facts_labels(app_js):
     keeps them if the model wrote them. They are read off the cited facts instead."""
     body = _function_body(app_js, "renderDoctorOverview")
     assert "factsById.get(String(id))" in body
-    assert "buildOverviewLabel(label)" in body
-    assert "From a scanned document" in body
+    # Both renderings draw each line's sources and labels from its facts.
+    assert body.count("buildFactSources(") == 2
+    sources = _function_body(app_js, "buildFactSources")
+    assert "if (fact.label) add(fact.label);" in sources
+    assert "From a scanned document" in sources
+    # Who verified or objected is the label itself, so it can never be phrased away.
+    assert "fact.is_new" in sources
 
 
 def test_signing_out_closes_the_viewer_and_starts_the_page_over(app_js):
@@ -605,13 +610,53 @@ def test_redrawing_today_never_refetches_a_brief(app_js):
 
 def test_brief_text_is_never_parsed_as_html(app_js):
     """Every line comes from the record, and the booking note was typed by the patient."""
-    for fn in ("buildVisitBrief", "buildBriefRow", "buildBriefSection"):
-        assert "innerHTML" not in _function_body(app_js, fn)
+    for fn in ("buildVisitBrief", "buildBriefRow", "buildBriefSection", "buildBriefDocumentRow",
+               "buildBriefPreviousVisits", "buildBriefLinkButton", "renderDoctorVisitBrief"):
+        assert "innerHTML" not in _function_body(app_js, fn), fn
 
 
-def test_a_restricted_note_is_shown_as_restricted(app_js):
+def test_a_restricted_visit_is_shown_as_restricted(app_js):
+    body = _function_body(app_js, "buildBriefPreviousVisits")
+    assert "visit.restricted" in body and "clinical-note-flag" in body
+
+
+def test_the_brief_lists_no_colleagues_notes_or_prescriptions(app_js):
+    """Other doctors' history is the patient page's; the brief is this doctor's visit."""
     body = _function_body(app_js, "buildVisitBrief")
-    assert "note.restricted" in body and "note restricted" in body
+    assert "colleague_notes" not in body and "colleague_prescriptions" not in body
+    assert "loadDoctorPatientDetail(brief.patient_id)" in body
+
+
+def test_the_brief_lists_this_visits_documents_and_my_previous_visits(app_js):
+    body = _function_body(app_js, "buildVisitBrief")
+    assert "(brief.this_visit || {}).documents" in body
+    assert "buildBriefPreviousVisits(brief.patient_id, previousVisits)" in body
+    assert "since.documents" not in body and "since.abnormal" not in body
+
+
+def test_the_pre_appointment_summary_is_shown_once(app_js):
+    """It was in the appointment's Note field AND the brief. Only the brief keeps it — and
+    shows it even when the brief fails to load."""
+    assert "booking_note" not in _function_body(app_js, "showDoctorAppointmentDetail")
+    assert "renderClinicalNote" not in app_js
+    assert "renderBookingNoteMarkdown(note)" in _function_body(app_js, "renderDoctorVisitBrief")
+    assert "note: doctorDetailAppointment?.booking_note" in _function_body(app_js, "loadDoctorVisitBrief")
+
+
+def test_every_doctor_page_has_back_to_top(app_js):
+    """One button for the workspace: every pane scrolls in .doctor-ai-content."""
+    html = INDEX_HTML.read_text(encoding="utf-8")
+    assert 'id="doctorToTopBtn"' in html and 'aria-label="Back to top"' in html
+    body = _function_body(app_js, "initDoctorBackToTop")
+    assert ".doctor-ai-content" in body and 'scroller.addEventListener("scroll"' in body
+    assert "prefers-reduced-motion" in body and "scroller.focus(" in body
+    assert re.search(r"^initDoctorBackToTop\(\);", app_js, re.M)
+
+
+def test_a_literal_backslash_n_in_a_note_is_a_line_break(app_js):
+    """The summarising model sometimes writes a literal "\\n"; the removed Note field
+    handled it, so the brief must too."""
+    assert r'.replace(/\\r\\n|\\n|\\r/g, "\n")' in _function_body(app_js, "renderBookingNoteMarkdown")
 
 
 # ---- booking-note formatting ----
@@ -750,7 +795,7 @@ def test_a_late_summary_for_another_document_is_not_shown(app_js):
 
 def test_every_document_status_uses_the_shared_chip(app_js):
     assert "buildDocumentReviewChip(doc.document_id, doc.review)" in _function_body(app_js, "buildPatientDocumentCard")
-    assert "buildDocumentReviewChip(doc.document_id, doc.review)" in _function_body(app_js, "buildVisitBrief")
+    assert "buildDocumentReviewChip(doc.document_id, doc.review)" in _function_body(app_js, "buildBriefDocumentRow")
     assert "refreshDocumentReviewChips(documentId, data.review)" in _function_body(app_js, "renderDocumentReview")
 
 
@@ -773,10 +818,16 @@ def test_the_nutritionist_is_labelled_as_ai_and_not_a_prescription(app_js):
     assert "AI generated · food suggestions to discuss, not a diet prescription" in body
 
 
-def test_the_nutritionist_appears_where_there_are_documents(app_js):
-    assert "brief.has_documents && brief.booking_id" in _function_body(app_js, "buildVisitBrief")
+def test_the_nutritionist_appears_where_there_is_something_diet_related(app_js):
+    """Named by its findings (nutrition_focus) and shown only when there are some; a server
+    too old to send them keeps the previous rule (documents / abnormal results)."""
+    brief = _function_body(app_js, "buildVisitBrief")
+    assert "nutritionFocus ? nutritionFocus.length : brief.has_documents" in brief
+    assert "nutritionFocus || []" in brief
     clinical = _function_body(app_js, "renderDocumentClinical")
-    assert "hasAbnormal" in clinical and "/nutrition`" in clinical
+    assert "documentFocus ? documentFocus.length : hasAbnormal" in clinical and "/nutrition`" in clinical
+    section = _function_body(app_js, "buildNutritionSection")
+    assert "toggle.textContent = describeNutritionFocus(focus);" in section
 
 
 def test_one_diet_choice_applies_to_every_item(app_js):
@@ -839,8 +890,12 @@ def test_documents_without_a_visit_are_shown_on_the_timeline(app_js):
     body = _function_body(app_js, "loadDoctorTimeline")
     assert 'item.kind === "document" ? buildTimelineDocument(item) : buildTimelineEncounter(item)' in body
     doc = _function_body(app_js, "buildTimelineDocument")
-    assert "not linked to a visit" in doc and "openDoctorDocumentViewer(" in doc
-    assert not re.search(r"\.innerHTML\s*[+]?=|insertAdjacentHTML", doc)
+    assert "not linked to a visit" in doc and "buildHistoryDocument(item, timelineState.patientId)" in doc
+    # The shared document renderer opens it, and writes everything as text, never HTML.
+    shared = _function_body(app_js, "buildHistoryDocument")
+    assert "openDoctorDocumentViewer(" in shared
+    for body in (doc, shared, _function_body(app_js, "buildHistoryEntry")):
+        assert not re.search(r"\.innerHTML\s*[+]?=|insertAdjacentHTML", body)
 
 
 # ---- drafting a clinical note is visibly in progress ----

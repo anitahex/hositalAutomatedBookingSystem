@@ -578,6 +578,13 @@ def sign_soap_note(consultation_id: str, doctor_id: str) -> dict:
     with connect_db() as conn:
         ensure_soap_schema(conn)
         with conn.cursor() as cur:
+            # The consult's row lock, the one discard_consult takes: a sign and a discard of
+            # the same consult wait for each other, so whichever comes second sees what the
+            # first did — a discarded consult is not signed, and a signed one not discarded.
+            cur.execute("SELECT status FROM consultations WHERE id = %s FOR UPDATE", (consultation_id,))
+            locked = cur.fetchone()
+            if locked and locked[0] == "discarded":
+                raise PermissionError("This consult was discarded, so its note can't be signed.")
             cur.execute(
                 """
                 UPDATE soap_notes SET status = 'signed', signed_at = NOW(), signed_by = %s, updated_at = NOW()

@@ -391,6 +391,39 @@ def test_words_that_merely_contain_a_test_name_do_not_count():
     assert extract_plan_items("Act on the advice given. The fact is noted.")["tests"] == []
 
 
+def test_a_follow_up_that_mentions_a_test_is_not_a_test():
+    """Seen on the server: the follow-up sentence was copied under "Tests / reports advised"
+    because it mentions the MRI it follows."""
+    plan = ("Order MRI of the lumbosacral spine to identify cause. "
+            "Follow-up in neurology clinic after MRI or sooner if symptoms worsen.")
+    assert extract_plan_items(plan) == {
+        "medications": [], "tests": ["Order MRI of the lumbosacral spine to identify cause."]}
+
+
+def test_follow_up_review_and_referral_lines_are_neither_list():
+    plan = """- Review with MRI report in 2 weeks
+- Follow up twice weekly for dressing
+- Refer to neurology for nerve conduction study
+- Return if fever persists; continue paracetamol 500 mg SOS
+Review in two weeks. See me again after the reports."""
+    items = extract_plan_items(plan)
+    # A strength still makes it a medicine, even inside a follow-up line.
+    assert items["medications"] == ["Return if fever persists; continue paracetamol 500 mg SOS"]
+    assert items["tests"] == []
+
+
+def test_prose_that_only_mentions_a_test_is_not_an_order():
+    plan = ("Discussed the MRI findings with the patient. Explained the report. "
+            "MRI lumbar spine. The ECG is pending. Repeat lipid profile after 6 weeks.")
+    assert extract_plan_items(plan)["tests"] == [
+        "MRI lumbar spine.", "The ECG is pending.", "Repeat lipid profile after 6 weeks."]
+
+
+def test_a_listed_test_needs_no_ordering_word():
+    assert extract_plan_items("- Fasting lipid profile and HbA1c\n- ECG")["tests"] == [
+        "Fasting lipid profile and HbA1c", "ECG"]
+
+
 def test_plan_items_handle_empty_input():
     assert extract_plan_items(None) == {"medications": [], "tests": []}
     assert extract_plan_items("Follow up in six weeks.") == {"medications": [], "tests": []}

@@ -79,24 +79,44 @@ def _overview(mode="structured"):
     return {"facts": [fact], "lines": lines, "mode": mode}
 
 
+def _review_of_doc_rx(monkeypatch, state):
+    """The report's review, as merged across its copies (here: one copy)."""
+    monkeypatch.setattr(od, "copy_groups", lambda ids: {i: [i] for i in ids})
+    monkeypatch.setattr("app.services.document_reviews.merged_review_states", lambda groups, d, v: {"doc-rx": state})
+
+
 def test_a_medication_from_a_verified_document_says_who_verified_it(monkeypatch):
-    monkeypatch.setattr("app.services.document_reviews.review_states", lambda ids, d, v: {
-        "doc-rx": {"status": "verified", "verified_by": [{"name": "Dr. Thanvi", "is_me": False}]}})
+    _review_of_doc_rx(monkeypatch, {"status": "verified", "verified_by": [{"name": "Dr. Thanvi", "is_me": False}]})
     card = od.apply_review_labels(_overview(), "d1", "Orthopedics")
     assert card["facts"][0]["label"] == "From a document · verified by Dr. Thanvi"
     assert card["lines"][0]["items"][0]["label"] == "From a document · verified by Dr. Thanvi"
 
 
 def test_a_medication_from_a_reported_document_says_so(monkeypatch):
-    monkeypatch.setattr("app.services.document_reviews.review_states", lambda ids, d, v: {
-        "doc-rx": {"status": "flagged", "verified_by": [], "flagged_by": [{"name": "Dr. X"}]}})
+    _review_of_doc_rx(monkeypatch, {"status": "flagged", "verified_by": [], "flagged_by": [{"name": "Dr. X"}]})
     card = od.apply_review_labels(_overview("phrased"), "d1", None)
-    assert card["facts"][0]["label"] == "From a document · reported inaccurate"
+    assert card["facts"][0]["label"] == "From a document · reported inaccurate by Dr. X"
+
+
+def test_a_reported_document_says_who_objected_and_why(monkeypatch):
+    """Kept in the summary (the agreed rule), with the objection beside it."""
+    _review_of_doc_rx(monkeypatch, {"status": "flagged", "verified_by": [], "flagged_by": [
+        {"name": "Dr. X", "reason": "Dose misread"}, {"name": "Dr. Y", "reason": None}]})
+    card = od.apply_review_labels(_overview(), "d1", None)
+    assert card["facts"][0]["label"] == "From a document · reported inaccurate by Dr. X: “Dose misread”; Dr. Y"
+    assert card["facts"][0]["text"] == "Tab Gabantin"
+
+
+def test_a_finding_from_a_document_is_labelled_like_a_medicine(monkeypatch):
+    _review_of_doc_rx(monkeypatch, {"status": "verified", "verified_by": [{"name": "Dr. Thanvi", "is_me": True}]})
+    overview = _overview()
+    overview["facts"][0] = {**overview["facts"][0], "kind": "finding", "label": None}
+    card = od.apply_review_labels(overview, "d1", None)
+    assert card["facts"][0]["label"] == "From a document · verified by you"
 
 
 def test_an_unreviewed_medication_keeps_reported_unverified(monkeypatch):
-    monkeypatch.setattr("app.services.document_reviews.review_states", lambda ids, d, v: {
-        "doc-rx": {"status": "unverified", "verified_by": [], "flagged_by": []}})
+    _review_of_doc_rx(monkeypatch, {"status": "unverified", "verified_by": [], "flagged_by": []})
     assert od.apply_review_labels(_overview(), "d1", None)["facts"][0]["label"] == "Reported, unverified"
 
 
@@ -334,6 +354,35 @@ def test_different_reports_with_the_same_file_name_stay_apart():
     assert od._copy_key("image.png", "mri_report", "2022-04-23") != od._copy_key("image.png", "prescription", "2022-05-21")
 
 
+def test_a_prescription_with_a_stray_number_still_shows_its_summary(record):
+    """Seen on the server: a prescription whose "Age/Gender 23/M" was read as the number 23
+    counted as a lab report, so its summary was withheld and, with no abnormal readings,
+    the prescription was missing from the card altogether."""
+    from app.db.connection import connect_db
+
+    with connect_db() as conn:
+        with conn.cursor() as cur:
+            cur.execute(
+                """INSERT INTO document_catalog (document_id, user_id, session_id, document_type, clinical_date,
+                                                 blob_summary_path, original_filename, ingestion_status)
+                   VALUES (%s, %s, 's', 'prescription', %s, 'x', 'rx.png', 'complete')""",
+                (record["sep_copy"], record["patient"], date(2022, 5, 21)))
+            cur.execute(
+                """INSERT INTO document_summaries (document_id, sentences, register, verification, rejected_count, generated_at)
+                   VALUES (%s, '[{"text": "Advised serum Vitamin B12 and Vitamin D tests."}]'::jsonb,
+                           'clinician', 'passed', 0, NOW())""",
+                (record["sep_copy"],))
+            cur.execute(
+                """INSERT INTO document_findings (document_id, patient_id, printed_name, canonical_name, value_text,
+                                                  value_num, unit, abnormal, clinical_date)
+                   VALUES (%s, %s, 'Age/Gender', 'Age Gender', '23/M', 23, '/M', 'unknown', %s)""",
+                (record["sep_copy"], record["patient"], date(2022, 5, 21)))
+        conn.commit()
+    rx = _block(od.document_blocks(record["doctor"], record["patient"], None), record["sep_copy"])
+    assert rx["summary"] == ["Advised serum Vitamin B12 and Vitamin D tests."]
+    assert rx["findings"] == []
+
+
 def test_an_older_lab_report_with_a_summary_is_not_shown_once_superseded(record):
     """A lab report speaks through its current readings. May's summary would otherwise put
     May's (superseded) values back on the card as prose."""
@@ -348,3 +397,111 @@ def test_an_older_lab_report_with_a_summary_is_not_shown_once_superseded(record)
         conn.commit()
     blocks = od.document_blocks(record["doctor"], record["patient"], None)
     assert record["may"] not in [b["document_id"] for b in blocks]
+
+
+# ---- a report's review covers every copy of it ----
+
+def _add_mri_copy(record, summary="Disc bulge at L4-L5."):
+    """A second upload of the fixture's MRI ("mri (1).png"), stored after the first."""
+    from app.db.connection import connect_db
+
+    with connect_db() as conn:
+        with conn.cursor() as cur:
+            cur.execute(
+                """INSERT INTO document_catalog (document_id, user_id, session_id, document_type, clinical_date,
+                                                 blob_summary_path, original_filename, ingestion_status, created_at)
+                   VALUES (%s, %s, 's', 'mri_report', %s, 'x', 'mri (1).png', 'complete', NOW() + interval '1 hour')""",
+                (record["sep_copy"], record["patient"], date(2026, 4, 23)))
+            cur.execute(
+                """INSERT INTO document_summaries (document_id, sentences, register, verification, rejected_count, generated_at)
+                   VALUES (%s, %s::jsonb, 'clinician', 'passed', 0, NOW())""",
+                (record["sep_copy"], f'[{{"text": "{summary}"}}]'))
+        conn.commit()
+    return record["sep_copy"]
+
+
+def test_a_report_verified_on_an_older_copy_still_shows_verified(record):
+    """Seen locally: once the newest copy of a prescription could show, the block showed it —
+    and "unverified", though a doctor had verified the copy they opened."""
+    from app.services.document_reviews import record_review
+
+    record_review(record["doctor"], record["patient"], record["mri"], "verify")
+    _add_mri_copy(record, summary="A newer reading of the same scan.")
+    mri = next(b for b in od.document_blocks(record["doctor"], record["patient"], None) if b["document_type"] == "mri_report")
+    assert mri["review"]["status"] == "verified" and mri["copies"] == 2
+    # The block speaks through the copy that was checked, not the newer unchecked one.
+    assert mri["document_id"] == record["mri"]
+    assert mri["summary"][0] == "Disc bulge at L4-L5 with mild foraminal narrowing."
+
+
+def test_a_doctor_who_verified_two_copies_is_named_once(record):
+    from app.services.document_reviews import record_review
+
+    copy = _add_mri_copy(record)
+    record_review(record["doctor"], record["patient"], record["mri"], "verify")
+    record_review(record["doctor"], record["patient"], copy, "verify")
+    mri = next(b for b in od.document_blocks(record["doctor"], record["patient"], None) if b["document_type"] == "mri_report")
+    assert [p["name"] for p in mri["review"]["verified_by"]] == ["Dr. Glance Test"]
+    assert mri["review"]["mine"] == "verified"
+
+
+def test_a_report_flagged_on_any_copy_is_flagged(record):
+    from app.services.document_reviews import record_review
+
+    copy = _add_mri_copy(record)
+    # Reported first, verified on the other copy after: the report must still win.
+    record_review(record["doctor"], record["patient"], copy, "flag", reason="Wrong vertebral level")
+    record_review(record["doctor"], record["patient"], record["mri"], "verify")
+    mri = next(b for b in od.document_blocks(record["doctor"], record["patient"], None) if b["document_type"] == "mri_report")
+    assert mri["review"]["status"] == "flagged" and mri["review"]["mine"] == "flagged"
+
+
+def test_a_lab_report_verified_on_a_copy_without_the_current_readings(record):
+    """The readings live on one copy; the doctor may have verified another."""
+    from app.db.connection import connect_db
+    from app.services.document_reviews import record_review
+
+    with connect_db() as conn:
+        with conn.cursor() as cur:
+            cur.execute(
+                """INSERT INTO document_catalog (document_id, user_id, session_id, document_type, clinical_date,
+                                                 blob_summary_path, original_filename, ingestion_status, created_at)
+                   VALUES (%s, %s, 's', 'blood_report', %s, 'x', 'sep-labs (1).pdf', 'complete', NOW() - interval '2 days')""",
+                (record["sep_copy"], record["patient"], date(2026, 9, 20)))
+        conn.commit()
+    record_review(record["doctor"], record["patient"], record["sep_copy"], "verify")
+    sep = next(b for b in od.document_blocks(record["doctor"], record["patient"], None) if b["findings"])
+    assert sep["document_id"] == record["sep"]
+    assert sep["review"]["status"] == "verified"
+
+
+def test_a_medicine_from_one_copy_is_verified_when_another_copy_is(record):
+    from app.services.document_reviews import record_review
+
+    copy = _add_mri_copy(record)
+    record_review(record["doctor"], record["patient"], record["mri"], "verify")
+    fact = {"id": "f1", "kind": "medication", "text": "Tab X", "label": "Reported, unverified",
+            "source_type": "document", "source_id": copy}
+    card = od.apply_review_labels({"facts": [fact], "lines": [], "mode": "phrased"}, record["doctor"], None)
+    assert card["facts"][0]["label"] == "From a document · verified by you"
+
+
+def test_copy_groups_keep_different_reports_apart(record):
+    copy = _add_mri_copy(record)
+    groups = od.copy_groups([record["mri"], record["sep"], "not-a-document"])
+    assert sorted(groups[record["mri"]]) == sorted([record["mri"], copy])
+    assert groups[record["sep"]] == [record["sep"]]
+    assert groups["not-a-document"] == ["not-a-document"]
+
+
+def test_two_copies_listed_together_both_show_the_reports_review(record):
+    """Seen live: the history listed both uploads of one prescription, under two visits — one
+    said verified and the other, the same report, unverified."""
+    from app.services.document_reviews import merged_review_states, record_review
+
+    copy = _add_mri_copy(record)
+    record_review(record["doctor"], record["patient"], record["mri"], "verify")
+    states = merged_review_states(od.copy_groups([record["mri"], copy]), record["doctor"], None)
+    assert states[record["mri"]]["status"] == "verified"
+    assert states[copy]["status"] == "verified"
+    assert [p["name"] for p in states[copy]["verified_by"]] == ["Dr. Glance Test"]

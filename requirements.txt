@@ -22,6 +22,8 @@ langgraph
 # Database
 psycopg2-binary
 alembic
+# Only alembic uses SQLAlchemy; 2.1 loads psycopg 3 (not installed) for postgresql:// URLs.
+SQLAlchemy<2.1
 pandas
 
 # PDF / image extraction

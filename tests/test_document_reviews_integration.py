@@ -86,7 +86,8 @@ def _state(world, who, department, document="document"):
 
 def test_a_document_nobody_reviewed_is_unverified(world):
     state = _state(world, "ortho", "Orthopedics")
-    assert state == {"status": STATUS_UNVERIFIED, "verified_by": [], "flagged_by": [], "mine": None}
+    assert state == {"status": STATUS_UNVERIFIED, "verified_by": [], "flagged_by": [], "mine": None,
+                     "earlier": []}
 
 
 def test_one_doctors_verification_is_seen_by_every_treating_doctor(world):

@@ -199,6 +199,14 @@
   "value_operator",
   "value_text"
  ],
+ "document_findings_versions": [
+  "document_id",
+  "id",
+  "previous",
+  "printed_name",
+  "replaced_at",
+  "replaced_by"
+ ],
  "document_pages": [
   "created_at",
   "document_id",
@@ -228,6 +236,14 @@
   "sentences",
   "source_kind",
   "verification"
+ ],
+ "document_summary_versions": [
+  "document_id",
+  "generated_at",
+  "id",
+  "previous",
+  "replaced_at",
+  "replaced_by"
  ],
  "email_verification_codes": [
   "attempts",

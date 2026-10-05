@@ -92,6 +92,40 @@ def _current_positions(cur, document_ids: list[str]) -> list[tuple]:
     return cur.fetchall()
 
 
+def _earlier_positions(cur, document_ids: list[str]) -> list[tuple]:
+    """Verifications and reports made against an EARLIER version of a document's summary —
+    before it was re-processed. They no longer apply to the text on screen, so they are not
+    the document's status; but they happened, and the history must say so rather than lose
+    them (the earlier text itself is kept in document_versions).
+
+    Same columns as _current_positions, plus the version's generated_at."""
+    cur.execute(
+        """
+        WITH current AS (
+            SELECT ids.document_id, ds.generated_at
+            FROM unnest(%s::text[]) AS ids(document_id)
+            LEFT JOIN document_summaries ds ON ds.document_id = ids.document_id
+        ),
+        latest AS (
+            SELECT DISTINCT ON (r.document_id, r.doctor_id)
+                   r.document_id, r.doctor_id, r.action, r.reason, r.created_at, r.summary_generated_at
+            FROM document_reviews r
+            JOIN current c ON c.document_id = r.document_id
+            WHERE r.summary_generated_at IS DISTINCT FROM c.generated_at
+            ORDER BY r.document_id, r.doctor_id, r.review_seq DESC
+        )
+        SELECT l.document_id, l.doctor_id::text, d.name, d.department, l.action, l.reason,
+               l.created_at, l.summary_generated_at
+        FROM latest l
+        JOIN doctors d ON d.doctor_id = l.doctor_id
+        WHERE l.action IN ('verified', 'flagged_inaccurate')
+        ORDER BY l.created_at
+        """,
+        (list(document_ids),),
+    )
+    return cur.fetchall()
+
+
 def _reviewer(doctor_id, name, department, viewer_doctor_id, viewer_department) -> dict:
     if str(doctor_id) != str(viewer_doctor_id) and not may_read_note(viewer_department, department):
         return dict(RESTRICTED_REVIEWER)
@@ -106,31 +140,77 @@ def review_states(document_ids, viewer_doctor_id: str, viewer_department: str | 
     buttons they get. Every requested id gets a state, "unverified" when nobody reviewed it.
     """
     ids = [str(document_id) for document_id in dict.fromkeys(document_ids or []) if document_id]
+    return merged_review_states({document_id: [document_id] for document_id in ids},
+                                viewer_doctor_id, viewer_department)
+
+
+def merged_review_states(groups: dict[str, list[str]], viewer_doctor_id: str,
+                         viewer_department: str | None) -> dict[str, dict]:
+    """One review state per GROUP of documents — the copies of one report, uploaded more
+    than once ("report.pdf", "report (1).pdf"). A doctor who verified the copy they opened
+    has verified the report: the state shown for it is every copy's, each doctor named once.
+    A report anyone flagged on any copy is flagged. Same shape as review_states, keyed by
+    group; `mine` is "flagged" over "verified" when the viewer took both positions.
+
+    `earlier`: positions taken on an earlier version of the summary, before the document was
+    re-processed, by doctors with no position on the current one — {name, department,
+    action ("verified"/"flagged"), at, reason}. Not part of the status: they no longer apply
+    to what is on screen. Kept so that history never silently loses a verification.
+    """
     states = {
-        document_id: {"status": STATUS_UNVERIFIED, "verified_by": [], "flagged_by": [], "mine": None}
-        for document_id in ids
+        key: {"status": STATUS_UNVERIFIED, "verified_by": [], "flagged_by": [], "mine": None, "earlier": []}
+        for key in groups
     }
-    if not ids:
+    # A document may belong to SEVERAL groups: when two copies of one report are both listed
+    # (copy_groups gives each its whole copy list), each copy's group holds both. Every
+    # review counts toward every group that holds its document — mapping each document to
+    # one group showed one copy verified and the other, the same report, unverified.
+    groups_of: dict[str, list] = {}
+    for key, ids in groups.items():
+        for document_id in ids:
+            groups_of.setdefault(str(document_id), []).append(key)
+    if not groups_of:
         return states
 
     with connect_db() as conn:
         with conn.cursor() as cur:
-            rows = _current_positions(cur, ids)
+            rows = _current_positions(cur, list(groups_of))
+            earlier_rows = _earlier_positions(cur, list(groups_of))
         conn.commit()
 
+    current_doctors = {(key, str(row[1])) for row in rows for key in groups_of[str(row[0])]}
+    earlier_seen: set[tuple] = set()
+    for document_id, doctor_id, name, department, action, reason, created_at, _version in earlier_rows:
+        for key in groups_of[str(document_id)]:
+            if (key, str(doctor_id)) in current_doctors or (key, str(doctor_id)) in earlier_seen:
+                continue
+            earlier_seen.add((key, str(doctor_id)))
+            states[key]["earlier"].append({
+                **_reviewer(doctor_id, name, department, viewer_doctor_id, viewer_department),
+                "action": "verified" if action == "verified" else "flagged",
+                "reason": reason if action != "verified" else None,
+                "at": created_at.isoformat() if created_at else None,
+                "is_me": str(doctor_id) == str(viewer_doctor_id),
+            })
+
+    seen: set[tuple] = set()
     for document_id, doctor_id, name, department, action, reason, created_at in rows:
-        state = states[document_id]
-        person = {
-            **_reviewer(doctor_id, name, department, viewer_doctor_id, viewer_department),
-            "at": created_at.isoformat() if created_at else None,
-            "is_me": str(doctor_id) == str(viewer_doctor_id),
-        }
-        if action == "verified":
-            state["verified_by"].append(person)
-        else:
-            state["flagged_by"].append({**person, "reason": reason})
-        if person["is_me"]:
-            state["mine"] = "verified" if action == "verified" else "flagged"
+        for key in groups_of[str(document_id)]:
+            if (key, str(doctor_id), action) in seen:
+                continue
+            seen.add((key, str(doctor_id), action))
+            state = states[key]
+            person = {
+                **_reviewer(doctor_id, name, department, viewer_doctor_id, viewer_department),
+                "at": created_at.isoformat() if created_at else None,
+                "is_me": str(doctor_id) == str(viewer_doctor_id),
+            }
+            if action == "verified":
+                state["verified_by"].append(person)
+            else:
+                state["flagged_by"].append({**person, "reason": reason})
+            if person["is_me"] and state["mine"] != "flagged":
+                state["mine"] = "verified" if action == "verified" else "flagged"
 
     for state in states.values():
         state["status"] = (

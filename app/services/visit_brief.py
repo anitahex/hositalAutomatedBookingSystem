@@ -8,22 +8,28 @@ verified, cached). They answered the same question twice, one of them worse.
 The two now answer different questions:
 
   - AT A GLANCE (patient_overview) — "who is this patient?" Patient-level, cross-
-    department, the same for every doctor in a department. Lives on the patient page.
+    department, every doctor's notes and every document. Lives on the patient page.
   - THIS — "what do I need for THIS visit?" Appointment-level, from this doctor's point
     of view. Lives on the appointment and on the Today card. Three sections:
 
       1. Why they're here — the booking itself: the booking note, the department chosen
          versus the one the assistant suggested, what they brought. Everything here came
          from the patient, and is labelled so.
-      2. Since you last saw them — everything that arrived after THIS doctor's last signed
-         note for the patient: new documents, results that are now abnormal, colleagues'
-         signed notes, prescriptions colleagues approved. On a first visit, the recent
-         record instead, and it says which it is.
-      3. Your last plan — the Plan of that last signed note, and what was approved with it.
+      2. Documents for this appointment — the documents that belong to THIS booking, by the
+         timeline's own rule (patient_timeline._ENCOUNTER_DOCUMENTS), each with what it
+         recorded and who verified it. It used to list every document the patient had
+         uploaded for any doctor in the last year, which put a colleague's appointment's
+         reports on this one.
+      3. Your previous visits — this doctor's own earlier appointments with the patient:
+         their signed assessment and plan, what was approved, the documents brought.
+
+    Other doctors' notes and prescriptions are not here. They are on the patient page,
+    which is one click away and built for the whole record.
 
 HOW IT IS BUILT. Selection, not generation: nothing here calls a model and nothing reads
-blob storage. Every line is a row from the record with its source. One connection, a
-handful of bounded queries.
+blob storage. Every line is a row from the record with its source. The visits come from
+get_patient_timeline filtered to this doctor, so a visit reads the same in the brief and in
+the history.
 
 WHAT IT MUST NEVER CONTAIN, carried over from the brief it replaces:
 
@@ -38,28 +44,27 @@ AUTHORIZATION. The booking's own doctor only — the same rule as the booking co
 prepares for their own appointments. "Not yours" and "does not exist" are the same
 PermissionError, so this cannot be used to probe which bookings exist.
 
-AUDIT. Every read is recorded (visit_brief_viewed). The brief carries the booking
-conversation's context and may carry colleagues' notes; both are reads the existing
-routes already audit individually.
+AUDIT. Every read is recorded (visit_brief_viewed), with counts, never content.
 """
 from __future__ import annotations
 
 import json
 import logging
+from datetime import datetime
 
 from app.db.connection import connect_db
-from app.services.patient_timeline import _note_summary, may_read_note
+from app.services.patient_timeline import _clip, get_patient_timeline
 
 logger = logging.getLogger(__name__)
 
 # Bounds, so a long record cannot turn a pre-visit glance into a history dump. The full
 # history is the timeline's job.
-MAX_BRIEF_DOCUMENTS = 6
-MAX_BRIEF_NOTES = 6
-MAX_BRIEF_PRESCRIPTIONS = 5
-MAX_BRIEF_ABNORMAL = 8
-# How far back "the recent record" reaches on a first visit, when there is no "last saw".
-FIRST_VISIT_LOOKBACK_DAYS = 365
+MAX_PREVIOUS_VISITS = 10
+# Encounters read from the timeline: this one, earlier ones, cancelled ones and any later
+# the same day all count against it, so it is well above MAX_PREVIOUS_VISITS.
+_VISITS_READ = 40
+_PLAN_CHARS = 600
+CANCELLED = "cancelled"
 
 LABEL_PATIENT_REPORTS = "Patient reports"
 
@@ -116,28 +121,10 @@ def get_visit_brief(doctor_id: str, booking_id: str, viewer_department: str | No
             )
             last_note = cur.fetchone()
 
-            if last_note and last_note[1]:
-                since, first_visit = last_note[1], False
-                since_param = {"since": since, "lookback": None}
-            else:
-                since, first_visit = None, True
-                since_param = {"since": None, "lookback": FIRST_VISIT_LOOKBACK_DAYS}
-            # One predicate for "after the boundary", used by every section below: after
-            # the last signed note, or within the look-back window on a first visit.
-            after = """(
-                (%(since)s::timestamp IS NOT NULL AND {col} > %(since)s::timestamp)
-                OR (%(since)s::timestamp IS NULL
-                    AND {col} > NOW() - make_interval(days => %(lookback)s))
-            )"""
-            params = {"patient": patient_id, "me": safe_doctor, **since_param}
-
-            documents = _documents(cur, params, after)
-            abnormal = _abnormal(cur, params, after)
-            other_notes = _colleague_notes(cur, params, after, viewer_department)
-            prescriptions = _colleague_prescriptions(cur, params, after, viewer_department)
+            since = last_note[1] if last_note and last_note[1] else None
             last_plan = _last_plan(cur, last_note)
-            # Whether the patient has ANY processed document, not only new ones — it decides
-            # whether the brief offers the AI nutritionist.
+            # Whether the patient has ANY processed document — the older rule for offering
+            # food guidance, kept for a page that predates nutrition_focus.
             cur.execute(
                 "SELECT EXISTS (SELECT 1 FROM document_catalog WHERE user_id = %s AND ingestion_status = 'complete')",
                 (patient_id,),
@@ -145,19 +132,10 @@ def get_visit_brief(doctor_id: str, booking_id: str, viewer_department: str | No
             has_documents = bool(cur.fetchone()[0])
         conn.commit()
 
-    # Who has verified or reported each document — shared across the patient's doctors
-    # (document_reviews). A result read from a document someone reported inaccurate is
-    # marked, so it is not taken at face value in the brief.
-    from app.services.document_reviews import STATUS_FLAGGED, review_states
-
-    states = review_states(
-        [doc["document_id"] for doc in documents] + [row["document_id"] for row in abnormal],
-        doctor_id, viewer_department,
-    )
-    for doc in documents:
-        doc["review"] = states.get(doc["document_id"])
-    for row in abnormal:
-        row["source_reported_inaccurate"] = (states.get(row["document_id"]) or {}).get("status") == STATUS_FLAGGED
+    # After the block: the timeline opens its own connections, and a connect_db() nested on
+    # one thread hands back the SAME connection (app/db/connection.py).
+    documents, previous = _this_and_previous_visits(
+        doctor_id, patient_id, str(safe_booking), start_time, viewer_department)
 
     brief = {
         "booking_id": str(safe_booking),
@@ -167,20 +145,140 @@ def get_visit_brief(doctor_id: str, booking_id: str, viewer_department: str | No
         "appointment_start": start_time.isoformat() if start_time else None,
         "appointment_status": status,
         "why": _why(booking_id, booking_note),
+        "this_visit": {"documents": documents},
+        "previous_visits": previous,
         "since": {
-            "first_visit": first_visit,
+            # A first visit WITH THIS DOCTOR: no earlier appointment with them that took
+            # place (cancelled ones did not), whether or not a note was signed for it.
+            "first_visit": not previous,
+            # This doctor's last signed note before this appointment, when there is one.
             "boundary": since.isoformat() if since else None,
-            "lookback_days": FIRST_VISIT_LOOKBACK_DAYS if first_visit else None,
-            "documents": documents,
-            "abnormal": abnormal,
-            "colleague_notes": other_notes,
-            "colleague_prescriptions": prescriptions,
         },
         "last_plan": last_plan,
         "has_documents": has_documents,
     }
     _audit_brief_view(doctor_id, brief)
     return brief
+
+
+def _instant(value) -> datetime | None:
+    """A timeline timestamp (ISO text) or a database one, comparable with each other."""
+    if value is None:
+        return None
+    if isinstance(value, str):
+        try:
+            value = datetime.fromisoformat(value)
+        except ValueError:
+            return None
+    return value.replace(tzinfo=None) if value.tzinfo else value
+
+
+def _collapse_copies(documents: list[dict]) -> list[dict]:
+    """One row per distinct document: the same report uploaded twice for one appointment is
+    one row, "uploaded 2 times". Its review is already merged across copies by the timeline."""
+    from app.services.document_catalog import _content_type_for
+
+    seen: dict = {}
+    for doc in documents:
+        key = (doc.get("original_filename"), doc.get("clinical_date"))
+        if key in seen:
+            seen[key]["copies"] += 1
+            continue
+        seen[key] = {
+            **doc,
+            "document_type": doc.get("document_type") or "other",
+            # The viewer labels the file from this; the same field the documents list sends.
+            "content_type": _content_type_for(doc.get("original_filename")),
+            "copies": 1,
+        }
+    return list(seen.values())
+
+
+def _this_and_previous_visits(doctor_id, patient_id, booking_id, start_time, viewer_department):
+    """(documents of THIS booking, this doctor's earlier visits newest first).
+
+    Both come from the timeline filtered to this doctor, so which documents belong to a
+    visit, and what each recorded, are decided in one place. A visit after this one — or
+    later the same day — is not "previous": a past appointment's brief reads as it did then.
+    """
+    timeline = get_patient_timeline(
+        doctor_id, patient_id, viewer_department,
+        other_doctor_id=doctor_id,
+        date_to=start_time.date().isoformat() if start_time else None,
+        limit=_VISITS_READ,
+    )
+    starts = _instant(start_time)
+    documents: list[dict] = []
+    previous: list[dict] = []
+    for encounter in timeline["encounters"]:
+        if encounter["booking_id"] == booking_id:
+            documents = _collapse_copies(encounter.get("documents") or [])
+            continue
+        began = _instant(encounter.get("start_time"))
+        if encounter.get("status") == CANCELLED or not began or not starts or began >= starts:
+            continue
+        if len(previous) < MAX_PREVIOUS_VISITS:
+            previous.append(encounter)
+    return documents, _previous_visits(previous)
+
+
+def _previous_visits(encounters: list[dict]) -> list[dict]:
+    """The brief's shape for each earlier visit: the timeline's encounter, with the whole
+    signed plan and every item approved at that visit (the timeline carries only the first
+    two sentences of the plan and the prescription)."""
+    if not encounters:
+        return []
+    booking_ids = [encounter["booking_id"] for encounter in encounters]
+    with connect_db() as conn:
+        with conn.cursor() as cur:
+            # The same consult the timeline reads for a visit: its latest, not discarded.
+            cur.execute(
+                """
+                SELECT b.booking_id::text, lc.id, sn.plan
+                FROM appointment_bookings b
+                LEFT JOIN LATERAL (
+                    SELECT c.id FROM consultations c
+                    WHERE c.booking_id = b.booking_id AND c.status <> 'discarded'
+                    ORDER BY c.created_at DESC
+                    LIMIT 1
+                ) lc ON TRUE
+                LEFT JOIN soap_notes sn ON sn.consultation_id = lc.id AND sn.status = 'signed'
+                WHERE b.booking_id = ANY(%s::uuid[])
+                """,
+                (booking_ids,),
+            )
+            consults = {row[0]: (row[1], row[2]) for row in cur.fetchall()}
+            consult_ids = [consult for consult, _plan in consults.values() if consult]
+            approved: dict = {}
+            if consult_ids:
+                cur.execute(
+                    """SELECT consultation_id, kind, content FROM consult_clinical_items
+                       WHERE consultation_id = ANY(%s::uuid[]) AND status = 'approved' AND content <> ''
+                       ORDER BY consultation_id, kind""",
+                    (consult_ids,),
+                )
+                for consult, kind, content in cur.fetchall():
+                    approved.setdefault(str(consult), []).append({"kind": kind, "content": content})
+        conn.commit()
+
+    visits = []
+    for encounter in encounters:
+        consult, plan = consults.get(encounter["booking_id"], (None, None))
+        note = encounter.get("note")
+        restricted = bool(encounter.get("restricted"))
+        if note and not note.get("restricted"):
+            note = {**note, "plan": _clip(plan, _PLAN_CHARS) if plan else note.get("plan")}
+        visits.append({
+            "booking_id": encounter["booking_id"],
+            "start_time": encounter.get("start_time"),
+            "status": encounter.get("status"),
+            "restricted": restricted,
+            # None: nothing was signed for this visit — said, not hidden.
+            "note": note,
+            "approved_items": [] if restricted or not consult else approved.get(str(consult), []),
+            "documents": _collapse_copies(encounter.get("documents") or []),
+        })
+    return visits
 
 
 def _why(booking_id, booking_note) -> dict:
@@ -203,139 +301,6 @@ def _why(booking_id, booking_note) -> dict:
             "documents_brought": len(snapshot.get("document_ids") or []),
         })
     return why
-
-
-def _documents(cur, params, after) -> list[dict]:
-    """New documents, one row per distinct document. The same report uploaded three times
-    is one document here — it was three identical lines in the brief this replaces."""
-    from app.services.document_catalog import _content_type_for
-
-    cur.execute(
-        f"""
-        SELECT dc.document_id, dc.original_filename, dc.document_type, dc.clinical_date,
-               dc.created_at, ds.verification
-        FROM document_catalog dc
-        LEFT JOIN document_summaries ds ON ds.document_id = dc.document_id
-        WHERE dc.user_id = %(patient)s AND dc.ingestion_status = 'complete'
-          AND {after.format(col="dc.created_at::timestamp")}
-        ORDER BY dc.created_at DESC
-        """,
-        params,
-    )
-    seen: dict = {}
-    for document_id, filename, document_type, clinical_date, created_at, verification in cur.fetchall():
-        key = (filename, clinical_date)
-        if key in seen:
-            seen[key]["copies"] += 1
-            continue
-        seen[key] = {
-            "document_id": document_id,
-            "original_filename": filename,
-            "document_type": document_type or "other",
-            "clinical_date": clinical_date.isoformat() if clinical_date else None,
-            "uploaded_at": created_at.isoformat() if created_at else None,
-            "summary_verification": verification,
-            # The viewer labels the file from this; the same field the documents list sends.
-            "content_type": _content_type_for(filename),
-            "copies": 1,
-        }
-        if len(seen) >= MAX_BRIEF_DOCUMENTS:
-            break
-    return list(seen.values())
-
-
-def _abnormal(cur, params, after) -> list[dict]:
-    """Results that are abnormal NOW (the latest reading of each measurement) and arrived
-    after the boundary. Same "latest reading" rule as the overview, with the same
-    tie-break, so the two never disagree about whether a result is abnormal."""
-    cur.execute(
-        f"""
-        SELECT canonical_name, value_num, unit, abnormal, clinical_date, document_id
-        FROM (
-            SELECT DISTINCT ON (df.canonical_name)
-                   df.canonical_name, df.value_num, df.unit, df.abnormal, df.clinical_date,
-                   df.document_id, dc.created_at
-            FROM document_findings df
-            JOIN document_catalog dc ON dc.document_id = df.document_id
-            WHERE df.patient_id = %(patient)s AND df.canonical_name IS NOT NULL
-            ORDER BY df.canonical_name, df.clinical_date DESC NULLS LAST,
-                     (df.abnormal = 'unknown'), df.created_at DESC
-        ) latest
-        WHERE abnormal IN ('low', 'high')
-          AND {after.format(col="latest.created_at::timestamp")}
-        ORDER BY clinical_date DESC NULLS LAST, canonical_name
-        LIMIT {MAX_BRIEF_ABNORMAL}
-        """,
-        params,
-    )
-    return [
-        {
-            "name": name,
-            "value": float(value) if value is not None else None,
-            "unit": unit,
-            "flag": flag,
-            "clinical_date": clinical_date.isoformat() if clinical_date else None,
-            "document_id": document_id,
-        }
-        for name, value, unit, flag, clinical_date, document_id in cur.fetchall()
-    ]
-
-
-def _colleague_notes(cur, params, after, viewer_department) -> list[dict]:
-    """Colleagues' SIGNED notes since. A restricted specialty's encounter is listed with its
-    content withheld — the same rule the timeline applies."""
-    cur.execute(
-        f"""
-        SELECT sn.consultation_id, sn.signed_at, sn.assessment, sn.plan, d.name, d.department
-        FROM soap_notes sn
-        JOIN doctors d ON d.doctor_id = sn.doctor_id
-        WHERE sn.patient_id = %(patient)s AND sn.doctor_id <> %(me)s AND sn.status = 'signed'
-          AND {after.format(col="sn.signed_at")}
-        ORDER BY sn.signed_at DESC
-        LIMIT {MAX_BRIEF_NOTES}
-        """,
-        params,
-    )
-    notes = []
-    for consultation_id, signed_at, assessment, plan, doctor_name, note_department in cur.fetchall():
-        readable = may_read_note(viewer_department, note_department)
-        notes.append({
-            "consultation_id": str(consultation_id),
-            "signed_at": signed_at.isoformat() if signed_at else None,
-            "doctor_name": doctor_name,
-            "department": note_department,
-            "restricted": not readable,
-            "summary": _note_summary((assessment, plan)) if readable else None,
-        })
-    return notes
-
-
-def _colleague_prescriptions(cur, params, after, viewer_department) -> list[dict]:
-    """Prescriptions colleagues approved since — the medication a patient may now be on
-    that this doctor did not prescribe. Withheld under the same restriction as notes."""
-    cur.execute(
-        f"""
-        SELECT ci.content, ci.approved_at, d.name, d.department
-        FROM consult_clinical_items ci
-        JOIN doctors d ON d.doctor_id = ci.doctor_id
-        WHERE ci.patient_id = %(patient)s AND ci.doctor_id <> %(me)s
-          AND ci.kind = 'prescription' AND ci.status = 'approved'
-          AND {after.format(col="COALESCE(ci.approved_at, ci.updated_at)")}
-        ORDER BY COALESCE(ci.approved_at, ci.updated_at) DESC
-        LIMIT {MAX_BRIEF_PRESCRIPTIONS}
-        """,
-        params,
-    )
-    return [
-        {
-            "content": content if may_read_note(viewer_department, item_department) else None,
-            "restricted": not may_read_note(viewer_department, item_department),
-            "approved_at": approved_at.isoformat() if approved_at else None,
-            "doctor_name": doctor_name,
-            "department": item_department,
-        }
-        for content, approved_at, doctor_name, item_department in cur.fetchall()
-    ]
 
 
 def _last_plan(cur, last_note) -> dict | None:
@@ -361,13 +326,11 @@ def _audit_brief_view(doctor_id: str, brief: dict) -> None:
     """Every read, with counts of what was shown — never the content itself. Never fails
     the read: a broken audit write must not stop a doctor preparing for a visit, but it is
     logged loudly."""
-    since = brief["since"]
     metadata = {
         "booking_id": brief["booking_id"],
         "patient_id": brief["patient_id"],
-        "colleague_notes": len(since["colleague_notes"]),
-        "restricted_notes": sum(1 for note in since["colleague_notes"] if note["restricted"]),
-        "documents": len(since["documents"]),
+        "documents": len(brief["this_visit"]["documents"]),
+        "previous_visits": len(brief["previous_visits"]),
     }
     try:
         with connect_db() as conn:

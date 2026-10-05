@@ -194,6 +194,17 @@ def test_the_structured_medication_finding_is_listed_and_labelled(world):
     assert medications[0]["source_id"] == world["rx"]
 
 
+def test_the_same_prescription_uploaded_twice_lists_its_medicines_once(world):
+    """Seen in live data: a re-uploaded prescription put the same medicine list on the card
+    twice, once "verified" and once "unverified", as if they were two prescriptions."""
+    with connect_db() as conn:
+        with conn.cursor() as cur:
+            copy = _document(cur, world["patient"], "prescription-photo (1).png", "prescription", date(2026, 9, 20))
+            _finding(cur, copy, world["patient"], "Medications", "Tab Gabantin NT 400/100 BD x 15 days")
+        conn.commit()
+    assert [m["text"] for m in _facts(world, "medication")] == ["Tab Gabantin NT 400/100 BD x 15 days"]
+
+
 def test_a_medication_read_off_a_photo_says_so(world):
     """Two AI passes over the same photo have read one drug two ways. The doctor is told."""
     assert _facts(world, "medication")[0]["scanned"] is True

@@ -500,7 +500,15 @@ RULES, all of which are checked by code afterwards:
 - Keep the label's meaning. A fact labelled "Patient reports" is what the patient said,
   not a finding. One labelled "Reported, unverified" is a medication from another clinic's
   document, not something prescribed here. Never restate either as established fact.
-- At most 8 lines, ideally 5 to 6. Clinical register, no filler, no reassurance, no advice.
+- Each fact has a kind: "concern" (the patient's own words), "conclusion" (a doctor's signed
+  assessment and plan), "medication", "finding" (what one uploaded report shows), "visit".
+  Keep conclusions from different doctors on separate lines; findings from one report may
+  share a line with the conclusion they bear on.
+- Do NOT add doctors, departments, documents, dates of documents, or whether anything was
+  verified or reported inaccurate. The page shows each line's sources and their review
+  status beside it, from the record; restating them risks restating them wrongly. A name or
+  date that is part of a fact's own text (a visit fact names its doctor) is kept as written.
+- At most 10 lines, ideally 5 to 8. Clinical register, no filler, no reassurance, no advice.
 
 Return JSON only:
 {"lines": [{"text": "...", "fact_ids": ["f1", "f2"]}]}
@@ -520,7 +528,7 @@ async def gpt4o_overview_phrasing(*, facts: "list[dict]") -> "dict[str, Any]":
 
     client = _get_openai_client()
     payload = [
-        {"id": fact["id"], "text": fact["text"], "label": fact.get("label")}
+        {"id": fact["id"], "kind": fact.get("kind"), "text": fact["text"], "label": fact.get("label")}
         for fact in facts
     ]
     logger.info("gpt4o_overview_phrasing: phrasing %d facts", len(payload))
@@ -531,7 +539,9 @@ async def gpt4o_overview_phrasing(*, facts: "list[dict]") -> "dict[str, Any]":
             {"role": "system", "content": _OVERVIEW_SYSTEM},
             {"role": "user", "content": json.dumps({"facts": payload}, ensure_ascii=False)},
         ],
-        max_completion_tokens=700,
+        # Up to 10 lines with citations; a reply cut off at the cap is invalid JSON and the
+        # whole card falls back, as SOAP notes did when their cap was too low.
+        max_completion_tokens=1400,
         temperature=0,
         response_format={"type": "json_object"},
     )
@@ -570,7 +580,9 @@ async def gpt4o_nutrition_entry(*, kind: str, term: str, direction: str, retry_r
             {"role": "system", "content": NUTRITION_SYSTEM},
             {"role": "user", "content": user},
         ],
-        max_completion_tokens=600,
+        # v2 entries carry dishes for four regions and two diets; a reply cut off at the cap
+        # is invalid JSON and the topic gets no guidance at all.
+        max_completion_tokens=2000,
         temperature=0,
         response_format={"type": "json_object"},
     )

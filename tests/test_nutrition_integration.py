@@ -12,11 +12,30 @@ from __future__ import annotations
 
 import asyncio
 import uuid
+from datetime import datetime, timedelta
 
 import pytest
 
 from app.db.connection import connect_db
 from app.services import nutrition
+
+# A v2 entry also carries real dishes for every region and diet, swaps, habits and a plain
+# sentence for the patient; the rules tested here are the same for every part.
+MEALS = {
+    region: {
+        "veg": [{"meal": "breakfast", "dish": "Ragi dosa with coconut chutney"},
+                {"meal": "dinner", "dish": "Mushroom masala with roti"}],
+        "non_veg": [{"meal": "breakfast", "dish": "Egg bhurji with whole-wheat roti"},
+                    {"meal": "lunch", "dish": "Fish curry with rice"}],
+    }
+    for region in ("north", "south", "east", "west")
+}
+V2 = {
+    "why": "Vitamin D helps your bones and muscles make good use of calcium.",
+    "meals": MEALS,
+    "swaps": [{"instead_of": "white bread", "try": "whole-wheat roti"}],
+    "habits": ["Sit in the morning sun on the balcony with your tea."],
+}
 
 VALID = {
     "nutrient_focus": "Vitamin D, with calcium to use it well.",
@@ -24,6 +43,7 @@ VALID = {
     "non_veg_foods": ["Salmon", "Egg yolk"],
     "limit": [],
     "note": "",
+    **V2,
 }
 
 
@@ -215,3 +235,184 @@ def test_a_term_that_failed_twice_is_not_retried_on_every_request(model, patient
     _for_document(patient, document)
     _for_document(patient, document)
     assert len(model["calls"]) == 2, "the second request should not have asked the model again"
+
+
+
+# ---- the heading: what the guidance is for, known before it is opened ----
+
+FOCUS_RESULTS = [
+    ("Vitamin D", "Vitamin D (25-OH)", "13.8 ng/mL", "low"),
+    ("Total Cholesterol", "Total Cholesterol", "204 mg/dL", "high"),
+    ("HDL Cholesterol", "HDL Cholesterol", "38 mg/dL", "low"),
+]
+
+
+def test_the_heading_needs_no_model_and_names_what_the_guidance_is_for(model, patients):
+    patient, document = patients(FOCUS_RESULTS)
+    heading = nutrition.nutrition_focus_for_document(patient, document)
+    assert model["calls"] == []          # named before anything is generated
+    guidance = _for_document(patient, document)
+    # The same selection names it and writes it: they cannot disagree.
+    assert heading == guidance["focus"] == ["Abnormal cholesterol & lipids", "Low Vitamin D"]
+    assert {item["term"] for item in guidance["items"]} == {"Blood lipids", "Vitamin D"}
+
+
+def test_a_document_reported_inaccurate_has_no_heading(model, patients):
+    patient, document = patients(FOCUS_RESULTS, flagged_by_doctor=True)
+    assert nutrition.nutrition_focus_for_document(patient, document) == []
+    assert _for_document(patient, document)["focus"] == []
+
+
+def test_a_document_with_nothing_out_of_range_has_no_heading(model, patients):
+    patient, document = patients([("Vitamin D", "Vitamin D (25-OH)", "41 ng/mL", "normal")])
+    assert nutrition.nutrition_focus_for_document(patient, document) == []
+
+
+def test_an_appointment_that_is_not_the_doctors_has_no_heading(model):
+    assert nutrition.nutrition_focus_for_appointment(str(uuid.uuid4()), str(uuid.uuid4())) == []
+    assert nutrition.nutrition_focus_for_appointment("not-a-doctor", "not-a-booking") == []
+
+
+# ---- a visit's guidance: what the patient brought to THIS doctor ----
+
+def _scope_booking(cur, doctor_id, patient_id, when, *, note=None, status=None):
+    cur.execute(
+        """INSERT INTO appointment_slots (doctor_id, start_time, end_time, is_booked, booked_by_patient_id)
+           VALUES (%s, %s, %s, TRUE, %s) RETURNING slot_id""",
+        (doctor_id, when, when + timedelta(minutes=30), patient_id),
+    )
+    slot_id = cur.fetchone()[0]
+    cur.execute(
+        """INSERT INTO appointment_bookings (slot_id, doctor_id, patient_id, start_time, end_time,
+                                             status, booking_note)
+           VALUES (%s, %s, %s, %s, %s, %s, %s) RETURNING booking_id""",
+        (slot_id, doctor_id, patient_id, when, when + timedelta(minutes=30),
+         status or ("booked" if when > datetime.now() else "completed"), note),
+    )
+    return str(cur.fetchone()[0])
+
+
+def _scope_document(cur, patient_id, name, flag, *, booking=None, filename=None):
+    document = str(uuid.uuid4())
+    cur.execute(
+        """INSERT INTO document_catalog (document_id, user_id, session_id, document_type, clinical_date,
+                                         blob_summary_path, ingestion_status, original_filename, booking_id)
+           VALUES (%s, %s, 'test', 'blood_report', '2026-09-20', 'x', 'complete', %s, %s)""",
+        (document, patient_id, filename or f"{name}.pdf", booking),
+    )
+    cur.execute(
+        """INSERT INTO document_findings (document_id, patient_id, printed_name, canonical_name,
+                                          value_text, abnormal, clinical_date, page_no)
+           VALUES (%s, %s, %s, %s, '1', %s, '2026-09-20', 1)""",
+        (document, patient_id, name, name, flag),
+    )
+    return document
+
+
+@pytest.fixture
+def visits():
+    """One patient. With ME: an earlier visit (a report tied by document_catalog.booking_id,
+    a note saying "tired", a booking chat saying "acidity"), a cancelled one and a later one,
+    each with something that must NOT count, and this appointment ("knee pain"). With a
+    COLLEAGUE: a visit with a cholesterol report brought through its booking chat. And a
+    report uploaded with no appointment at all."""
+    _skip_if_no_database()
+    now = datetime.now()
+    made = {}
+    with connect_db() as conn:
+        with conn.cursor() as cur:
+            cur.execute("INSERT INTO doctors (name, department, experience_years, is_active) "
+                        "VALUES ('Dr. Scope Me', 'Orthopedics', 5, TRUE) RETURNING doctor_id")
+            me = made["me"] = str(cur.fetchone()[0])
+            cur.execute("INSERT INTO doctors (name, department, experience_years, is_active) "
+                        "VALUES ('Dr. Scope Colleague', 'Cardiology', 5, TRUE) RETURNING doctor_id")
+            colleague = made["colleague"] = str(cur.fetchone()[0])
+            cur.execute("INSERT INTO users (email, password_hash) VALUES (%s, 'x') RETURNING user_id",
+                        (f"scope-{uuid.uuid4().hex[:10]}@example.com",))
+            patient = made["patient"] = str(cur.fetchone()[0])
+
+            made["earlier_at"] = now - timedelta(days=10)
+            earlier = made["earlier"] = _scope_booking(cur, me, patient, made["earlier_at"],
+                                                       note="Feeling tired all week")
+            made["mine"] = _scope_document(cur, patient, "Vitamin D", "low", booking=earlier)
+            session = str(uuid.uuid4())
+            t0 = made["earlier_at"] - timedelta(days=1)
+            cur.execute("INSERT INTO chat_messages (patient_id, chat_session_id, role, text, created_at) "
+                        "VALUES (%s, %s, 'patient', 'I get acidity after meals', %s)", (patient, session, t0))
+            cur.execute(
+                """INSERT INTO booking_context_snapshots (booking_id, patient_id, chat_session_id,
+                                                          transcript_from_at, transcript_to_at, transcript_message_count)
+                   VALUES (%s, %s, %s, %s, %s, 1)""",
+                (earlier, patient, session, t0, t0))
+
+            cancelled = _scope_booking(cur, me, patient, now - timedelta(days=3), note="constipation", status="cancelled")
+            _scope_document(cur, patient, "Ferritin", "low", booking=cancelled)
+            _scope_booking(cur, me, patient, now + timedelta(days=9), note="hair fall")
+
+            theirs = _scope_booking(cur, colleague, patient, now - timedelta(days=5), note="bloating")
+            echo = _scope_document(cur, patient, "Total Cholesterol", "high")
+            cur.execute("INSERT INTO booking_context_snapshots (booking_id, patient_id, document_ids) "
+                        "VALUES (%s, %s, %s::jsonb)", (theirs, patient, f'["{echo}"]'))
+            _scope_document(cur, patient, "HbA1c", "high")
+
+            made["booking"] = _scope_booking(cur, me, patient, now + timedelta(days=1), note="knee pain since Monday")
+        conn.commit()
+    try:
+        yield made
+    finally:
+        with connect_db() as conn:
+            with conn.cursor() as cur:
+                cur.execute("DELETE FROM chat_messages WHERE patient_id = %s", (patient,))
+                cur.execute("DELETE FROM document_findings WHERE patient_id = %s", (patient,))
+                cur.execute("DELETE FROM document_reviews WHERE patient_id = %s", (patient,))
+                cur.execute("DELETE FROM document_catalog WHERE user_id = %s", (patient,))
+                cur.execute("DELETE FROM consult_audit_log WHERE metadata->>'patient_id' = %s", (patient,))
+                cur.execute("DELETE FROM doctors WHERE doctor_id = ANY(%s::uuid[])", ([me, colleague],))
+                cur.execute("DELETE FROM users WHERE user_id = %s", (patient,))
+            conn.commit()
+
+
+def _inputs(visits):
+    return nutrition._appointment_inputs(visits["me"], visits["booking"])
+
+
+def test_a_visits_guidance_reads_only_the_reports_brought_to_this_doctor(model, visits):
+    _patient, _booking, _excluded, results, _sources, earlier = _inputs(visits)
+    # Mine from the earlier visit; not the colleague's cholesterol, the loose HbA1c, or the
+    # report from the visit that was cancelled.
+    assert [r["canonical_name"] for r in results] == ["Vitamin D"]
+    assert earlier == 1
+
+
+def test_symptoms_come_from_this_and_my_earlier_bookings_with_where_they_were_said(model, visits):
+    *_, sources, _earlier = _inputs(visits)
+    when = visits["earlier_at"]
+    assert sources == {
+        "joint or back pain": "booking note",
+        "fatigue": f"booking note, {when.day} {when:%b}",
+        "acidity or heartburn": f"booking chat, {when.day} {when:%b}",
+    }
+
+
+def test_the_visits_heading_is_what_opens(model, visits):
+    heading = nutrition.nutrition_focus_for_appointment(visits["me"], visits["booking"])
+    guidance = asyncio.run(nutrition.guidance_for_appointment(visits["me"], visits["booking"]))
+    assert heading == guidance["focus"]
+    assert "Low Vitamin D" in heading and not any("cholesterol" in label for label in heading)
+    assert guidance["earlier_visits"] == 1
+
+
+def test_a_report_flagged_on_another_copy_is_left_out(model, visits):
+    """The page labels a report by every copy (document_reviews.merged_review_states): one
+    flagged anywhere is flagged, so its results must not shape the guidance either."""
+    with connect_db() as conn:
+        with conn.cursor() as cur:
+            copy = _scope_document(cur, visits["patient"], "Vitamin D", "low", filename="Vitamin D.pdf")
+            cur.execute(
+                """INSERT INTO document_reviews (document_id, patient_id, doctor_id, action, reason)
+                   VALUES (%s, %s, %s, 'flagged_inaccurate', 'Values misread')""",
+                (copy, visits["patient"], visits["colleague"]),
+            )
+        conn.commit()
+    _patient, _booking, excluded, results, _sources, _earlier = _inputs(visits)
+    assert visits["mine"] in excluded and results == []

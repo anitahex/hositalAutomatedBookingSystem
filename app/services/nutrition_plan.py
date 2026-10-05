@@ -27,6 +27,10 @@ import re
 from app.db.connection import connect_db
 from app.db.schema_once import once_per_process
 
+
+def _iso(value):
+    return value.isoformat() if hasattr(value, "isoformat") else value
+
 logger = logging.getLogger(__name__)
 
 DIETS = ("veg", "non_veg")
@@ -87,21 +91,96 @@ def food_key(food: str) -> str:
     return key
 
 
+# Words that say nothing about WHICH tip it is.
+_TIP_FILLER = frozenset({
+    "a", "an", "the", "and", "or", "of", "to", "in", "on", "for", "with", "your", "you", "their",
+    "its", "it", "as", "at", "by", "from", "into", "be", "is", "are", "can", "help", "helps",
+    "include", "add", "use", "try", "have", "eat", "enjoy", "make", "some", "more", "daily",
+})
+TIP_SIMILARITY = 0.5
+
+
+def _tip_words(text: str) -> set[str]:
+    return set(re.findall(r"[a-z0-9]+", text.lower())) - _TIP_FILLER
+
+
 def _distinct_tips(notes) -> list[str]:
     """Each tip once. Guidance for related results often carries the same tip, worded the
-    same or nearly ("Include turmeric and ginger in cooking for their anti-inflammatory
-    properties" / "... for anti-inflammatory benefits"): same first five words, same tip."""
-    kept, seen = [], set()
+    same or nearly: "Include turmeric and ginger in cooking for their anti-inflammatory
+    properties" / "... for anti-inflammatory benefits"; "Add turmeric and ginger to your
+    dishes …" / "Use turmeric and ginger in cooking …"; "Stay hydrated with water throughout
+    the day" / "... and herbal teas". Same tip: the same first four words, or at least half of
+    the words that carry meaning in common (filler such as "include", "your" left out)."""
+    kept, seen_keys, seen_words = [], set(), []
     for note in notes:
         text = " ".join(str(note or "").split())
         if not text:
             continue
-        key = " ".join(re.findall(r"[a-z0-9]+", text.lower())[:5])
-        if key in seen:
+        key = " ".join(re.findall(r"[a-z0-9]+", text.lower())[:4])
+        words = _tip_words(text)
+        if key in seen_keys or any(
+            words and other and len(words & other) / len(words | other) >= TIP_SIMILARITY for other in seen_words
+        ):
             continue
-        seen.add(key)
+        seen_keys.add(key)
+        seen_words.append(words)
         kept.append(text)
     return kept
+
+
+MAX_PAGE_SWAPS = 6
+# A theme of three topics brought eleven swaps to one handout section; four read well.
+MAX_THEME_SWAPS = 4
+MAX_GOOD_TO_INCLUDE = 10
+MAX_SEEDS_SHOWN = 2
+
+
+def _few_seeds(foods: list[str], limit: int = MAX_SEEDS_SHOWN) -> list[str]:
+    """At most `limit` seeds, in rank order. Each topic's guidance holds at most two, but nine
+    topics can each name flax and chia — ranked together, seeds crowded out everyday food,
+    which is exactly the "textbook" list this page replaced."""
+    from app.services.nutrition import _SEED
+
+    kept, seeds = [], 0
+    for food in foods:
+        if _SEED.search(food):
+            if seeds >= limit:
+                continue
+            seeds += 1
+        kept.append(food)
+    return kept
+
+
+def _distinct_swaps(swaps) -> list[dict]:
+    """Each swap once, by what it replaces: "white rice → brown rice" said by three topics is
+    one swap."""
+    kept, seen = [], set()
+    for swap in swaps:
+        key = food_key(swap.get("instead_of") or "")
+        if key and key not in seen:
+            seen.add(key)
+            kept.append({"instead_of": swap["instead_of"], "try": swap["try"]})
+    return kept
+
+
+def _in_turn(lists: list[list]) -> list:
+    """The first of each list, then the second of each, and so on: a cap then keeps something
+    from every topic rather than all of the first one's."""
+    longest = max((len(values) for values in lists), default=0)
+    return [values[index] for index in range(longest) for values in lists if index < len(values)]
+
+
+def _swaps_by_diet(swaps: list[dict]) -> dict[str, list[dict]]:
+    """Swaps are written for both diets at once; the vegetarian list keeps only those with no
+    meat, fish or egg on either side. Live guidance offered "plain dosa → egg dosa" to every
+    patient with low B12, vegetarians included — and "red meat curry → chicken curry" means
+    nothing to someone who eats neither."""
+    from app.services.nutrition import _NON_VEG
+
+    return {
+        "veg": [s for s in swaps if not _NON_VEG.search(s["instead_of"]) and not _NON_VEG.search(s["try"])],
+        "non_veg": list(swaps),
+    }
 
 
 def _rank(foods_per_item: list[list[str]]) -> list[dict]:
@@ -123,7 +202,10 @@ def _rank(foods_per_item: list[list[str]]) -> list[dict]:
             if key not in shown or len(food) < len(shown[key]):
                 shown[key] = food
     ranked = sorted(order, key=lambda key: (-counts[key], order.index(key)))
-    return [{"food": shown[key], "count": counts[key]} for key in ranked]
+    # Each topic's guidance capitalises its own way ("almonds" next to "Walnuts"); a list
+    # gathered from several reads as one only if they agree. The first letter only:
+    # "Vitamin D-fortified milk" and "Omega-3 rich fish" keep their own capitals.
+    return [{"food": shown[key][:1].upper() + shown[key][1:], "count": counts[key]} for key in ranked]
 
 
 # ---- the sample day ----
@@ -175,6 +257,60 @@ _MEALS = [
     ("evening", "Evening", [("drink", 1), ("fruit", 1), ("nuts", 1)]),
     ("dinner", "Dinner", [("protein", 1), ("vegetable", 2), ("spice", 1)]),
 ]
+
+
+REGIONS = ("north", "south", "east", "west")
+REGION_CHOICES = ("all", *REGIONS)
+REGION_LABELS = {"all": "All India", "north": "North Indian", "south": "South Indian",
+                 "east": "East Indian", "west": "West Indian"}
+MEAL_SLOTS = (("breakfast", "Breakfast"), ("lunch", "Lunch"), ("snack", "Snack"), ("dinner", "Dinner"))
+
+
+def _dish_key(dish: str) -> str:
+    """The dish itself, without what it is served with: "Rajma with brown rice and a squeeze of
+    lemon" and "Rajma with brown rice" are both rajma — one day should not serve it twice."""
+    return " ".join(dish.lower().split(" with ")[0].split())
+
+
+def dish_day(ordered: list[tuple[dict, str]], diet: str, region: str) -> list[dict]:
+    """A day of real dishes for one diet and region, from the guidance's own dishes (v2).
+
+    `ordered` is (item, theme title), most important theme first. Each meal takes the first
+    unused dish for its slot, starting one topic further along at each meal so that several
+    themes contribute; "all" prefers a different region at each meal. Deterministic: the same
+    guidance always gives the same day. A non-vegetarian dish never reaches a vegetarian day
+    — the entry check forbids it, and it is checked again here.
+    """
+    from app.services.nutrition import _NON_VEG
+
+    if not ordered:
+        return []
+    used: set[str] = set()
+    day = []
+    for index, (slot, label) in enumerate(MEAL_SLOTS):
+        regions = ([REGIONS[index % len(REGIONS)]] + [r for r in REGIONS if r != REGIONS[index % len(REGIONS)]]
+                   if region == "all" else [region])
+        chosen = None
+        for offset in range(len(ordered)):
+            item, title = ordered[(index + offset) % len(ordered)]
+            for place in regions:
+                for meal in ((item.get("meals") or {}).get(place) or {}).get(diet) or []:
+                    dish = meal.get("dish") or ""
+                    if meal.get("meal") != slot or _dish_key(dish) in used:
+                        continue
+                    if diet == "veg" and _NON_VEG.search(dish):
+                        continue
+                    chosen = (dish, title, place)
+                    break
+                if chosen:
+                    break
+            if chosen:
+                break
+        if chosen:
+            used.add(_dish_key(chosen[0]))
+            day.append({"meal": slot, "label": label, "dish": chosen[0], "foods": [chosen[0]],
+                        "helps": [chosen[1]], "region": chosen[2]})
+    return day
 
 
 def sample_day(ranked: list[dict], diet: str, themes_by_food: dict[str, list[str]]) -> list[dict]:
@@ -235,10 +371,17 @@ def organize(guidance: dict, discussions: dict | None = None) -> dict:
                 for item in theme_items for b in item.get("because") or [] if b.get("symptom")
             },
             "terms": [item["term"] for item in theme_items],
-            "foods": {diet: [e["food"] for e in _rank([item.get(_DIET_KEY[diet]) or [] for item in theme_items])]
+            "foods": {diet: _few_seeds([e["food"] for e in _rank([item.get(_DIET_KEY[diet]) or [] for item in theme_items])])
                       for diet in DIETS},
             "go_easy": [e["food"] for e in _rank([item.get("limit") or [] for item in theme_items])],
-            "tips": _distinct_tips(item.get("note") for item in theme_items),
+            # v2: why it matters, in the patient's words; easy swaps; everyday habits (with any
+            # older one-line note). Each once, however many topics in the theme say it.
+            "why": _distinct_tips(item.get("why") for item in theme_items),
+            # Per diet, a few from every topic in turn.
+            "swaps": {diet: swaps[:MAX_THEME_SWAPS] for diet, swaps in _swaps_by_diet(
+                _distinct_swaps(_in_turn([item.get("swaps") or [] for item in theme_items]))).items()},
+            "tips": _distinct_tips(tip for item in theme_items
+                                   for tip in [item.get("note"), *(item.get("habits") or [])]),
             "discussed": discussions.get(theme_id),
         })
 
@@ -258,11 +401,31 @@ def organize(guidance: dict, discussions: dict | None = None) -> dict:
                 entry["food"] = food
     go_easy = sorted(go_easy_counts.values(), key=lambda e: -e["themes"])
 
+    ordered = [(item, theme["title"]) for theme in themes
+               for item in grouped[theme["id"]]]
+    swaps: dict[str, list[dict]] = {diet: [] for diet in DIETS}
+    for diet in DIETS:
+        seen_swaps: set[str] = set()
+        for theme in themes:
+            for swap in theme["swaps"][diet]:
+                key = food_key(swap["instead_of"])
+                if key not in seen_swaps:
+                    seen_swaps.add(key)
+                    swaps[diet].append({**swap, "theme": theme["title"]})
+
     return {
         "themes": themes,
         "top_foods": top_foods,
+        # What the page shows as "Good to include": the most agreed-on foods, few of them seeds.
+        "good_to_include": {diet: _few_seeds([e["food"] for e in top_foods[diet]])[:MAX_GOOD_TO_INCLUDE]
+                            for diet in DIETS},
         "go_easy": go_easy,
+        "swaps": {diet: swaps[diet][:MAX_PAGE_SWAPS] for diet in DIETS},
+        # The older day, built from ingredient names, kept for guidance written before v2.
         "sample_day": {diet: sample_day(top_foods[diet], diet, themes_by_food[diet]) for diet in DIETS},
+        # v2: a day of real dishes for every region and diet.
+        "sample_days": {region: {diet: dish_day(ordered, diet, region) for diet in DIETS}
+                        for region in REGION_CHOICES},
         "counts": {
             "results": sum(len(t["results"]) for t in themes),
             "symptoms": sum(len(t["symptoms"]) for t in themes),
@@ -403,76 +566,135 @@ def ensure_handout_schema(conn) -> None:
     conn.commit()
 
 
-def build_handout(plan: dict, diet: str) -> dict:
-    """The patient's copy of the page, in the diet the doctor chose.
+def build_handout(plan: dict, diet: str, region: str = "all") -> dict:
+    """The patient's copy of the page, in the diet and region the doctor chose.
 
     Built from the organised plan, never from free text: theme titles and blurbs written in
-    this module, and foods, limits and tips that passed nutrition.check_entry. No values, no
-    document names, no doses — the patient takes it home.
+    this module, and foods, dishes, swaps, limits and habits that passed nutrition.check_entry.
+    No values, no document names, no doses — the patient takes it home.
     """
     diet = diet if diet in DIETS else "veg"
+    region = region if region in REGION_CHOICES else "all"
+    dishes = ((plan.get("sample_days") or {}).get(region) or {}).get(diet) or []
     return {
         "diet": diet,
+        "region": region,
+        "region_label": REGION_LABELS[region],
         "themes": [
             {
                 "title": theme["title"],
                 "blurb": theme["blurb"],
+                "why": list(theme.get("why") or []),
                 "foods": list(theme["foods"][diet]),
                 "go_easy": list(theme["go_easy"]),
+                "swaps": [dict(swap) for swap in (theme.get("swaps") or {}).get(diet) or []],
                 "tips": list(theme["tips"]),
             }
             for theme in plan.get("themes") or []
         ],
+        # Real dishes where the guidance has them (v2); otherwise the older day of foods.
         "sample_day": [
-            {"label": meal["label"], "foods": list(meal["foods"])}
-            for meal in (plan.get("sample_day") or {}).get(diet, [])
+            {"label": meal["label"], "foods": list(meal["foods"]), "dish": meal.get("dish")}
+            for meal in (dishes or (plan.get("sample_day") or {}).get(diet, []))
         ],
         "note": HANDOUT_NOTE,
     }
 
 
+def share_lock_key(patient_id: str, doctor_id: str) -> str:
+    """One doctor's shares to one patient run one at a time (pg_advisory_xact_lock)."""
+    return f"nutrition-handout:{patient_id}:{doctor_id}"
+
+
 def save_handout(doctor_id: str, patient_id: str, booking_id: str | None, document_id: str | None,
-                 content: dict) -> int:
-    """Keeps the handout in the patient's account, and audits that it was given."""
+                 content: dict) -> dict:
+    """Shares the handout to the patient's account, once. {"id", "created", "shared_at"}.
+
+    The same doctor sharing the same handout again (same guidance, same diet — the content
+    is built by code, so it is byte-for-byte the same) gets back the one already shared,
+    created False: nothing new is stored, audited or shown to the patient. A doctor pressing
+    Share several times without feedback left the patient with five identical copies.
+    The advisory lock makes that hold for two presses racing each other too.
+    """
     from app.services.consults import ensure_consult_schema
 
     with connect_db() as conn:
         ensure_handout_schema(conn)
         ensure_consult_schema(conn)
         with conn.cursor() as cur:
+            cur.execute("SELECT pg_advisory_xact_lock(hashtext(%s))", (share_lock_key(patient_id, doctor_id),))
+            cur.execute(
+                """SELECT id, created_at FROM nutrition_handouts
+                   WHERE patient_id = %s AND doctor_id = %s AND content = %s::jsonb
+                   ORDER BY created_at DESC LIMIT 1""",
+                (patient_id, doctor_id, json.dumps(content)),
+            )
+            existing = cur.fetchone()
+            if existing:
+                conn.commit()
+                return {"id": int(existing[0]), "created": False, "shared_at": _iso(existing[1])}
             cur.execute(
                 """INSERT INTO nutrition_handouts (patient_id, doctor_id, booking_id, document_id, diet, content)
-                   VALUES (%s, %s, %s, %s, %s, %s::jsonb) RETURNING id""",
+                   VALUES (%s, %s, %s, %s, %s, %s::jsonb) RETURNING id, created_at""",
                 (patient_id, doctor_id, booking_id, document_id, content["diet"], json.dumps(content)),
             )
-            handout_id = cur.fetchone()[0]
+            handout_id, created_at = cur.fetchone()
             _audit(cur, doctor_id, "nutrition_handout_created", {
                 "patient_id": patient_id, "booking_id": booking_id, "document_id": document_id,
                 "diet": content["diet"], "handout_id": handout_id,
                 "themes": [theme["title"] for theme in content["themes"]],
             })
         conn.commit()
-    return int(handout_id)
+    return {"id": int(handout_id), "created": True, "shared_at": _iso(created_at)}
 
 
-def handouts_for_patient(patient_id: str, limit: int = 20) -> list[dict]:
-    """The patient's handouts, newest first, with the doctor who gave each."""
+# One row per distinct handout from each doctor: copies shared before sharing was made
+# idempotent (identical content, same doctor) are one handout, dated by the latest.
+_DISTINCT_HANDOUTS = """
+    SELECT * FROM (
+        SELECT DISTINCT ON (h.doctor_id, h.content)
+               h.id, h.created_at, h.diet, h.content, h.doctor_id
+          FROM nutrition_handouts h
+         WHERE h.patient_id = %s
+         ORDER BY h.doctor_id, h.content, h.created_at DESC
+    ) distinct_handouts
+    ORDER BY created_at DESC
+    LIMIT %s
+"""
+
+
+def _distinct_handouts(patient_id: str, limit: int) -> list[tuple]:
+    """(id, created_at, diet, content, doctor_id, doctor_name, department), newest first."""
     with connect_db() as conn:
         ensure_handout_schema(conn)
         with conn.cursor() as cur:
             cur.execute(
-                """SELECT h.id, h.created_at, h.diet, h.content, d.name, d.department
-                   FROM nutrition_handouts h
-                   LEFT JOIN doctors d ON d.doctor_id = h.doctor_id
-                   WHERE h.patient_id = %s
-                   ORDER BY h.created_at DESC
-                   LIMIT %s""",
+                f"""SELECT h.id, h.created_at, h.diet, h.content, h.doctor_id, d.name, d.department
+                    FROM ({_DISTINCT_HANDOUTS}) h
+                    LEFT JOIN doctors d ON d.doctor_id = h.doctor_id
+                    ORDER BY h.created_at DESC""",
                 (patient_id, limit),
             )
             rows = cur.fetchall()
         conn.commit()
+    return rows
+
+
+def handouts_for_patient(patient_id: str, limit: int = 20) -> list[dict]:
+    """The patient's handouts, newest first, with the doctor who gave each."""
     return [
-        {"id": row[0], "created_at": row[1].isoformat() if row[1] else None, "diet": row[2],
-         "content": row[3], "doctor_name": row[4], "department": row[5]}
-        for row in rows
+        {"id": row[0], "created_at": _iso(row[1]), "diet": row[2], "content": row[3],
+         "doctor_name": row[5], "department": row[6]}
+        for row in _distinct_handouts(patient_id, limit)
+    ]
+
+
+def shared_handouts(patient_id: str, doctor_id: str, limit: int = 5) -> list[dict]:
+    """For the doctor's nutritionist: what is already in this patient's account, and from
+    whom — so a doctor can see a handout was shared before sharing it again."""
+    return [
+        {"id": row[0], "shared_at": _iso(row[1]), "diet": row[2],
+         "themes": [theme.get("title") for theme in (row[3] or {}).get("themes") or []],
+         "doctor_name": row[5], "by_me": str(row[4]) == str(doctor_id)}
+        for row in _distinct_handouts(patient_id, limit)
     ]

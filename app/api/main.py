@@ -145,6 +145,7 @@ def _run_schema_checks_once() -> None:
     from app.services.email_verification import ensure_email_verification_schema
     from app.services.llm_usage import ensure_llm_usage_schema
     from app.services.login_lockout import ensure_lockout_schema
+    from app.services.document_versions import ensure_document_versions_schema
     from app.services.nutrition_plan import ensure_discussion_schema, ensure_handout_schema
     from app.services.password_reset import ensure_password_reset_schema
     from app.services.patient_mfa import (
@@ -164,7 +165,7 @@ def _run_schema_checks_once() -> None:
         ensure_registry_schema, ensure_rate_limit_schema, ensure_chat_history_schema,
         ensure_consult_schema, ensure_soap_schema, ensure_section_verification_schema,
         ensure_clinical_items_schema, ensure_booking_context_schema, ensure_llm_usage_schema,
-        ensure_discussion_schema, ensure_handout_schema,
+        ensure_discussion_schema, ensure_handout_schema, ensure_document_versions_schema,
     )
     done = 0
     with connect_db() as conn:

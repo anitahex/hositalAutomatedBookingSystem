@@ -1029,9 +1029,25 @@ function renderPatientHandouts() {
       const title = document.createElement("h4");
       title.textContent = theme.title;
       details.appendChild(title);
+      (theme.why || []).forEach((sentence) => {
+        const why = document.createElement("p");
+        why.className = "patient-handout-why";
+        why.textContent = sentence;
+        details.appendChild(why);
+      });
+      if ((theme.swaps || []).length) {
+        const swaps = document.createElement("ul");
+        swaps.className = "patient-handout-swaps";
+        theme.swaps.forEach((swapItem) => {
+          const row = document.createElement("li");
+          row.textContent = `Instead of ${swapItem.instead_of}, try ${swapItem.try}`;
+          swaps.appendChild(row);
+        });
+        details.appendChild(swaps);
+      }
       if ((theme.foods || []).length) {
         const foods = document.createElement("p");
-        foods.textContent = `Try to include: ${theme.foods.join(", ")}`;
+        foods.textContent = `${(theme.why || []).length ? "Good to include" : "Try to include"}: ${theme.foods.join(", ")}`;
         details.appendChild(foods);
       }
       if ((theme.go_easy || []).length) {
@@ -1048,11 +1064,11 @@ function renderPatientHandouts() {
     });
     if ((handout.sample_day || []).length) {
       const title = document.createElement("h4");
-      title.textContent = "A sample day";
+      title.textContent = handout.region_label ? `A day that works (${handout.region_label})` : "A sample day";
       details.appendChild(title);
       handout.sample_day.forEach((meal) => {
         const line = document.createElement("p");
-        line.textContent = `${meal.label}: ${meal.foods.join(", ")}`;
+        line.textContent = `${meal.label}: ${meal.dish || meal.foods.join(", ")}`;
         details.appendChild(line);
       });
     }
@@ -2424,7 +2440,7 @@ function filteredDoctorReviews() {
 }
 
 /** A status chip. Text always via textContent — these carry AI-derived strings and a
- *  patient name, and must never become an XSS path (same rule as renderClinicalNote). */
+ *  patient name, and must never become an XSS path (same rule as renderBookingNoteMarkdown). */
 function buildAiChip(text, modifier) {
   const chip = document.createElement("span");
   chip.className = `doctor-ai-chip${modifier ? ` ${modifier}` : ""}`;
@@ -3540,71 +3556,6 @@ function buildDurationBadge(appt) {
   return null;
 }
 
-// Renders a lightly-markdown-formatted clinical note (headings, **bold**, "- " bullets)
-// as real DOM elements — never via innerHTML/raw HTML string concatenation. Every piece
-// of text passes through document.createTextNode or element.textContent, both of which
-// the browser always treats as literal text, never as markup, no matter what characters
-// it contains. This note is partly derived from patient-supplied input, so this must
-// never become an XSS path regardless of what the LLM echoes back or what a patient
-// originally typed.
-function renderClinicalNote(container, rawText) {
-  container.replaceChildren();
-  if (!rawText || rawText === "-") {
-    container.textContent = rawText || "-";
-    return;
-  }
-
-  // Normalize both real and LITERAL escaped newlines to real newlines. The LLM that
-  // generates these summaries (app/agents/checkup_report.py) occasionally emits a
-  // literal two-character "\n" (backslash + n) in its raw text output instead of an
-  // actual newline control character — a generation-time quirk, not a display bug, but
-  // a doctor should never see a literal backslash-n either way, so both representations
-  // are normalized identically here.
-  const normalized = String(rawText)
-    .replace(/\\r\\n/g, "\n")
-    .replace(/\\n/g, "\n")
-    .replace(/\\r/g, "\n")
-    .replace(/\r\n/g, "\n")
-    .replace(/\r/g, "\n");
-
-  normalized.split("\n").forEach((rawLine) => {
-    const line = rawLine.trim();
-    if (!line) return; // collapse blank lines rather than rendering empty paragraphs
-
-    const headingMatch = /^(#{1,6})\s+(.*)$/.exec(line);
-    const bulletMatch = /^[-*]\s+(.*)$/.exec(line);
-    const text = headingMatch ? headingMatch[2] : bulletMatch ? bulletMatch[1] : line;
-
-    const lineEl = document.createElement(headingMatch ? "h4" : "p");
-    lineEl.className = "clinical-note-line";
-    if (headingMatch) lineEl.classList.add("clinical-note-heading");
-    if (bulletMatch) lineEl.classList.add("clinical-note-bullet");
-
-    appendInlineMarkdown(lineEl, text);
-    container.appendChild(lineEl);
-  });
-}
-
-// Renders **bold** spans as real <strong> elements. Text outside **...** and the bold
-// text itself are both inserted via createTextNode/textContent only.
-function appendInlineMarkdown(parent, text) {
-  const boldPattern = /\*\*(.+?)\*\*/g;
-  let lastIndex = 0;
-  let match;
-  while ((match = boldPattern.exec(text)) !== null) {
-    if (match.index > lastIndex) {
-      parent.appendChild(document.createTextNode(text.slice(lastIndex, match.index)));
-    }
-    const strong = document.createElement("strong");
-    strong.textContent = match[1];
-    parent.appendChild(strong);
-    lastIndex = boldPattern.lastIndex;
-  }
-  if (lastIndex < text.length) {
-    parent.appendChild(document.createTextNode(text.slice(lastIndex)));
-  }
-}
-
 /** Fetches the patient-reported health issues for the open appointment, so the
  *  clinical-actions tab can repeat them where a prescription is written. Non-fatal: if it
  *  fails the notice is simply absent — it must never block the consult screen, and an
@@ -3704,7 +3655,12 @@ function renderBookingNoteMarkdown(text) {
   let paragraph = null;  // the <p> currently being filled, if any
   const closeBlocks = () => { list = null; paragraph = null; };
 
-  String(text || "").replace(/\r\n?/g, "\n").split("\n").forEach((raw) => {
+  // Real line breaks, and the LITERAL two-character "\n" the summarising model sometimes
+  // writes instead (app/agents/checkup_report.py): a doctor must see neither as text.
+  String(text || "")
+    .replace(/\\r\\n|\\n|\\r/g, "\n")
+    .replace(/\r\n?/g, "\n")
+    .split("\n").forEach((raw) => {
     const line = raw.trim();
     if (!line) { closeBlocks(); return; }
 
@@ -3813,93 +3769,155 @@ function buildVisitBrief(brief) {
       ));
     }
     const messages = Number(why.messages || 0);
-    const brought = Number(why.documents_brought || 0);
+    // How many documents is not repeated here: the next section lists exactly them.
     whyRows.push(buildBriefRow(
-      (messages ? `${messages} message${messages === 1 ? "" : "s"} while booking` : "Booked without a conversation")
-      + ` · ${brought ? `${brought} document${brought === 1 ? "" : "s"} brought` : "no documents brought"}`,
-    ));
+      messages ? `${messages} message${messages === 1 ? "" : "s"} while booking` : "Booked without a conversation"));
   }
+  const previousVisits = Array.isArray(brief.previous_visits) ? brief.previous_visits : [];
+  if ((brief.since || {}).first_visit) whyRows.push(buildBriefRow("First visit with you."));
   root.appendChild(buildBriefSection("Why they're here", whyRows,
     // Said plainly: an appointment booked before this was captured has no context, which
     // is not the same as a patient who said nothing.
     why.recorded ? "" : "No booking conversation was recorded for this appointment."));
 
-  // 2. Since you last saw them — or, on a first visit, the recent record, saying which.
-  const since = brief.since || {};
-  const sinceRows = [];
-  (since.documents || []).forEach((doc) => {
-    const parts = [doc.original_filename || "Document"];
-    if (doc.document_type && doc.document_type !== "other") parts.push(formatDocumentType(doc.document_type));
-    if (doc.clinical_date) parts.push(`dated ${formatBriefDate(doc.clinical_date)}`);
-    if (doc.copies > 1) parts.push(`uploaded ${doc.copies} times`);
-    const chips = [];
-    if (doc.summary_verification === "failed") chips.push({ text: "No verified summary", modifier: "is-warn" });
-    const briefRow = buildBriefRow(`New document: ${parts.join(" · ")}`, {
-      chips,
-      action: {
-        label: "View",
-        ariaLabel: `View ${doc.original_filename || "document"}`,
-        onClick: () => { void openDoctorDocumentViewer(brief.patient_id, doc); },
-      },
-    });
-    // Verified / reported by the patient's doctors — before the View button.
-    briefRow.insertBefore(buildDocumentReviewChip(doc.document_id, doc.review), briefRow.querySelector("button"));
-    sinceRows.push(briefRow);
-  });
-  (since.abnormal || []).forEach((result) => {
-    const value = result.value != null ? ` ${result.value}${result.unit ? ` ${result.unit}` : ""}` : "";
-    sinceRows.push(buildBriefRow(
-      `${result.name} ${result.flag}:${value}${result.clinical_date ? ` (${formatBriefDate(result.clinical_date)})` : ""}`,
-      {
-        tone: "warn",
-        // Read from a document a doctor has reported inaccurate: not to be taken at face value.
-        chips: result.source_reported_inaccurate
-          ? [{ text: "Source reported inaccurate", modifier: "is-bad" }] : [],
-      },
-    ));
-  });
-  (since.colleague_notes || []).forEach((note) => {
-    const who = `${note.doctor_name || "A colleague"} (${note.department || "—"}), ${formatBriefDate(note.signed_at)}`;
-    // A restricted specialty's encounter is disclosed — hiding it would mislead — and its
-    // content withheld, exactly as the timeline does.
-    sinceRows.push(note.restricted
-      ? buildBriefRow(`${who} — note restricted`, { chips: [{ text: "Restricted", modifier: "" }] })
-      : buildBriefRow(`${who}: ${note.summary || "signed a note"}`));
-  });
-  (since.colleague_prescriptions || []).forEach((item) => {
-    const who = `${item.doctor_name || "A colleague"} (${item.department || "—"})`;
-    sinceRows.push(item.restricted
-      ? buildBriefRow(`${who} approved a prescription — restricted`)
-      : buildBriefRow(`${who} prescribed: ${item.content}`));
-  });
-  const sinceTitle = since.first_visit
-    ? `First visit with you — their record from the last ${Math.round((since.lookback_days || 365) / 30)} months`
-    : `Since you last saw them (${formatBriefDate(since.boundary)})`;
-  root.appendChild(buildBriefSection(sinceTitle, sinceRows,
-    since.first_visit ? "Nothing on their record in that time." : "Nothing new since you last saw them."));
-
-  // 3. Your last plan — only when there is one; a first visit has none to show.
-  const plan = brief.last_plan;
-  if (plan) {
-    const planRows = [];
-    if (plan.plan) planRows.push(buildBriefRow(plan.plan));
-    (plan.approved_items || []).forEach((item) => {
-      planRows.push(buildBriefRow(`Approved ${item.kind.replace(/_/g, " ")}: ${item.content}`));
-    });
-    root.appendChild(buildBriefSection(`Your last plan (${formatBriefDate(plan.signed_at)})`, planRows,
-      "Your last note had no plan recorded."));
+  // 2. Documents for this appointment — those brought to THIS booking only, by the same
+  // rule as the patient's history. Everything else they ever uploaded is on their page.
+  const documents = (brief.this_visit || {}).documents || [];
+  const documentRows = documents.map((doc) => buildBriefDocumentRow(brief.patient_id, doc));
+  const documentsSection = buildBriefSection("Documents for this appointment", documentRows,
+    "No documents were shared for this appointment.");
+  if (!documentRows.length && brief.patient_id) {
+    documentsSection.appendChild(buildBriefLinkButton("See all their documents", async () => {
+      await loadDoctorPatientDetail(brief.patient_id);
+      setDoctorPatientTab("documents");
+    }));
   }
+  root.appendChild(documentsSection);
 
-  // 4. The AI nutritionist — when the patient has documents. Loaded on request, so the
-  // brief itself stays a fast read with no model behind it.
-  if (brief.has_documents && brief.booking_id) {
+  // 3. Your previous visits — this doctor's own, newest first. Left out on a first visit,
+  // which section 1 already says.
+  if (previousVisits.length) root.appendChild(buildBriefPreviousVisits(brief.patient_id, previousVisits));
+
+  // 4. Food guidance, named by what it is for (brief.nutrition_focus, chosen by the same code
+  // that writes it). Loaded on request, so the brief stays a fast read with no model behind
+  // it, and not shown at all when nothing diet-related was found. A server too old to send
+  // the focus keeps the previous rule: shown when the patient has documents.
+  const nutritionFocus = Array.isArray(brief.nutrition_focus) ? brief.nutrition_focus : null;
+  if (brief.booking_id && (nutritionFocus ? nutritionFocus.length : brief.has_documents)) {
+    // The same visits the server reads (nutrition._scope_bookings): this one and the
+    // previous visits listed above.
+    const earlier = previousVisits.length;
     root.appendChild(buildNutritionSection(
       `/doctor/appointments/${encodeURIComponent(brief.booking_id)}/nutrition`,
-      "From their latest abnormal results and the symptoms in the booking note.",
+      earlier
+        ? `From the documents and booking chats of this visit and your ${earlier} earlier visit${earlier === 1 ? "" : "s"} with them.`
+        : "From the documents and booking chat of this visit.",
       { bookingId: brief.booking_id, patientName: brief.patient_name },
+      nutritionFocus || [],
     ));
   }
+
+  // The whole record — every doctor, every document — is the patient page's job.
+  if (brief.patient_id) {
+    root.appendChild(buildBriefLinkButton("Open full patient record (all doctors)",
+      () => loadDoctorPatientDetail(brief.patient_id)));
+  }
   return root;
+}
+
+/** A plain secondary button, for the brief's ways out to the patient page. */
+function buildBriefLinkButton(label, onClick) {
+  const button = document.createElement("button");
+  button.type = "button";
+  button.className = "doctor-ai-btn is-ghost is-sm doctor-brief-link";
+  button.textContent = label;
+  button.addEventListener("click", () => { void onClick(); });
+  return button;
+}
+
+/** A document brought to this appointment: its name line with who verified it and View,
+ *  then what it recorded (patient_timeline enriches it, as in the history). */
+function buildBriefDocumentRow(patientId, doc) {
+  const parts = [doc.original_filename || "Document"];
+  if (doc.document_type && doc.document_type !== "other") parts.push(formatDocumentType(doc.document_type));
+  if (doc.clinical_date) parts.push(`dated ${formatBriefDate(doc.clinical_date)}`);
+  if (doc.copies > 1) parts.push(`uploaded ${doc.copies} times`);
+  const recorded = describeDocumentContent(doc);
+  const row = buildBriefRow(parts.join(" · "), {
+    // Only verified summary sentences are ever stored, so nothing to show means none passed.
+    chips: recorded ? [] : [{ text: "No verified summary", modifier: "is-warn" }],
+    action: {
+      label: "View",
+      ariaLabel: `View ${doc.original_filename || "document"}`,
+      onClick: () => { void openDoctorDocumentViewer(patientId, doc); },
+    },
+  });
+  // Verified / reported by the patient's doctors — before the View button.
+  row.insertBefore(buildDocumentReviewChip(doc.document_id, doc.review), row.querySelector("button"));
+  if (recorded) {
+    const detail = document.createElement("p");
+    // A lab report's out-of-range values are marked as the abnormal rows always were.
+    detail.className = `doctor-brief-detail${(doc.findings || []).length ? " is-warn" : ""}`;
+    detail.textContent = recorded;
+    row.appendChild(detail);
+  }
+  return row;
+}
+
+// Previous visits shown before "Show older"; the server sends at most 10.
+const BRIEF_VISITS_SHOWN = 3;
+
+/** "Your previous visits": each of this doctor's earlier visits — its signed assessment and
+ *  plan, what was approved, the documents brought — newest first, three before Show older. */
+function buildBriefPreviousVisits(patientId, visits) {
+  const rows = visits.map((visit) => {
+    const item = document.createElement("li");
+    item.className = "doctor-brief-visit";
+    const head = document.createElement("p");
+    head.className = "doctor-brief-visit-head";
+    const when = document.createElement("strong");
+    when.textContent = visit.start_time ? formatBriefDate(visit.start_time) : "Date unknown";
+    head.append(when, document.createTextNode(visit.status ? ` · ${visit.status}` : ""));
+    item.appendChild(head);
+    if (visit.restricted) {
+      const flag = document.createElement("p");
+      flag.className = "clinical-note-flag";
+      flag.textContent = (visit.note && visit.note.summary) || "Restricted — clinical content from a sensitive specialty.";
+      item.appendChild(flag);
+    } else if (visit.note) {
+      buildNoteLines(visit.note).forEach((line) => item.appendChild(line));
+    } else {
+      // Said explicitly: an absent line would read as "nothing happened".
+      const none = document.createElement("p");
+      none.className = "clinical-note-line";
+      none.textContent = "No signed note for this visit.";
+      item.appendChild(none);
+    }
+    (visit.approved_items || []).forEach((approved) => {
+      const line = document.createElement("p");
+      line.className = "clinical-note-line";
+      const strong = document.createElement("strong");
+      strong.textContent = `Approved ${String(approved.kind || "item").replace(/_/g, " ")}: `;
+      line.append(strong, document.createTextNode(approved.content || ""));
+      item.appendChild(line);
+    });
+    (visit.documents || []).forEach((doc) => item.appendChild(buildHistoryDocument(doc, patientId)));
+    return item;
+  });
+  rows.forEach((row, index) => row.classList.toggle("hidden", index >= BRIEF_VISITS_SHOWN));
+  const section = buildBriefSection("Your previous visits", rows, "");
+  const older = rows.length - BRIEF_VISITS_SHOWN;
+  if (older > 0) {
+    const toggle = buildBriefLinkButton(`Show older (${older})`, () => {
+      const open = toggle.getAttribute("aria-expanded") !== "true";
+      rows.forEach((row, index) => row.classList.toggle("hidden", !open && index >= BRIEF_VISITS_SHOWN));
+      toggle.setAttribute("aria-expanded", String(open));
+      toggle.textContent = open ? "Show fewer" : `Show older (${older})`;
+    });
+    toggle.setAttribute("aria-expanded", "false");
+    section.appendChild(toggle);
+  }
+  return section;
 }
 
 // ---- the AI nutritionist ----
@@ -3909,20 +3927,34 @@ function buildVisitBrief(brief) {
 // only; no numbers). What is patient-specific — which terms apply, the evidence, and the
 // foods removed because of another result — is decided in code.
 
-// Which diet the doctor last looked at; the same for every nutrition panel on the page.
+// Which diet and region the doctor last looked at; the same for every nutrition panel on the page.
 let nutritionDiet = "veg";
+let nutritionRegion = "all";
+const NUTRITION_REGIONS = [["all", "All India"], ["north", "North Indian"], ["south", "South Indian"],
+  ["east", "East Indian"], ["west", "West Indian"]];
 
-/** A collapsed "AI nutritionist" section that loads its guidance the first time it opens. */
+/** "Food guidance for Low Vitamin D, Abnormal cholesterol & lipids and Joint or back pain
+ *  (+2 more)": what the guidance is for, in the doctor's terms, before it is opened. */
+function describeNutritionFocus(focus) {
+  const labels = (focus || []).filter(Boolean);
+  if (!labels.length) return "Food guidance";
+  const shown = labels.slice(0, 3);
+  const joined = shown.length > 1 ? `${shown.slice(0, -1).join(", ")} and ${shown[shown.length - 1]}` : shown[0];
+  return `Food guidance for ${joined}${labels.length > 3 ? ` (+${labels.length - 3} more)` : ""}`;
+}
+
+/** A collapsed food guidance section that loads its guidance the first time it opens. */
 /** @param context - { bookingId, patientName }: what "Mark discussed" and the handout
- *                    record against. The document viewer passes no booking. */
-function buildNutritionSection(url, intro, context = {}) {
+ *                    record against. The document viewer passes no booking.
+ *  @param focus   - the findings and symptoms it is for (nutrition.focus_labels): its heading. */
+function buildNutritionSection(url, intro, context = {}, focus = []) {
   const section = document.createElement("section");
   section.className = "doctor-brief-section doctor-nutrition";
 
   const toggle = document.createElement("button");
   toggle.type = "button";
   toggle.className = "doctor-ai-btn is-ghost is-sm doctor-nutrition-toggle";
-  toggle.textContent = "AI nutritionist";
+  toggle.textContent = describeNutritionFocus(focus);
   toggle.setAttribute("aria-expanded", "false");
   const body = document.createElement("div");
   body.className = "doctor-nutrition-body hidden";
@@ -4007,7 +4039,11 @@ function renderNutritionPlan(host, payload, intro, context) {
   const headText = document.createElement("div");
   const label = document.createElement("p");
   label.className = "doctor-nutrition-label";
-  label.textContent = "AI generated · food suggestions to discuss, not a diet prescription";
+  label.textContent = "Food guidance · AI drafted · to discuss, not a diet prescription";
+  // What it is for, in full (the heading above shows the first three).
+  const focusLine = document.createElement("p");
+  focusLine.className = "doctor-nutri-focus";
+  focusLine.textContent = (payload.focus || []).length ? `For: ${payload.focus.join(" · ")}` : "";
   const counts = plan.counts || {};
   const summary = document.createElement("p");
   summary.className = "doctor-nutri-summary";
@@ -4015,7 +4051,7 @@ function renderNutritionPlan(host, payload, intro, context) {
   if (counts.results) parts.push(`${counts.results} abnormal result${counts.results === 1 ? "" : "s"}`);
   if (counts.symptoms) parts.push(`${counts.symptoms} symptom${counts.symptoms === 1 ? "" : "s"}`);
   summary.textContent = `${parts.join(" and ") || "Guidance"}, grouped into ${counts.themes} theme${counts.themes === 1 ? "" : "s"}.${intro ? ` ${intro}` : ""}`;
-  headText.append(label, summary);
+  headText.append(label, ...(focusLine.textContent ? [focusLine] : []), summary);
 
   const controls = document.createElement("div");
   controls.className = "doctor-nutri-controls";
@@ -4036,14 +4072,40 @@ function renderNutritionPlan(host, payload, intro, context) {
     });
     diets.appendChild(button);
   });
-  const handout = document.createElement("button");
-  handout.type = "button";
-  handout.className = "doctor-ai-btn is-sm";
-  handout.textContent = "Create patient handout";
-  handout.addEventListener("click", () => { void openNutritionHandout(payload, diet, context, handout); });
-  controls.append(diets, handout);
+  const share = document.createElement("button");
+  share.type = "button";
+  share.className = "doctor-ai-btn is-sm";
+  share.textContent = "Share with patient";
+  // What the patient already has, and the result of each share: a live region, so the
+  // outcome is announced as well as shown.
+  const shared = document.createElement("p");
+  shared.className = "doctor-nutri-shared";
+  shared.setAttribute("role", "status");
+  shared.textContent = describeSharedHandouts(payload.shared_handouts, context);
+  share.addEventListener("click", () => { void shareNutritionHandout(payload, diet, context, share, shared); });
+  // Whose dishes the day is made of. A select: five choices are too many for buttons on a phone.
+  const regionWrap = document.createElement("label");
+  regionWrap.className = "doctor-nutri-region";
+  const regionText = document.createElement("span");
+  regionText.textContent = "Cuisine";
+  const regionSelect = document.createElement("select");
+  regionSelect.className = "doctor-nutri-region-select";
+  NUTRITION_REGIONS.forEach(([value, text]) => {
+    const option = document.createElement("option");
+    option.value = value;
+    option.textContent = text;
+    regionSelect.appendChild(option);
+  });
+  regionSelect.value = nutritionRegion;
+  regionSelect.addEventListener("change", () => {
+    nutritionRegion = regionSelect.value;
+    rerender();
+    host.querySelector(".doctor-nutri-region-select")?.focus();
+  });
+  regionWrap.append(regionText, regionSelect);
+  controls.append(diets, regionWrap, share);
   header.append(headText, controls);
-  host.appendChild(header);
+  host.append(header, shared);
 
   const notices = [...(payload.cautions || [])];
   if (payload.reported_inaccurate) notices.push("This document was reported inaccurate by a clinician, so no guidance is based on it.");
@@ -4064,37 +4126,45 @@ function renderNutritionPlan(host, payload, intro, context) {
   const left = document.createElement("div");
   left.className = "doctor-nutri-card";
   left.appendChild(nutritionHeading("Start here"));
-  const leftTitle = document.createElement("h5");
-  leftTitle.className = "doctor-nutri-title";
-  leftTitle.textContent = "Foods that help most";
-  const leftNote = document.createElement("p");
-  leftNote.className = "doctor-nutri-muted";
-  const total = (payload.items || []).length;
-  // `total` counts guidance topics, not results: a lipid panel's six results are one topic,
-  // so saying "of the 9 findings" beside "12 abnormal results" read as a contradiction.
-  leftNote.textContent = `Ranked by how many of the ${total} guidance topics each one helps (a lab panel counts once).`;
-  left.append(leftTitle, leftNote);
-  const ranked = document.createElement("ol");
-  ranked.className = "doctor-nutri-ranked";
-  ((plan.top_foods || {})[diet] || []).slice(0, 9).forEach((entry) => {
-    const row = document.createElement("li");
-    const name = document.createElement("span");
-    name.textContent = entry.food;
-    const meter = document.createElement("span");
-    meter.className = "doctor-nutri-meter";
-    meter.setAttribute("aria-hidden", "true");
-    for (let i = 0; i < Math.min(total, 8); i += 1) {
-      const dot = document.createElement("span");
-      if (i < entry.count) dot.className = "is-on";
-      meter.appendChild(dot);
-    }
-    const helps = document.createElement("span");
-    helps.className = "doctor-nutri-muted";
-    helps.textContent = `helps ${entry.count}`;
-    row.append(name, meter, helps);
-    ranked.appendChild(row);
-  });
-  left.appendChild(ranked);
+  // Easy swaps: what to change in the meals they already eat — the most usable advice there is.
+  // Per diet: a vegetarian is never offered "egg dosa".
+  const pageSwaps = ((plan.swaps || {})[diet]) || [];
+  if (pageSwaps.length) {
+    const swapTitle = document.createElement("h5");
+    swapTitle.className = "doctor-nutri-title";
+    swapTitle.textContent = "Easy swaps";
+    const swapList = document.createElement("ul");
+    swapList.className = "doctor-nutri-swaps";
+    pageSwaps.forEach((swapItem) => {
+      const row = document.createElement("li");
+      const before = document.createElement("span");
+      before.className = "doctor-nutri-swap-from";
+      before.textContent = swapItem.instead_of;
+      const arrow = document.createElement("span");
+      arrow.className = "doctor-nutri-swap-arrow";
+      arrow.setAttribute("aria-hidden", "true");
+      arrow.textContent = "→";
+      const after = document.createElement("span");
+      after.className = "doctor-nutri-swap-to";
+      after.textContent = swapItem.try;
+      const spoken = document.createElement("span");
+      spoken.className = "sr-only";
+      spoken.textContent = " instead, try ";
+      row.append(before, spoken, arrow, after);
+      swapList.appendChild(row);
+    });
+    left.append(swapTitle, swapList);
+  }
+  // Good to include: the foods most of the guidance agrees on, as plain chips.
+  const goodTitle = document.createElement("h5");
+  goodTitle.className = "doctor-nutri-title";
+  goodTitle.textContent = "Good to include";
+  const good = document.createElement("div");
+  good.className = "doctor-nutri-chips doctor-nutri-good";
+  const goodFoods = ((plan.good_to_include || {})[diet])
+    || ((plan.top_foods || {})[diet] || []).slice(0, 10).map((entry) => entry.food);
+  goodFoods.forEach((food) => good.appendChild(nutritionChip(food, "is-ok")));
+  left.append(goodTitle, good);
   if ((plan.go_easy || []).length) {
     const easyTitle = document.createElement("h5");
     easyTitle.className = "doctor-nutri-title";
@@ -4210,6 +4280,14 @@ function renderNutritionPlan(host, payload, intro, context) {
     panelHead.appendChild(discussedWrap);
     panel.appendChild(panelHead);
 
+    // Why it matters, in the words the patient will read.
+    (theme.why || []).forEach((sentence) => {
+      const line = document.createElement("p");
+      line.className = "doctor-nutri-why-line";
+      line.textContent = sentence;
+      panel.appendChild(line);
+    });
+
     panel.appendChild(nutritionHeading("Why the AI suggested this"));
     const why = document.createElement("div");
     why.className = "doctor-nutri-why";
@@ -4260,7 +4338,7 @@ function renderNutritionPlan(host, payload, intro, context) {
     const columns = document.createElement("div");
     columns.className = "doctor-nutri-columns";
     const addCol = document.createElement("div");
-    addCol.appendChild(nutritionHeading("Add more"));
+    addCol.appendChild(nutritionHeading("Good to include"));
     const addChips = document.createElement("div");
     addChips.className = "doctor-nutri-chips";
     (theme.foods[diet] || []).forEach((food) => addChips.appendChild(nutritionChip(food, "is-ok")));
@@ -4277,6 +4355,7 @@ function renderNutritionPlan(host, payload, intro, context) {
     }
     panel.appendChild(columns);
 
+    if ((theme.tips || []).length) panel.appendChild(nutritionHeading("Everyday habits"));
     (theme.tips || []).forEach((tip) => {
       const line = document.createElement("p");
       line.className = "doctor-nutri-tip";
@@ -4289,12 +4368,18 @@ function renderNutritionPlan(host, payload, intro, context) {
   // 3. A sample day, built only from the foods on this page.
   const right = document.createElement("div");
   right.className = "doctor-nutri-card";
-  right.appendChild(nutritionHeading("A sample day"));
+  // Real dishes for the chosen region (v2); guidance written before that has the older day,
+  // made of the foods on the page.
+  const dishDay = (((plan.sample_days || {})[nutritionRegion] || {})[diet]) || [];
+  const regionName = (NUTRITION_REGIONS.find(([value]) => value === nutritionRegion) || [, "All India"])[1];
+  right.appendChild(nutritionHeading("A day that works"));
   const dayNote = document.createElement("p");
   dayNote.className = "doctor-nutri-muted";
-  dayNote.textContent = "Built only from the foods on this page.";
+  dayNote.textContent = dishDay.length
+    ? `${regionName} dishes, ${diet === "non_veg" ? "non-vegetarian" : "vegetarian"}, from the guidance on this page.`
+    : "Built only from the foods on this page.";
   right.appendChild(dayNote);
-  const meals = ((plan.sample_day || {})[diet]) || [];
+  const meals = dishDay.length ? dishDay : (((plan.sample_day || {})[diet]) || []);
   if (!meals.length) {
     const none = document.createElement("p");
     none.className = "doctor-nutri-muted";
@@ -4309,7 +4394,7 @@ function renderNutritionPlan(host, payload, intro, context) {
     when.textContent = meal.label;
     const foods = document.createElement("p");
     foods.className = "doctor-nutri-meal-foods";
-    foods.textContent = meal.foods.join(", ");
+    foods.textContent = meal.dish || meal.foods.join(", ");
     row.append(when, foods);
     if ((meal.helps || []).length) {
       const helps = document.createElement("p");
@@ -4365,51 +4450,72 @@ function writeNutritionHandout(win, handout, metaLine) {
   if (metaLine) add("p", metaLine, "meta");
   (handout.themes || []).forEach((theme) => {
     add("h2", theme.title);
-    add("p", theme.blurb);
+    if ((theme.why || []).length) theme.why.forEach((sentence) => add("p", sentence));
+    else add("p", theme.blurb);
+    if ((theme.swaps || []).length) {
+      add("p", "Easy swaps:", "label");
+      list(theme.swaps.map((swapItem) => `Instead of ${swapItem.instead_of}, try ${swapItem.try}`));
+    }
     if ((theme.foods || []).length) {
-      add("p", "Try to include:", "label");
+      add("p", (theme.why || []).length ? "Good to include:" : "Try to include:", "label");
       list(theme.foods);
     }
     if ((theme.go_easy || []).length) {
       add("p", "Go easy on:", "label");
       list(theme.go_easy);
     }
+    if ((theme.tips || []).length && (theme.why || []).length) add("p", "Everyday habits:", "label");
     (theme.tips || []).forEach((tip) => add("p", tip));
   });
   if ((handout.sample_day || []).length) {
-    add("h2", "A sample day");
-    list(handout.sample_day.map((meal) => `${meal.label}: ${meal.foods.join(", ")}`));
+    add("h2", handout.region_label ? `A day that works (${handout.region_label})` : "A sample day");
+    list(handout.sample_day.map((meal) => `${meal.label}: ${meal.dish || meal.foods.join(", ")}`));
   }
   if (handout.note) add("p", handout.note, "note");
 }
 
-/** Makes the patient's handout on the server — kept in their account — and prints it. The
- *  server builds it from the same guidance as this page, so the printout and what the
- *  patient later reads in their account are the same. */
-async function openNutritionHandout(payload, diet, context, button) {
-  const win = window.open("", "_blank");
-  if (!win) {
-    button.textContent = "Allow pop-ups to open the handout";
-    return;
-  }
-  let result;
+/** The line under the nutritionist's header: what is already in the patient's account. */
+function describeSharedHandouts(shared, context) {
+  const latest = (shared || [])[0];
+  if (!latest) return "";
+  const who = context.patientName || "the patient";
+  const by = latest.by_me ? "you" : (latest.doctor_name || "another doctor");
+  const diet = latest.diet === "non_veg" ? "non-vegetarian" : "vegetarian";
+  const more = shared.length > 1 ? ` ${shared.length} food handouts are in their account.` : "";
+  return `Shared with ${who} on ${formatBriefDate(latest.shared_at)} by ${by} (${diet}). `
+    + `They see it under Records › Food suggestions.${more}`;
+}
+
+/** Shares the handout to the patient's account and says so — no window, no download. The
+ *  server builds it from the same guidance as this page and stores it once: sharing the
+ *  same handout again sends nothing new, and the doctor is told it is already there. */
+async function shareNutritionHandout(payload, diet, context, button, status) {
+  const who = context.patientName || "the patient";
+  button.disabled = true;
+  button.textContent = "Sharing…";
   try {
-    result = await doctorAuthedJson(
+    const result = await doctorAuthedJson(
       `/doctor/patients/${encodeURIComponent(payload.patient_id)}/nutrition/handout`,
       { method: "POST", headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ diet, booking_id: context.bookingId || null, document_id: context.documentId || null }) },
+        body: JSON.stringify({ diet, region: nutritionRegion, booking_id: context.bookingId || null,
+          document_id: context.documentId || null }) },
     );
+    payload.shared_handouts = result.shared_handouts || payload.shared_handouts || [];
+    if (result.already_shared) {
+      status.textContent = `Already in ${who}'s account, shared ${formatBriefDate(result.shared_at)}. `
+        + "Nothing new was sent.";
+      showAppToast(`Already shared with ${who}.`);
+    } else {
+      status.textContent = `Shared with ${who}. They can see it now under Records › Food suggestions.`;
+      showAppToast(`Food handout shared with ${who}.`);
+    }
   } catch (error) {
-    win.close();
-    button.textContent = "The handout could not be made. Try again";
-    return;
+    status.textContent = error && error.message ? `Not shared: ${error.message}` : "Not shared. Try again.";
+    showAppToast("The handout could not be shared.", "error");
+  } finally {
+    button.disabled = false;
+    button.textContent = "Share with patient";
   }
-  const doctorName = (doctorProfileName && doctorProfileName.textContent.trim()) || "";
-  writeNutritionHandout(win, result.handout, [
-    context.patientName, doctorName ? `from ${doctorName}` : "", new Date().toLocaleDateString(),
-    result.handout.diet === "non_veg" ? "Non-vegetarian" : "Vegetarian",
-  ].filter(Boolean).join(" · "));
-  button.textContent = "Handout saved to the patient's account · make another";
 }
 
 function renderNutritionGuidance(host, payload, intro = "", context = {}) {
@@ -4534,7 +4640,7 @@ function renderNutritionGuidance(host, payload, intro = "", context = {}) {
   }
 }
 
-function renderDoctorVisitBrief(host, brief, { loading = false, error = "" } = {}) {
+function renderDoctorVisitBrief(host, brief, { loading = false, error = "", note = "" } = {}) {
   if (!host) return;
   host.replaceChildren();
   if (loading) {
@@ -4544,6 +4650,17 @@ function renderDoctorVisitBrief(host, brief, { loading = false, error = "" } = {
   if (error) {
     // Not "nothing to show" — a failed request is not a statement about the patient.
     host.appendChild(buildDoctorEmptyState(`The visit brief could not be loaded. ${error}`));
+    // The brief is the only place the pre-appointment summary is shown, so a failed load
+    // must not hide it: the appointment already carries it.
+    if (note) {
+      host.appendChild(buildBriefSection("Why they're here", [buildBriefRow("", {
+        content: renderBookingNoteMarkdown(note),
+        chips: [{
+          text: isAiPreVisitSummary(note) ? "AI pre-visit summary · from the patient's chat" : "Patient reports",
+          modifier: "is-warn",
+        }],
+      })], ""));
+    }
     return;
   }
   host.appendChild(buildVisitBrief(brief));
@@ -4567,7 +4684,9 @@ async function loadDoctorVisitBrief(bookingId) {
     renderDoctorVisitBrief(doctorVisitBriefBody, brief);
   } catch (error) {
     if (doctorDetailAppointment?.booking_id !== bookingId) return;
-    renderDoctorVisitBrief(doctorVisitBriefBody, null, { error: error.message || "" });
+    renderDoctorVisitBrief(doctorVisitBriefBody, null, {
+      error: error.message || "", note: doctorDetailAppointment?.booking_note || "",
+    });
   }
 }
 
@@ -4653,20 +4772,8 @@ function showDoctorAppointmentDetail(appt, scope) {
       field.append(span, strong);
       doctorAppointmentDetailFields.appendChild(field);
     });
-
-    // The note (often an LLM-generated pre-appointment clinical summary — see
-    // app/agents/checkup_report.py) can be long, multi-line, lightly-markdown-formatted
-    // text, partly derived from patient-supplied input — rendered via renderClinicalNote,
-    // never innerHTML, so it can never become an XSS path regardless of its content.
-    const noteField = document.createElement("div");
-    noteField.className = "admin-field";
-    const noteLabel = document.createElement("span");
-    noteLabel.textContent = "Note";
-    const noteBody = document.createElement("div");
-    noteBody.className = "clinical-note-body";
-    renderClinicalNote(noteBody, appt.booking_note);
-    noteField.append(noteLabel, noteBody);
-    doctorAppointmentDetailFields.appendChild(noteField);
+    // The booking note (the pre-appointment summary) is not repeated here: the visit brief
+    // below shows it, formatted and labelled, under "Why they're here".
   }
 
   showDoctorPane("appointmentDetail");
@@ -4757,7 +4864,7 @@ function renderConsultState() {
   // Clinical actions live alongside the note and share its precondition: they belong to a
   // consultation that actually happened.
   doctorClinicalItemsBlock?.classList.toggle("hidden", status !== "transcript_ready");
-  doctorConsultDiscardRow?.classList.toggle("hidden", !status);
+  doctorConsultDiscardRow?.classList.toggle("hidden", !status || activeConsultNoteSigned());
   doctorConsultDiscardConfirm?.classList.add("hidden");
 
   if (doctorConsultConsentCheckbox) doctorConsultConsentCheckbox.checked = false;
@@ -5330,11 +5437,25 @@ function renderNoteSigned(note) {
   });
 }
 
+/** Whether the consult on screen has a signed note. Such a consult is part of the patient's
+ *  record, so it is not offered for discarding (the server refuses it too:
+ *  consults.discard_consult). The note's own consult is checked, so a note still held from
+ *  an appointment opened earlier never decides this one. */
+function activeConsultNoteSigned() {
+  return Boolean(doctorCurrentNote && doctorActiveConsult
+    && doctorCurrentNote.status === "signed"
+    && String(doctorCurrentNote.consultation_id) === String(doctorActiveConsult.id));
+}
+
 function renderSoapNote() {
   const note = doctorCurrentNote;
   const isSigned = !!note && note.status === "signed";
   // Signing is what makes "Insert from plan" available on the prescription.
   updateInsertFromPlanVisibility();
+  if (activeConsultNoteSigned()) {
+    doctorConsultDiscardRow?.classList.add("hidden");
+    doctorConsultDiscardConfirm?.classList.add("hidden");
+  }
 
   doctorNoteGenerateRow?.classList.toggle("hidden", isSigned);
   doctorNoteGenerateConfirm?.classList.add("hidden");
@@ -6193,13 +6314,65 @@ const doctorOverviewMode = document.querySelector("#doctorOverviewMode");
 const doctorOverviewNote = document.querySelector("#doctorOverviewNote");
 const doctorOverviewUpdated = document.querySelector("#doctorOverviewUpdated");
 
-function buildOverviewLabel(label) {
+/** How a label reads at a glance: verified (green), reported inaccurate (red), anything else
+ *  that limits how far a line can be relied on (amber). */
+function labelTone(label) {
+  const text = String(label || "");
+  if (text.includes("reported inaccurate")) return "is-bad";
+  if (text.includes("· verified by")) return "is-ok";
+  return "is-warn";
+}
+
+function buildOverviewLabel(label, tone = labelTone(label)) {
   // "Patient reports" and "Reported, unverified" are load-bearing: they say how far a
   // line can be relied on. Rendered as a chip so they cannot be skimmed past.
   const chip = document.createElement("span");
-  chip.className = "doctor-ai-chip is-warn";
+  chip.className = `doctor-ai-chip ${tone}`.trim();
   chip.textContent = label;
   return chip;
+}
+
+/** Where a summary line came from, drawn from the FACTS it cites — never from the AI's words,
+ *  which are told not to name sources at all: the doctor, department and date of a signed
+ *  note; a document's type and date, with who verified it or objected and why; "Patient
+ *  reports" and "Reported, unverified"; and "New since your last visit". */
+function buildFactSources(facts) {
+  const row = document.createElement("div");
+  row.className = "doctor-glance-sources";
+  const seen = new Set();
+  const add = (text, tone) => {
+    if (!text || seen.has(text)) return;
+    seen.add(text);
+    row.appendChild(tone === undefined ? buildOverviewLabel(text) : buildOverviewLabel(text, tone));
+  };
+  facts.forEach((fact) => {
+    const meta = fact.meta || {};
+    if (fact.source_type === "note" && meta.by) {
+      add([meta.by, meta.department, fact.at ? formatBriefDate(fact.at) : "",
+        fact.kind === "conclusion" ? "signed note" : "prescribed here"].filter(Boolean).join(" · "), "");
+    } else if (fact.source_type === "booking" && meta.by) {
+      add([meta.by, meta.department, fact.at ? formatBriefDate(fact.at) : "", "visit"].filter(Boolean).join(" · "), "");
+    } else if (fact.source_type === "document" && (meta.doc_type || meta.doc_date)) {
+      add([formatDocumentType(meta.doc_type), meta.doc_date ? formatBriefDate(meta.doc_date) : ""]
+        .filter(Boolean).join(" · "), "");
+      if (fact.kind === "finding" && !fact.label) add("Not verified yet", "is-warn");
+    }
+    if (fact.label) add(fact.label);
+    if (fact.scanned) add("From a scanned document", "is-warn");
+  });
+  if (facts.some((fact) => fact.is_new)) add("New since your last visit", "is-ai");
+  return row.childNodes.length ? row : null;
+}
+
+/** "+2 older signed notes and 1 older report — in the history below": the summary is bounded,
+ *  and says so rather than dropping anything silently. */
+function buildOmittedNote(facts) {
+  const omitted = (facts || []).find((fact) => fact.kind === "omitted");
+  if (!omitted) return null;
+  const note = document.createElement("p");
+  note.className = "panel-note doctor-glance-omitted";
+  note.textContent = `+ ${omitted.text}`;
+  return note;
 }
 
 function renderDoctorOverview(payload) {
@@ -6229,44 +6402,59 @@ function renderDoctorOverview(payload) {
     // Only results on record: they are shown by document below.
   } else if (phrased) {
     const factsById = new Map(((payload && payload.facts) || []).map((fact) => [fact.id, fact]));
+    doctorOverviewLines.appendChild(buildGlanceHeading("Summary"));
     lines.forEach((line) => {
-      const row = document.createElement("p");
-      row.className = "clinical-note-line";
-      row.appendChild(document.createTextNode(String(line.text || "")));
-      const cite = document.createElement("span");
-      cite.className = "doctor-cite";
-      cite.textContent = ` [${(line.fact_ids || []).join(", ")}]`;
-      cite.title = "The facts this line was written from";
-      row.appendChild(cite);
-      // The labels of the facts this line cites, taken from the FACTS, not the prose.
-      // "Patient reports" and "Reported, unverified" must never be hidden, and prose only
-      // keeps them if the model chose to write them — verification checks fact ids and
-      // numbers, not wording. Reading them off the cited facts makes them unconditional.
+      const row = document.createElement("div");
+      row.className = "doctor-glance-point";
+      const text = document.createElement("p");
+      text.className = "clinical-note-line";
+      text.textContent = String(line.text || "");
+      text.title = `Written from facts ${(line.fact_ids || []).join(", ")}`;
+      row.appendChild(text);
+      // The sources and labels of the facts this line cites, taken from the FACTS, not the
+      // prose. "Patient reports", "Reported, unverified", who verified a document and who
+      // objected must never be hidden, and prose only keeps them if the model wrote them —
+      // verification checks fact ids and numbers, not wording. Reading them off the cited
+      // facts makes them unconditional.
       const cited = (line.fact_ids || []).map((id) => factsById.get(String(id))).filter(Boolean);
-      new Set(cited.map((fact) => fact.label).filter(Boolean))
-        .forEach((label) => row.appendChild(buildOverviewLabel(label)));
-      if (cited.some((fact) => fact.scanned)) row.appendChild(buildOverviewLabel("From a scanned document"));
+      const sources = buildFactSources(cited);
+      if (sources) row.appendChild(sources);
       doctorOverviewLines.appendChild(row);
     });
   } else {
-    // Structured fallback: heading, then each fact with its label.
+    // Structured fallback: heading, then each fact with its sources and labels.
+    const factsById = new Map(((payload && payload.facts) || []).map((fact) => [fact.id, fact]));
+    doctorOverviewLines.appendChild(buildGlanceHeading("Summary"));
     lines.forEach((group) => {
       const heading = document.createElement("div");
       heading.className = "admin-inline-meta";
       heading.textContent = group.heading;
       doctorOverviewLines.appendChild(heading);
       (group.items || []).forEach((item) => {
-        const row = document.createElement("p");
-        row.className = "clinical-note-line";
-        row.appendChild(document.createTextNode(`• ${item.text}`));
-        if (item.label) row.appendChild(buildOverviewLabel(item.label));
+        const row = document.createElement("div");
+        row.className = "doctor-glance-point";
+        const text = document.createElement("p");
+        text.className = "clinical-note-line";
+        text.textContent = `• ${item.text}`;
+        row.appendChild(text);
         // Read off a photograph: two AI passes over the same image have been seen to read a
-        // drug name two different ways, so this is said, not assumed.
-        if (item.scanned) row.appendChild(buildOverviewLabel("From a scanned document"));
+        // drug name two different ways, so this is said, not assumed (buildFactSources).
+        const sources = buildFactSources([factsById.get(String(item.fact_id)) || item]);
+        if (sources) row.appendChild(sources);
         doctorOverviewLines.appendChild(row);
       });
     });
   }
+  const omitted = buildOmittedNote(payload && payload.facts);
+  if (omitted) doctorOverviewLines.appendChild(omitted);
+
+  // Newest first, across every doctor: each visit's signed assessment and plan, and what each
+  // document found, with who verified or objected. Loaded from the (audited) timeline.
+  const history = document.createElement("section");
+  history.className = "doctor-glance-history";
+  history.setAttribute("aria-label", "Latest across all doctors");
+  doctorOverviewLines.appendChild(history);
+  if (doctorPatientDetailId) void loadOverviewHistory(doctorPatientDetailId, history);
 
   renderOverviewDocuments(doctorPatientDetailId, documents);
 
@@ -6432,6 +6620,212 @@ function renderOverviewDocuments(patientId, documents) {
   documents.forEach((block) => doctorOverviewLines.appendChild(buildOverviewDocumentBlock(patientId, block)));
 }
 
+function buildGlanceHeading(text) {
+  const heading = document.createElement("p");
+  heading.className = "doctor-glance-docs-heading";
+  heading.textContent = text;
+  return heading;
+}
+
+/** Verifications and reports made on an earlier version of the document, before it was
+ *  re-processed: no longer its status, but never lost (document_versions). */
+function describeEarlierReviews(review) {
+  const earlier = (review && review.earlier) || [];
+  if (!earlier.length) return "";
+  const who = (person) => formatReviewer(person).replace(/^You\b/, "you");
+  return earlier.map((person) => (person.action === "flagged"
+    ? `Reported an earlier version inaccurate — ${who(person)}${person.reason ? `: “${person.reason}”` : ""}`
+    : `Verified an earlier version — ${who(person)}`)).join(" · ") + " (the document was processed again since)";
+}
+
+/** What a document ITSELF recorded, as one line: its out-of-range values (a lab report), or
+ *  its verified summary (a text report), or "" when neither is stored. The history and the
+ *  visit brief both use it, so a report reads the same in each. */
+function describeDocumentContent(doc) {
+  if ((doc.findings || []).length) {
+    return doc.findings.map((finding) =>
+      `${finding.name} ${formatReading(finding.value, finding.unit) || finding.value_text || ""} ${finding.flag}`.replace(/\s+/g, " ").trim())
+      .join(" · ") + (doc.more_findings ? ` · and ${doc.more_findings} more` : "");
+  }
+  return (doc.summary || []).join(" ");
+}
+
+/** A document's own entry in the history: what IT recorded (out-of-range values, or its
+ *  verified summary), who verified it or objected and why, and a way to open it. */
+function buildHistoryDocument(doc, patientId) {
+  const box = document.createElement("div");
+  box.className = "doctor-history-doc";
+  const open = document.createElement("button");
+  open.type = "button";
+  open.className = "doctor-history-doc-title";
+  open.textContent = `${formatDocumentType(doc.document_type)}${doc.clinical_date ? ` · ${formatBriefDate(doc.clinical_date)}` : ""}`;
+  open.setAttribute("aria-label", `Open ${doc.original_filename || formatDocumentType(doc.document_type)}`);
+  open.addEventListener("click", () => {
+    void openDoctorDocumentViewer(patientId, { ...doc, content_type: doc.content_type || "" });
+  });
+  box.appendChild(open);
+  const recorded = describeDocumentContent(doc);
+  if (recorded) {
+    const values = document.createElement("p");
+    values.className = "doctor-history-values";
+    values.textContent = recorded;
+    box.appendChild(values);
+  }
+  if (doc.review !== undefined) {
+    const review = document.createElement("p");
+    const status = (doc.review && doc.review.status) || "unverified";
+    review.className = `doctor-history-review is-${status}`;
+    review.textContent = describeDocumentReviewLine(doc.review);
+    box.appendChild(review);
+    const earlier = describeEarlierReviews(doc.review);
+    if (earlier) {
+      const line = document.createElement("p");
+      line.className = "doctor-history-review is-earlier";
+      line.textContent = earlier;
+      box.appendChild(line);
+    }
+  }
+  return box;
+}
+
+/** A signed note's conclusion: assessment, plan, and who signed it when. */
+function buildNoteLines(note) {
+  const lines = [];
+  const add = (label, text) => {
+    if (!text) return;
+    const line = document.createElement("p");
+    line.className = "clinical-note-line";
+    const strong = document.createElement("strong");
+    strong.textContent = `${label}: `;
+    line.append(strong, document.createTextNode(text));
+    lines.push(line);
+  };
+  add("Assessment", note.assessment);
+  add("Plan", note.plan);
+  if (!note.assessment && !note.plan) add("Note", note.summary || "Signed, no assessment recorded.");
+  if (note.signed_by || note.signed_at) {
+    const signed = document.createElement("p");
+    signed.className = "doctor-history-signed";
+    signed.textContent = `Signed${note.signed_by ? ` by ${note.signed_by}` : ""}${note.signed_at ? `, ${formatBriefDate(note.signed_at)}` : ""}`;
+    lines.push(signed);
+  }
+  return lines;
+}
+
+/** One entry of "Latest across all doctors": a visit (doctor, department, the signed
+ *  assessment and plan, documents brought) or a document no visit holds. No chat text. */
+function buildHistoryEntry(item, patientId) {
+  const entry = document.createElement("article");
+  entry.className = `doctor-history-entry${item.is_new ? " is-new" : ""}`;
+  const head = document.createElement("div");
+  head.className = "doctor-history-head";
+  const when = document.createElement("strong");
+  const who = document.createElement("span");
+  who.className = "admin-inline-meta";
+  if (item.kind === "document") {
+    when.textContent = formatBriefDate(item.uploaded_at || item.at);
+    who.textContent = "Uploaded by the patient · not linked to a visit";
+  } else {
+    when.textContent = item.start_time ? formatBriefDate(item.start_time) : "Date unknown";
+    who.textContent = `${item.doctor_name || "Unknown doctor"} · ${item.department || "—"}${item.is_own ? " · your appointment" : ""}`;
+  }
+  head.append(when, who);
+  if (item.is_new) head.appendChild(buildOverviewLabel("New since your last visit", "is-ai"));
+  if (item.restricted) head.appendChild(buildOverviewLabel("Restricted", "is-warn"));
+  entry.appendChild(head);
+
+  if (item.kind === "document") {
+    entry.appendChild(buildHistoryDocument(item, patientId));
+    return entry;
+  }
+  if (item.restricted) {
+    const flag = document.createElement("p");
+    flag.className = "clinical-note-flag";
+    flag.textContent = (item.note && item.note.summary) || "Restricted — clinical content from a sensitive specialty.";
+    entry.appendChild(flag);
+  } else if (item.note) {
+    buildNoteLines(item.note).forEach((line) => entry.appendChild(line));
+  } else {
+    // Said explicitly: an absent line would read as "nothing happened".
+    const none = document.createElement("p");
+    none.className = "clinical-note-line";
+    none.textContent = item.status === "cancelled" ? "Cancelled." : "No signed note for this visit.";
+    entry.appendChild(none);
+  }
+  if (item.prescription) {
+    const prescription = document.createElement("p");
+    prescription.className = "clinical-note-line";
+    const strong = document.createElement("strong");
+    strong.textContent = "Prescribed: ";
+    prescription.append(strong, document.createTextNode(item.prescription));
+    entry.appendChild(prescription);
+  }
+  (item.documents || []).forEach((doc) => entry.appendChild(buildHistoryDocument(doc, patientId)));
+  return entry;
+}
+
+/** "Latest across all doctors" in the overview: five at a time, newest first, from the same
+ *  audited timeline as the Full timeline tab. */
+async function loadOverviewHistory(patientId, host, { cursor = null } = {}) {
+  if (!host) return;
+  if (!cursor) {
+    host.replaceChildren(buildGlanceHeading("Latest across all doctors"));
+    const list = document.createElement("div");
+    list.className = "doctor-history-list";
+    const status = document.createElement("p");
+    status.className = "panel-note doctor-history-status";
+    status.setAttribute("role", "status");
+    const actions = document.createElement("div");
+    actions.className = "doctor-history-actions";
+    const more = document.createElement("button");
+    more.type = "button";
+    more.className = "secondary compact hidden doctor-history-more";
+    more.textContent = "Show older";
+    const full = document.createElement("button");
+    full.type = "button";
+    full.className = "secondary compact";
+    full.textContent = "Open full timeline";
+    full.addEventListener("click", () => {
+      setDoctorPatientTab("timeline");
+      document.querySelector("#doctorPatientTabs")?.scrollIntoView({ block: "start", behavior: "smooth" });
+    });
+    actions.append(more, full);
+    host.append(list, status, actions);
+    host.dataset.loaded = "0";
+    host.dataset.total = "";
+  }
+  const list = host.querySelector(".doctor-history-list");
+  const status = host.querySelector(".doctor-history-status");
+  const more = host.querySelector(".doctor-history-more");
+  status.textContent = "Loading…";
+  more.disabled = true;
+  try {
+    const query = new URLSearchParams({ limit: "5" });
+    if (cursor) query.set("cursor", cursor);
+    const data = await doctorAuthedJson(`/doctor/patients/${encodeURIComponent(patientId)}/timeline?${query}`);
+    // Another patient opened meanwhile: never paint this one's history under their name.
+    if (doctorPatientDetailId !== patientId || !host.isConnected) return;
+    const items = data.items || [];
+    items.forEach((item) => list.appendChild(buildHistoryEntry(item, patientId)));
+    const loaded = Number(host.dataset.loaded || 0) + items.length;
+    host.dataset.loaded = String(loaded);
+    if (data.total !== null && data.total !== undefined) host.dataset.total = String(data.total);
+    const total = host.dataset.total;
+    status.textContent = loaded
+      ? `Showing ${loaded}${total ? ` of ${total}` : ""}`
+      : "No visits or documents on record yet.";
+    more.classList.toggle("hidden", !data.has_more);
+    more.onclick = data.has_more
+      ? () => { void loadOverviewHistory(patientId, host, { cursor: data.next_cursor }); }
+      : null;
+  } catch (error) {
+    if (doctorPatientDetailId !== patientId) return;
+    status.textContent = "The history could not be loaded right now.";
+  } finally {
+    more.disabled = false;
+  }
+}
+
 async function loadDoctorOverview(patientId) {
   if (!doctorOverviewBlock) return;
   // Clear the previous patient's card FIRST. It used to stay on screen, under the new
@@ -6584,19 +6978,24 @@ function buildTimelineEncounter(encounter) {
     body.appendChild(reason);
   }
 
-  const note = document.createElement("p");
-  note.className = encounter.restricted ? "clinical-note-flag" : "clinical-note-line";
-  if (!encounter.note) {
-    // Said explicitly. An absent line here would read as "nothing happened".
-    note.textContent = "No signed note for this visit.";
-  } else if (encounter.note.restricted) {
-    note.textContent = encounter.note.summary;
+  if (encounter.note && !encounter.note.restricted && (encounter.note.assessment || encounter.note.plan)) {
+    // The signed conclusion in full: assessment, plan, and who signed it when.
+    buildNoteLines(encounter.note).forEach((line) => body.appendChild(line));
   } else {
-    const label = document.createElement("strong");
-    label.textContent = "Note: ";
-    note.append(label, document.createTextNode(encounter.note.summary || "Signed, no assessment recorded."));
+    const note = document.createElement("p");
+    note.className = encounter.restricted ? "clinical-note-flag" : "clinical-note-line";
+    if (!encounter.note) {
+      // Said explicitly. An absent line here would read as "nothing happened".
+      note.textContent = "No signed note for this visit.";
+    } else if (encounter.note.restricted) {
+      note.textContent = encounter.note.summary;
+    } else {
+      const label = document.createElement("strong");
+      label.textContent = "Note: ";
+      note.append(label, document.createTextNode(encounter.note.summary || "Signed, no assessment recorded."));
+    }
+    body.appendChild(note);
   }
-  body.appendChild(note);
 
   if (encounter.prescription) {
     const prescription = document.createElement("p");
@@ -6607,18 +7006,9 @@ function buildTimelineEncounter(encounter) {
     body.appendChild(prescription);
   }
 
-  (encounter.documents || []).forEach((doc) => {
-    const button = document.createElement("button");
-    button.type = "button";
-    button.className = "secondary compact";
-    button.textContent = `${doc.original_filename || "Document"}`;
-    button.addEventListener("click", () =>
-      openDoctorDocumentViewer(timelineState.patientId, {
-        ...doc, content_type: doc.content_type || "",
-      })
-    );
-    body.appendChild(button);
-  });
+  // Each document with what it recorded and who verified it or objected — or, under a
+  // restricted visit, its name only (the server sends no content for those).
+  (encounter.documents || []).forEach((doc) => body.appendChild(buildHistoryDocument(doc, timelineState.patientId)));
 
   details.appendChild(body);
   card.appendChild(details);
@@ -6643,15 +7033,7 @@ function buildTimelineDocument(item) {
   head.append(when, what);
   card.appendChild(head);
 
-  const open = document.createElement("button");
-  open.type = "button";
-  open.className = "secondary compact";
-  open.textContent = item.original_filename || "Document";
-  open.setAttribute("aria-label", `View ${item.original_filename || "document"}`);
-  open.addEventListener("click", () =>
-    openDoctorDocumentViewer(timelineState.patientId, { ...item, content_type: item.content_type || "" })
-  );
-  card.appendChild(open);
+  card.appendChild(buildHistoryDocument(item, timelineState.patientId));
   return card;
 }
 
@@ -7150,13 +7532,15 @@ function renderDocumentClinical(container, payload, context = {}) {
 
   renderDocumentAbnormalResults(container, findings, payload && payload.completeness);
 
-  // The AI nutritionist for this document's abnormal results — only when it has some.
+  // Food guidance for this document's abnormal results — named by them, only when it has some.
   const hasAbnormal = findings.some((row) => row.abnormal === "low" || row.abnormal === "high");
-  if (hasAbnormal && context.patientId && payload && payload.document_id) {
+  const documentFocus = payload && Array.isArray(payload.nutrition_focus) ? payload.nutrition_focus : null;
+  if ((documentFocus ? documentFocus.length : hasAbnormal) && context.patientId && payload && payload.document_id) {
     container.appendChild(buildNutritionSection(
       `/doctor/patients/${encodeURIComponent(context.patientId)}/documents/${encodeURIComponent(payload.document_id)}/nutrition`,
       "From this document's abnormal results.",
       { documentId: payload.document_id },
+      documentFocus || [],
     ));
   }
 }
@@ -7525,7 +7909,7 @@ function describeFindingRange(row) {
 }
 
 // Every value here is model output about a patient's document — rendered as text nodes
-// only, never innerHTML, exactly as renderClinicalNote requires for LLM-derived content.
+// only, never innerHTML, exactly as renderBookingNoteMarkdown does for LLM-derived content.
 function renderDocumentSummary(container, summary) {
   container.replaceChildren();
 
@@ -13262,3 +13646,38 @@ document.querySelector("#doctorTimelineClear")?.addEventListener("click", () => 
 });
 
 doctorTimelineMore?.addEventListener("click", () => void loadDoctorTimeline({ append: true }));
+
+// ── Back to top ──────────────────────────────────────────────────────────────
+// A floating button on every doctor page: it appears once the workspace has been scrolled
+// down and goes again at the top. Every doctor pane scrolls in one element,
+// .doctor-ai-content (styles.css: "THE only scrolling element in the workspace"); the
+// window is watched as well, in case a narrow layout ever scrolls the page itself.
+
+// How far down, in pixels, before the button is offered.
+const DOCTOR_TO_TOP_AFTER = 400;
+
+function initDoctorBackToTop() {
+  const button = document.querySelector("#doctorToTopBtn");
+  const scroller = document.querySelector("#doctorDashboardView .doctor-ai-content");
+  if (!button || !scroller) return;
+  const scrolled = () => Math.max(scroller.scrollTop, window.scrollY || 0);
+  // Directly on each scroll event: browsers already send at most one per frame, and
+  // setting one class to the state it is in changes nothing.
+  const update = () => button.classList.toggle("is-visible", scrolled() > DOCTOR_TO_TOP_AFTER);
+  scroller.addEventListener("scroll", update, { passive: true });
+  window.addEventListener("scroll", update, { passive: true });
+
+  button.addEventListener("click", () => {
+    const reduce = window.matchMedia?.("(prefers-reduced-motion: reduce)").matches;
+    const behavior = reduce ? "auto" : "smooth";
+    scroller.scrollTo({ top: 0, behavior });
+    window.scrollTo({ top: 0, behavior });
+    // The button is about to vanish, which would leave keyboard focus nowhere: it goes to
+    // the top of the content instead, where the doctor now is.
+    if (!scroller.hasAttribute("tabindex")) scroller.setAttribute("tabindex", "-1");
+    scroller.focus({ preventScroll: true });
+  });
+  update();
+}
+
+initDoctorBackToTop();

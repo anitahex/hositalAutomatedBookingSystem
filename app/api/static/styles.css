@@ -2532,13 +2532,6 @@ body.sidebar-collapsed .sidebar-handle {
   color: var(--muted-fg);
 }
 
-.clinical-note-body {
-  display: flex;
-  flex-direction: column;
-  gap: 4px;
-  font-weight: 500;
-}
-
 .clinical-note-line {
   margin: 0;
   line-height: 1.5;
@@ -2548,17 +2541,6 @@ body.sidebar-collapsed .sidebar-handle {
   font-size: 13px;
   font-weight: 700;
   margin-top: 6px;
-}
-
-.clinical-note-bullet {
-  padding-left: 14px;
-  position: relative;
-}
-
-.clinical-note-bullet::before {
-  content: "\2022";
-  position: absolute;
-  left: 2px;
 }
 
 .admin-field .field-hint {
@@ -4098,6 +4080,11 @@ button.compact { height: 30px; padding: 0 12px; font-size: 12px; }
   display: flex; flex-direction: column; gap: 20px;
   overflow-y: auto;
   overflow-x: hidden;
+  /* The containing block for positioned content inside it. Without this, a .sr-only
+     label (position:absolute) deep in a long pane — "Clinical record text" at the
+     prescription box — resolved against <body>, escaped this scroller's clipping and
+     stretched the PAGE to its own offset: a second scrollbar into blank space. */
+  position: relative;
 }
 
 /* Children of a scrolling flex column must not be squeezed below their content height.
@@ -4379,6 +4366,10 @@ button.doctor-ai-card {
 }
 .doctor-nutri-summary { margin: 0; font-size: 13px; color: var(--fg); }
 .doctor-nutri-controls { display: flex; flex-wrap: wrap; align-items: center; gap: 8px; }
+/* What is already in the patient's account, and the outcome of each share. Kept in the
+   page when empty (no display:none) so the live region is announced when it fills. */
+.doctor-nutri-shared { margin: 6px 0 0; font-size: 12.5px; color: var(--muted-fg); }
+.doctor-nutri-shared:empty { margin: 0; }
 .doctor-nutri-controls .doctor-nutrition-diets { margin: 0; }
 .doctor-nutri-grid { display: grid; gap: 12px; grid-template-columns: 1fr; }
 @container (min-width: 860px) {
@@ -4482,6 +4473,42 @@ button.doctor-ai-card {
   color: var(--accent-fg);
   font-size: 13px;
 }
+/* What the guidance is for; the region picker; easy swaps; why it matters (v2). */
+.doctor-nutri-focus { margin: 0 0 2px; font-size: 13.5px; font-weight: 600; color: var(--fg); }
+.doctor-nutri-region { display: inline-flex; align-items: center; gap: 6px; font-size: 12.5px; color: var(--muted-fg); }
+.doctor-nutri-region-select {
+  min-height: 32px;
+  padding: 4px 8px;
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  background: var(--card);
+  color: var(--fg);
+  font: inherit;
+  font-size: 13px;
+}
+.doctor-nutri-swaps { margin: 4px 0 10px; padding: 0; list-style: none; display: grid; gap: 6px; }
+.doctor-nutri-swaps li {
+  /* relative: the hidden " instead, try " below is contained here, never the page (see
+     .doctor-ai-content), including in the document viewer, outside the workspace.
+     Ordinary text flow, not flex: a long swap wraps between words, and the arrow, with no
+     space either side, stays joined to the words around it instead of ending a line. */
+  position: relative;
+  display: block;
+  font-size: 13px;
+  line-height: 1.45;
+}
+.doctor-nutri-swaps .sr-only {
+  position: absolute; width: 1px; height: 1px;
+  padding: 0; margin: -1px; overflow: hidden;
+  clip: rect(0, 0, 0, 0); white-space: nowrap; border: 0;
+}
+.doctor-nutri-swap-from { color: var(--muted-fg); text-decoration: line-through; text-decoration-color: var(--border); }
+.doctor-nutri-swap-arrow { color: var(--muted-fg); margin: 0 6px; }
+.doctor-nutri-swap-to { font-weight: 600; color: var(--ok); }
+.doctor-nutri-good { margin-bottom: 10px; }
+.doctor-nutri-why-line { margin: 4px 0 8px; font-size: 13.5px; color: var(--fg); }
+.patient-handout-why { color: var(--fg); }
+.patient-handout-swaps { margin: 2px 0 4px 18px; padding: 0; }
 .doctor-nutri-meal { padding: 10px 0; border-bottom: 1px solid var(--border); }
 .doctor-nutri-meal:last-child { border-bottom: 0; }
 .doctor-nutri-meal-foods { margin: 0 0 2px; font-size: 13.5px; font-weight: 600; color: var(--fg); }
@@ -4557,6 +4584,58 @@ button.doctor-ai-card {
   text-transform: uppercase;
   color: var(--muted-fg);
 }
+
+/* At a glance, summary points: the line, then where it came from (drawn from its facts). */
+.doctor-glance-point { display: grid; gap: 4px; margin: 0 0 8px; }
+.doctor-glance-point .clinical-note-line { margin: 0; }
+.doctor-glance-sources { display: flex; flex-wrap: wrap; gap: 6px; }
+.doctor-glance-sources .doctor-ai-chip { min-height: 22px; padding: 2px 8px; font-size: 11.5px; font-weight: 600; }
+.doctor-glance-omitted { margin: 2px 0 0; }
+
+/* Latest across all doctors: newest first; a visit's signed conclusion and each document's
+   own findings with who verified or objected. */
+.doctor-history-list { display: grid; gap: 10px; }
+.doctor-history-entry {
+  display: grid;
+  gap: 6px;
+  padding: 10px 14px;
+  border: 1px solid var(--border);
+  border-left: 4px solid var(--border);
+  border-radius: var(--r-lg);
+  background: var(--card);
+}
+.doctor-history-entry.is-new { border-left-color: var(--secondary-fg); }
+.doctor-history-entry .clinical-note-line,
+.doctor-history-entry .clinical-note-flag { margin: 0; }
+.doctor-history-head { display: flex; flex-wrap: wrap; align-items: center; gap: 8px; }
+.doctor-history-signed { margin: 0; font-size: 12px; color: var(--muted-fg); }
+.doctor-history-doc {
+  display: grid;
+  gap: 3px;
+  padding: 8px 10px;
+  border-radius: var(--r-md, 8px);
+  background: var(--muted);
+}
+.doctor-history-doc-title {
+  justify-self: start;
+  padding: 0;
+  border: 0;
+  background: none;
+  font: inherit;
+  font-size: 13px;
+  font-weight: 700;
+  color: var(--primary);
+  text-decoration: underline;
+  text-underline-offset: 2px;
+  cursor: pointer;
+}
+.doctor-history-values { margin: 0; font-size: 12.5px; color: var(--fg); overflow-wrap: anywhere; }
+.doctor-history-review { margin: 0; font-size: 12px; color: var(--muted-fg); }
+.doctor-history-review.is-verified { color: var(--ok); }
+.doctor-history-review.is-flagged { color: var(--bad); }
+.doctor-history-review.is-earlier { font-style: italic; }
+.doctor-history-status { margin: 6px 0 0; }
+.doctor-history-actions { display: flex; flex-wrap: wrap; gap: 8px; }
 
 /* At a glance, by document: one block per report, with who checked it and what changed. */
 .doctor-glance-docs-heading {
@@ -5001,6 +5080,59 @@ button.doctor-visit-card:focus-visible { outline: 2px solid var(--ring); outline
    so it does not depend on colour alone. */
 .doctor-brief-row.is-warn { padding-left: 10px; border-left: 3px solid var(--warn); }
 .doctor-brief-empty { margin: 0; font-size: 13px; color: var(--muted-fg); }
+/* What a document brought to this appointment recorded: its own line under the name. */
+.doctor-brief-detail { flex-basis: 100%; margin: 0; font-size: 12.5px; color: var(--fg); overflow-wrap: anywhere; }
+.doctor-brief-detail.is-warn { padding-left: 10px; border-left: 3px solid var(--warn); }
+/* One of this doctor's previous visits: laid out like an entry in the history. */
+.doctor-brief-visit {
+  display: flex; flex-direction: column; gap: 4px;
+  padding: 10px 12px; border: 1px solid var(--border); border-radius: var(--r-lg);
+  font-size: 13.5px; line-height: 1.45;
+}
+.doctor-brief-visit .clinical-note-line,
+.doctor-brief-visit .clinical-note-flag { margin: 0; }
+.doctor-brief-visit-head { margin: 0; }
+.doctor-brief-link { align-self: flex-start; }
+
+/* Back to top (initDoctorBackToTop): shown once the workspace is scrolled down, gone at
+   the top. visibility, not only opacity, so a hidden button is also out of the tab order
+   and the accessibility tree. Under the document viewer (60), toasts (80) and dialogs. */
+.doctor-to-top {
+  position: fixed;
+  right: max(24px, env(safe-area-inset-right));
+  bottom: max(24px, env(safe-area-inset-bottom));
+  z-index: 50;
+  width: 44px; height: 44px;
+  display: inline-flex; align-items: center; justify-content: center;
+  padding: 0;
+  border: 0;
+  border-radius: var(--r-full);
+  background: var(--primary);
+  color: var(--primary-fg);
+  box-shadow: var(--shadow-glow);
+  cursor: pointer;
+  opacity: 0;
+  visibility: hidden;
+  transform: translateY(8px);
+  transition: opacity 0.2s ease, transform 0.2s ease, visibility 0s linear 0.2s;
+}
+.doctor-to-top.is-visible {
+  opacity: 1;
+  visibility: visible;
+  transform: none;
+  transition: opacity 0.2s ease, transform 0.2s ease, visibility 0s;
+}
+/* After Back to top, focus rests on the content area itself (tabindex -1), not a control:
+   no ring around the whole workspace. */
+.doctor-ai-content:focus { outline: none; }
+.doctor-to-top:hover { background: var(--accent-fg); }
+.doctor-to-top:focus-visible { outline: 3px solid var(--ring); outline-offset: 3px; }
+@media (max-width: 640px) {
+  .doctor-to-top { right: max(16px, env(safe-area-inset-right)); bottom: max(16px, env(safe-area-inset-bottom)); }
+}
+@media (prefers-reduced-motion: reduce) {
+  .doctor-to-top, .doctor-to-top.is-visible { transition: none; transform: none; }
+}
 
 /* A formatted booking note (renderBookingNoteMarkdown): takes the row's full width, with
    its tag underneath rather than squeezed beside a multi-paragraph block. */

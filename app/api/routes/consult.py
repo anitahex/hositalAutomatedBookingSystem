@@ -17,6 +17,7 @@ from app.services.audio_storage import finalize_recording, open_recording_tempfi
 from app.services.consults import (
     CONSULT_MAX_RECORDING_HOURS,
     DEEPGRAM_API_KEY,
+    ConsultSigned,
     append_transcript_segment,
     begin_recording,
     build_deepgram_streaming_url,
@@ -175,6 +176,8 @@ async def discard_consult_route(consultation_id: str, doctor: dict = Depends(get
         result = discard_consult(consultation_id, doctor["doctor_id"])
     except ValueError as exc:
         _error(exc, 404)
+    except ConsultSigned as exc:
+        _error(exc, 409)
     if result["audio_blob_path"]:
         from app.services.audio_storage import delete_audio
         try:

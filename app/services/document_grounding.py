@@ -460,6 +460,9 @@ def store_summary(
     uncovered_lines needs it to tell a set-aside letterhead from a missed medication.
     """
     from app.db.connection import connect_db
+    from app.services.document_versions import (
+        REPLACED_BY_RESUMMARY, archive_summary, ensure_document_versions_schema,
+    )
 
     payload = json.dumps([
         {"text": sentence.text, "quote": sentence.quote, "page_no": sentence.page_no}
@@ -467,7 +470,11 @@ def store_summary(
     ])
 
     with connect_db() as conn:
+        ensure_document_versions_schema(conn)
         with conn.cursor() as cur:
+            # The summary being replaced — possibly the one a doctor verified — is kept,
+            # in this same transaction, before the overwrite below.
+            archive_summary(cur, document_id, REPLACED_BY_RESUMMARY)
             cur.execute(
                 """
                 INSERT INTO document_summaries (

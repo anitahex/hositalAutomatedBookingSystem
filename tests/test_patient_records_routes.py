@@ -120,10 +120,44 @@ def test_a_handout_made_from_a_document_is_saved_to_the_patients_account(patient
     result = asyncio.run(doctor_route.doctor_nutrition_handout_route(
         patient["patient"], request, doctor={"doctor_id": patient["doctor"], "department": "Orthopedics"}))
     assert result["saved_to_patient_account"] is True
-    assert result["handout"]["themes"][0]["foods"] == ["salmon"]
+    assert result["handout"]["themes"][0]["foods"] == ["Salmon"]
     [handout] = chat_route.patient_records(user=_user(patient["patient"]))["handouts"]
     assert handout["id"] == result["id"] and handout["content"] == result["handout"]
     assert "13.8" not in str(handout)
+
+
+def _share(patient, monkeypatch, diet="non_veg"):
+    monkeypatch.setattr(doctor_route, "doctor_treats_patient", lambda d, p: True)
+    monkeypatch.setattr(doctor_route, "assert_doctor_may_read_document", lambda d, p, doc: None)
+
+    async def fake_guidance(doctor_id, patient_id, document_id):
+        return dict(GUIDANCE)
+
+    monkeypatch.setattr(doctor_route, "guidance_for_document", fake_guidance)
+    return asyncio.run(doctor_route.doctor_nutrition_handout_route(
+        patient["patient"], doctor_route.NutritionHandoutRequest(diet=diet, document_id=patient["done"]),
+        doctor={"doctor_id": patient["doctor"], "department": "Orthopedics"}))
+
+
+def test_sharing_again_tells_the_doctor_it_is_already_there(patient, monkeypatch):
+    first = _share(patient, monkeypatch)
+    again = _share(patient, monkeypatch)
+    assert first["already_shared"] is False and again["already_shared"] is True
+    assert again["id"] == first["id"] and again["shared_at"] == first["shared_at"]
+    # The patient has it once.
+    assert len(chat_route.patient_records(user=_user(patient["patient"]))["handouts"]) == 1
+    # And the doctor's page is told what is in the account now.
+    [shared] = again["shared_handouts"]
+    assert shared["by_me"] is True and shared["diet"] == "non_veg" and shared["doctor_name"] == "Dr. Route"
+
+
+def test_the_nutritionist_page_lists_what_was_already_shared(patient, monkeypatch):
+    doctor = {"doctor_id": patient["doctor"], "department": "Orthopedics"}
+    before = doctor_route._with_nutrition_plan(dict(GUIDANCE), doctor, patient["patient"])
+    assert before["shared_handouts"] == []
+    _share(patient, monkeypatch, diet="veg")
+    after = doctor_route._with_nutrition_plan(dict(GUIDANCE), doctor, patient["patient"])
+    assert [h["diet"] for h in after["shared_handouts"]] == ["veg"]
 
 
 def test_a_handout_needs_a_visit_or_a_document(patient, monkeypatch):
@@ -170,3 +204,70 @@ def test_insert_from_plan_still_refuses_an_unsigned_note(monkeypatch):
     with pytest.raises(HTTPException) as refused:
         consult_route.get_plan_medications_route("c1", doctor={"doctor_id": "d1"})
     assert refused.value.status_code == 409
+
+
+
+# ---- food guidance v2: the heading reaches the page; the handout follows the region ----
+
+def test_the_visit_brief_carries_what_its_food_guidance_is_for(monkeypatch):
+    monkeypatch.setattr(doctor_route, "get_visit_brief", lambda d, b, v: {"booking_id": b, "patient_id": "p"})
+    monkeypatch.setattr(doctor_route, "nutrition_focus_for_appointment",
+                        lambda d, b: ["Low Vitamin D", "Joint or back pain"])
+    brief = doctor_route.doctor_visit_brief_route("b1", doctor={"doctor_id": "d1", "department": None})
+    assert brief["nutrition_focus"] == ["Low Vitamin D", "Joint or back pain"]
+
+
+def test_the_document_viewer_carries_what_its_food_guidance_is_for(monkeypatch):
+    monkeypatch.setattr(doctor_route, "assert_doctor_may_read_document", lambda *a, **k: None)
+    monkeypatch.setattr(doctor_route, "record_document_content_read", lambda *a, **k: None)
+    monkeypatch.setattr(doctor_route, "findings_for_document", lambda *a, **k: [])
+    monkeypatch.setattr(doctor_route, "review_states", lambda ids, *a, **k: {i: None for i in ids})
+    monkeypatch.setattr(doctor_route, "get_summary", lambda *a, **k: None)
+    monkeypatch.setattr(doctor_route, "get_document_pages", lambda *a, **k: [])
+    asked = []
+    monkeypatch.setattr(doctor_route, "nutrition_focus_for_document",
+                        lambda p, d: asked.append((p, d)) or ["Low Vitamin B12", "High ESR"])
+    payload = doctor_route.doctor_patient_document_clinical_route("p1", "doc1", doctor={"doctor_id": "d1"})
+    assert payload["nutrition_focus"] == ["Low Vitamin B12", "High ESR"]
+    assert asked == [("p1", "doc1")]
+
+
+def test_a_failing_heading_never_costs_the_doctor_the_brief_or_the_document(monkeypatch):
+    def broken(*args):
+        raise RuntimeError("database hiccup")
+
+    monkeypatch.setattr(doctor_route, "get_visit_brief", lambda d, b, v: {"booking_id": b})
+    monkeypatch.setattr(doctor_route, "nutrition_focus_for_appointment", broken)
+    assert doctor_route.doctor_visit_brief_route("b1", doctor={"doctor_id": "d1"})["nutrition_focus"] == []
+    monkeypatch.setattr(doctor_route, "nutrition_focus_for_document", broken)
+    assert doctor_route._document_nutrition_focus("p", "doc") == []
+
+
+def test_a_handout_is_shared_in_the_region_the_doctor_chose(patient, monkeypatch):
+    monkeypatch.setattr(doctor_route, "doctor_treats_patient", lambda d, p: True)
+    monkeypatch.setattr(doctor_route, "assert_doctor_may_read_document", lambda d, p, doc: None)
+    meals = {region: {"veg": [{"meal": "breakfast", "dish": f"{region} idli with sambar"},
+                              {"meal": "lunch", "dish": f"{region} dal with rice"}],
+                      "non_veg": [{"meal": "breakfast", "dish": f"{region} egg dosa"},
+                                  {"meal": "lunch", "dish": f"{region} fish curry with rice"}]}
+             for region in ("north", "south", "east", "west")}
+
+    async def fake_guidance(doctor_id, patient_id, document_id):
+        item = dict(GUIDANCE["items"][0])
+        item.update({"why": "Vitamin D helps your bones use calcium.", "meals": meals,
+                     "swaps": [{"instead_of": "white bread", "try": "whole-wheat roti"}], "habits": []})
+        return {**GUIDANCE, "items": [item]}
+
+    monkeypatch.setattr(doctor_route, "guidance_for_document", fake_guidance)
+    result = asyncio.run(doctor_route.doctor_nutrition_handout_route(
+        patient["patient"], doctor_route.NutritionHandoutRequest(diet="veg", region="south", document_id=patient["done"]),
+        doctor={"doctor_id": patient["doctor"], "department": "Orthopedics"}))
+    handout = result["handout"]
+    assert handout["region"] == "south" and handout["region_label"] == "South Indian"
+    assert [meal["dish"] for meal in handout["sample_day"]] == ["south idli with sambar", "south dal with rice"]
+    assert handout["themes"][0]["swaps"] == [{"instead_of": "white bread", "try": "whole-wheat roti"}]
+    # The same food in another region is another handout, not "already shared".
+    again = asyncio.run(doctor_route.doctor_nutrition_handout_route(
+        patient["patient"], doctor_route.NutritionHandoutRequest(diet="veg", region="east", document_id=patient["done"]),
+        doctor={"doctor_id": patient["doctor"], "department": "Orthopedics"}))
+    assert again["already_shared"] is False and again["handout"]["region"] == "east"

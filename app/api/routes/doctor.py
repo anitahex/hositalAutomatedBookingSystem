@@ -37,13 +37,16 @@ from app.services.document_grounding import (
     LEGACY_SUMMARY_VERSIONS, accepted_set_aside, get_summary, structural_lines, uncovered_lines,
 )
 from app.services.document_reviews import ReviewConflict, record_review, review_states
-from app.services.nutrition import guidance_for_appointment, guidance_for_document
+from app.services.nutrition import (
+    guidance_for_appointment, guidance_for_document, nutrition_focus_for_appointment,
+    nutrition_focus_for_document,
+)
 from app.services.patient_timeline import (
     TIMELINE_DEFAULT_LIMIT, TIMELINE_MAX_LIMIT, get_patient_timeline, get_timeline_filters,
 )
 from app.services.login_lockout import AccountLockedError
 from app.services.visit_brief import get_visit_brief
-from app.services.patient_overview import get_overview
+from app.services.patient_overview import get_overview, mark_new_since
 from app.services.overview_documents import apply_review_labels, document_blocks
 from app.services.doctor_auth import (
     authenticate_doctor_password, check_rate_limit, complete_invite, complete_mfa_challenge,
@@ -367,8 +370,9 @@ def doctor_patient_detail_route(patient_id: str, doctor: dict = Depends(get_curr
 
 @router.get("/appointments/{booking_id}/brief")
 def doctor_visit_brief_route(booking_id: str, doctor: dict = Depends(get_current_doctor)):
-    """What this doctor needs for THIS appointment: why the patient booked, what changed
-    since this doctor last saw them, and their last plan. See app/services/visit_brief.py.
+    """What this doctor needs for THIS appointment: why the patient booked, the documents
+    brought to it, and this doctor's previous visits with the patient. See
+    app/services/visit_brief.py.
 
     Replaces /patients/{id}/ai-brief, which summarised the whole patient a second time
     beside the at-a-glance card, from unverified document text read one blob at a time.
@@ -377,17 +381,26 @@ def doctor_visit_brief_route(booking_id: str, doctor: dict = Depends(get_current
     specialty's note content is shown — a client-supplied one would be a way round that.
     """
     try:
-        return get_visit_brief(doctor["doctor_id"], booking_id, doctor.get("department"))
+        brief = get_visit_brief(doctor["doctor_id"], booking_id, doctor.get("department"))
     except PermissionError:
         # 404 not 403 — the same non-disclosure rule as the booking context below.
         raise HTTPException(status_code=404, detail="Appointment not found.")
+    # What the food guidance below is for — named in its heading before it is opened, by the
+    # same selection that writes it (nutrition.guidance_items). Code only, no model.
+    try:
+        brief["nutrition_focus"] = nutrition_focus_for_appointment(doctor["doctor_id"], booking_id)
+    except Exception as exc:  # a heading must never cost the doctor the brief
+        logger.error("brief: nutrition focus failed for %s: %s", booking_id, exc)
+        brief["nutrition_focus"] = []
+    return brief
 
 
 @router.get("/appointments/{booking_id}/nutrition")
 async def doctor_visit_nutrition_route(booking_id: str, doctor: dict = Depends(get_current_doctor)):
     """The AI nutritionist for this appointment: food guidance, vegetarian and non-
-    vegetarian, for the patient's latest flagged results and the diet-relevant symptoms in
-    the booking note. See app/services/nutrition.py.
+    vegetarian, for the flagged results in the documents brought to this appointment and to
+    this doctor's earlier ones with the patient, and the diet-relevant symptoms in those
+    bookings' notes and chats. See app/services/nutrition.py.
 
     Loaded separately from the brief, so the brief stays a fast, model-free read; guidance
     for a result nobody has had before is generated here, once, and then reused.
@@ -402,10 +415,11 @@ async def doctor_visit_nutrition_route(booking_id: str, doctor: dict = Depends(g
 def _with_nutrition_plan(guidance: dict, doctor: dict, patient_id: str) -> dict:
     """The checked guidance, organised into themes, foods that help most, a sample day and
     which themes were discussed (app/services/nutrition_plan.py). Code only, no model."""
-    from app.services.nutrition_plan import discussions_for, organize
+    from app.services.nutrition_plan import discussions_for, organize, shared_handouts
 
     discussions = discussions_for(patient_id, doctor["doctor_id"], doctor.get("department"))
-    return {**guidance, "patient_id": patient_id, "plan": organize(guidance, discussions)}
+    return {**guidance, "patient_id": patient_id, "plan": organize(guidance, discussions),
+            "shared_handouts": shared_handouts(patient_id, doctor["doctor_id"])}
 
 
 class NutritionDiscussedRequest(BaseModel):
@@ -421,6 +435,8 @@ class NutritionHandoutRequest(BaseModel):
     booking_id: str | None = Field(None, max_length=64)
     # From the document viewer's nutritionist, which has no booking.
     document_id: str | None = Field(None, max_length=128)
+    # Whose dishes the day is made of: "all" (a mix), or north, south, east, west.
+    region: str = Field("all", max_length=10)
 
 
 def _assert_nutrition_access(doctor_id: str, patient_id: str, booking_id: str | None) -> str | None:
@@ -468,13 +484,13 @@ def doctor_nutrition_discussed_route(
 async def doctor_nutrition_handout_route(
     patient_id: str, request: NutritionHandoutRequest, doctor: dict = Depends(get_current_doctor),
 ):
-    """Makes the patient's food handout, keeps it in their account, and returns it to print.
+    """Shares the patient's food handout to their account (Records › Food suggestions).
 
     Built here from the same guidance the doctor is looking at (the visit's, or the
-    document's), so what is printed and what the patient later reads in their account are
-    the same thing. Contains no values, no document names and no doses (nutrition_plan).
+    document's). Contains no values, no document names and no doses (nutrition_plan).
+    Sharing the same handout again stores nothing new: `already_shared` says so, with when.
     """
-    from app.services.nutrition_plan import build_handout, organize, save_handout
+    from app.services.nutrition_plan import build_handout, organize, save_handout, shared_handouts
 
     booking_id = _assert_nutrition_access(doctor["doctor_id"], patient_id, request.booking_id)
     if booking_id:
@@ -492,12 +508,14 @@ async def doctor_nutrition_handout_route(
         guidance = await guidance_for_document(doctor["doctor_id"], patient_id, request.document_id)
     else:
         raise HTTPException(status_code=422, detail="Say which visit or document the handout is for.")
-    content = build_handout(organize(guidance), request.diet)
+    content = build_handout(organize(guidance), request.diet, request.region)
     if not content["themes"]:
         raise HTTPException(status_code=409, detail="There is no food guidance to hand out.")
-    handout_id = save_handout(doctor["doctor_id"], patient_id, booking_id,
-                              None if booking_id else request.document_id, content)
-    return {"id": handout_id, "handout": content, "saved_to_patient_account": True}
+    shared = save_handout(doctor["doctor_id"], patient_id, booking_id,
+                          None if booking_id else request.document_id, content)
+    return {"id": shared["id"], "handout": content, "saved_to_patient_account": True,
+            "already_shared": not shared["created"], "shared_at": shared["shared_at"],
+            "shared_handouts": shared_handouts(patient_id, doctor["doctor_id"])}
 
 
 @router.get("/appointments/{booking_id}/context")
@@ -646,7 +664,17 @@ def doctor_patient_document_clinical_route(
         "completeness": completeness,
         "coverage": coverage,
         "review": review_states([document_id], doctor["doctor_id"], doctor.get("department"))[document_id],
+        # What this document's food guidance is for, for its heading (no model).
+        "nutrition_focus": _document_nutrition_focus(patient_id, document_id),
     }
+
+
+def _document_nutrition_focus(patient_id: str, document_id: str) -> list[str]:
+    try:
+        return nutrition_focus_for_document(patient_id, document_id)
+    except Exception as exc:  # the heading is a convenience; the document must still open
+        logger.error("document: nutrition focus failed for %s: %s", document_id, exc)
+        return []
 
 
 @router.get("/patients/{patient_id}/documents/{document_id}/nutrition")
@@ -732,6 +760,11 @@ async def doctor_patient_overview_route(
     # Read on every open, never cached with the card: a document can be verified or
     # reported at any moment, and that is not one of the inputs the card is cached on.
     overview = apply_review_labels(overview, doctor["doctor_id"], doctor.get("department"))
+    # "New since your last visit" is this doctor's, so it is marked here, after the cache.
+    try:
+        overview = mark_new_since(overview, doctor["doctor_id"], patient_id)
+    except Exception as exc:  # a missing "New" marker must never cost the doctor the card
+        logger.error("overview: new-since marking failed for %s: %s", patient_id, exc)
     try:
         overview["documents"] = document_blocks(doctor["doctor_id"], patient_id, doctor.get("department"))
     except Exception as exc:  # the card must still load if this part cannot be built

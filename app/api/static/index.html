@@ -907,6 +907,16 @@
             </div>
           </section>
         </main>
+        <!-- Back to top: appears once the doctor has scrolled the workspace down, and goes
+             again at the top (initDoctorBackToTop). Outside <main> so it stays put while
+             the content scrolls under it. -->
+        <button class="doctor-to-top" id="doctorToTopBtn" type="button"
+                aria-label="Back to top" title="Back to top">
+          <svg aria-hidden="true" focusable="false" width="20" height="20" viewBox="0 0 24 24" fill="none"
+               stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round">
+            <path d="M12 19V5"></path><path d="M5 12l7-7 7 7"></path>
+          </svg>
+        </button>
         </div><!-- .doctor-ai-main -->
       </div><!-- .doctor-ai -->
     </section>

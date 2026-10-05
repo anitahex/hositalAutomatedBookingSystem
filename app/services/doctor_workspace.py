@@ -218,15 +218,43 @@ _TEST_HINT = re.compile(
 # A sentence boundary inside one unmarked line of prose: ". " or "; " before a new clause.
 _SENTENCE = re.compile(r"(?<=[.;])\s+(?=[A-Z0-9])")
 
+# A follow-up, review or referral instruction: "Follow-up in neurology clinic after MRI" is
+# not an MRI order, and "Review in 2 weeks" is not a medicine. Left in the plan — unless it
+# also carries a strength ("…; continue paracetamol 500 mg"), which is a medicine.
+_FOLLOW_UP = re.compile(
+    r"^(?:follow[\s-]*up|f/u|review|revisit|return|come\s+back|see\s+(?:me\s+|you\s+)?again|"
+    r"next\s+(?:visit|appointment|review)|refer(?:ral|red)?)\b",
+    re.IGNORECASE,
+)
+_STRENGTH = re.compile(r"\b\d+\s*(?:mg|mcg|g|ml|iu|units?)\b", re.IGNORECASE)
+
+# In PROSE a test word alone is not an order: "Discussed the MRI findings", "Explained the
+# report". A sentence is a test when it orders one, or opens with the test itself
+# ("MRI lumbar spine", "Serum B12 levels"). A list item needs neither: a listed test is
+# the order.
+_TEST_ORDER = re.compile(
+    r"\b(?:order(?:ed|s)?|advis(?:e|ed|ing)|repeat|check|send|obtain|request(?:ed)?|perform|"
+    r"schedule|arrange|bring|get|recommend(?:ed)?|suggest(?:ed)?)\b",
+    re.IGNORECASE,
+)
+_LEADING_ARTICLE = re.compile(r"^(?:a|an|the|please)\s+", re.IGNORECASE)
+
+
+def _is_test(unit: str, is_list_item: bool) -> bool:
+    if not _TEST_HINT.search(unit):
+        return False
+    return is_list_item or bool(_TEST_ORDER.search(unit)) or bool(_TEST_HINT.match(_LEADING_ARTICLE.sub("", unit)))
+
 
 def extract_plan_items(plan_text: str | None, limit: int = 20) -> dict:
     """The medicines and the tests or reports a signed Plan asks for, each copied verbatim.
 
     {"medications": [...], "tests": [...]}. A line — or, in prose, a sentence — is a TEST
     when it names an investigation, a scan or a report ("Serum Vitamin B12 and Vitamin D
-    levels", "MRI lumbar spine", "Bring previous reports"); a MEDICATION when it is a list
-    item or carries a dose. A dose wins: "Vitamin D3 60000 IU weekly" is a medicine.
-    Everything else is left where the doctor wrote it.
+    levels", "MRI lumbar spine", "Bring previous reports") — in prose, only when it orders
+    one or opens with it; a MEDICATION when it is a list item or carries a dose. A dose
+    wins: "Vitamin D3 60000 IU weekly" is a medicine. Follow-up, review and referral
+    instructions are neither. Everything else is left where the doctor wrote it.
 
     Same guarantees as extract_plan_medication_lines: nothing is validated, corrected,
     reworded or added; each list is bounded and de-duplicated.
@@ -246,9 +274,11 @@ def extract_plan_items(plan_text: str | None, limit: int = 20) -> dict:
         for unit in units:
             if not unit or unit.casefold() in seen or _HEADING.match(unit):
                 continue
+            if _FOLLOW_UP.match(unit) and not _STRENGTH.search(unit):
+                continue
             if _DOSE_HINT.search(unit):
                 kind = "medications"
-            elif _TEST_HINT.search(unit):
+            elif _is_test(unit, is_list_item):
                 kind = "tests"
             elif is_list_item:
                 kind = "medications"

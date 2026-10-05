@@ -21,12 +21,31 @@ from app.services.nutrition import (
     symptoms_in,
 )
 
+# A v2 entry also carries real dishes for every region and diet, swaps, habits and a plain
+# sentence for the patient; the rules tested here are the same for every part.
+MEALS = {
+    region: {
+        "veg": [{"meal": "breakfast", "dish": "Ragi dosa with coconut chutney"},
+                {"meal": "dinner", "dish": "Mushroom masala with roti"}],
+        "non_veg": [{"meal": "breakfast", "dish": "Egg bhurji with whole-wheat roti"},
+                    {"meal": "lunch", "dish": "Fish curry with rice"}],
+    }
+    for region in ("north", "south", "east", "west")
+}
+V2 = {
+    "why": "Vitamin D helps your bones and muscles make good use of calcium.",
+    "meals": MEALS,
+    "swaps": [{"instead_of": "white bread", "try": "whole-wheat roti"}],
+    "habits": ["Sit in the morning sun on the balcony with your tea."],
+}
+
 GOOD = {
     "nutrient_focus": "Vitamin D, with calcium to use it well.",
     "veg_foods": ["Fortified milk", "Curd", "Paneer", "Sun-dried mushrooms", "Ragi"],
     "non_veg_foods": ["Salmon", "Sardines", "Egg yolk", "Mackerel"],
     "limit": ["Cola drinks"],
     "note": "Pair with morning sunlight where possible.",
+    **V2,
 }
 
 
@@ -184,3 +203,189 @@ def test_nutrient_names_with_digits_are_names_not_numbers(text):
 def test_a_real_amount_next_to_a_nutrient_name_still_fails(text):
     entry, reason = check_entry(_with(note=text))
     assert entry is None and "number" in reason
+
+
+
+# ---- v2: real dishes for every region, swaps, habits, a plain sentence for the patient ----
+
+import copy  # noqa: E402
+
+from app.services.nutrition import focus_label, focus_labels  # noqa: E402
+
+
+def _meals_with(region="south", diet="veg", dishes=None):
+    meals = copy.deepcopy(MEALS)
+    meals[region][diet] = dishes
+    return meals
+
+
+def test_a_v2_entry_keeps_its_dishes_swaps_habits_and_why():
+    entry, reason = check_entry(GOOD)
+    assert reason is None
+    assert entry["why"] == GOOD["why"]
+    assert entry["meals"]["east"]["veg"][0] == {"meal": "breakfast", "dish": "Ragi dosa with coconut chutney"}
+    assert entry["swaps"] == [{"instead_of": "white bread", "try": "whole-wheat roti"}]
+    assert entry["habits"] == GOOD["habits"]
+
+
+@pytest.mark.parametrize("dish", ["Egg bhurji with roti", "Chicken tikka with salad", "Fish curry with rice"])
+def test_a_vegetarian_dish_never_carries_meat_fish_or_egg(dish):
+    entry, reason = check_entry(_with(meals=_meals_with(dishes=[
+        {"meal": "breakfast", "dish": "Poha with peanuts"}, {"meal": "lunch", "dish": dish}])))
+    assert entry is None and "vegetarian" in reason and dish in reason
+
+
+@pytest.mark.parametrize("field, value", [
+    ("meals", "dish"),
+    ("habits", ["Walk for 30 minutes after dinner."]),
+    ("swaps", [{"instead_of": "2 rotis", "try": "a bowl of salad"}]),
+    ("why", "Aim for 600 IU of Vitamin D every day."),
+])
+def test_no_digits_in_dishes_swaps_habits_or_the_why(field, value):
+    if value == "dish":
+        value = _meals_with(dishes=[{"meal": "breakfast", "dish": "2 idlis with sambar"},
+                                    {"meal": "lunch", "dish": "Sambar rice"}])
+    entry, reason = check_entry(_with(**{field: value}))
+    assert entry is None and "number" in reason
+
+
+def test_household_words_and_nutrient_names_are_fine():
+    entry, reason = check_entry(_with(
+        why="Omega-3s and Vitamin B12 keep your nerves and heart healthy.",
+        habits=["Have a katori of dal with lunch, and fish twice a week."]))
+    assert reason is None, reason
+
+
+def test_supplements_are_not_food_anywhere():
+    entry, reason = check_entry(_with(habits=["Take a vitamin D tablet with breakfast."]))
+    assert entry is None and "supplements" in reason
+
+
+@pytest.mark.parametrize("dish, ok", [("Spinach", False), ("Paneer", False), ("Poha", True), ("Khichdi", True)])
+def test_a_dish_is_a_dish_not_a_bare_ingredient(dish, ok):
+    entry, reason = check_entry(_with(meals=_meals_with(dishes=[
+        {"meal": "breakfast", "dish": dish}, {"meal": "dinner", "dish": "Palak dal with rice"}])))
+    assert (entry is not None) is ok, reason
+    if not ok:
+        assert "ingredient" in reason
+
+
+@pytest.mark.parametrize("dish", ["Chole bhature", "Chicken curry with parotta", "Aloo pakora with chutney",
+                                  "Poori bhaji", "Gajar halwa"])
+def test_deep_fried_refined_or_sweet_dishes_fail(dish):
+    entry, reason = check_entry(_with(meals=_meals_with(dishes=[
+        {"meal": "breakfast", "dish": dish}, {"meal": "dinner", "dish": "Palak dal with rice"}])))
+    assert entry is None and "deep-fried" in reason
+
+
+def test_a_food_list_that_is_mostly_seeds_fails():
+    entry, reason = check_entry(_with(veg_foods=["Flaxseeds", "Chia seeds", "Pumpkin seeds", "Curd"]))
+    assert entry is None and "seeds" in reason
+    assert check_entry(_with(veg_foods=["Flaxseeds", "Chia seeds", "Curd"]))[1] is None
+
+
+def test_every_region_and_diet_needs_real_dishes():
+    one = _meals_with(region="west", diet="non_veg", dishes=[{"meal": "lunch", "dish": "Fish curry with rice"}])
+    assert "at least" in check_entry(_with(meals=one))[1]
+    missing = copy.deepcopy(MEALS)
+    del missing["east"]
+    assert "east" in check_entry(_with(meals=missing))[1]
+    brunch = _meals_with(dishes=[{"meal": "brunch", "dish": "Poha with peanuts"},
+                                 {"meal": "dinner", "dish": "Palak dal with rice"}])
+    assert "breakfast, lunch, snack, dinner" in check_entry(_with(meals=brunch))[1]
+
+
+def test_a_swap_must_change_something():
+    entry, reason = check_entry(_with(swaps=[{"instead_of": "White rice", "try": "white rice"}]))
+    assert entry is None and "swap" in reason
+
+
+@pytest.mark.parametrize("why", ["", "   ", "Vitamin D matters. " * 15])
+def test_the_why_is_one_short_sentence_and_never_missing(why):
+    """The patient's handout opens each theme with it; a v2 entry without it is incomplete."""
+    entry, reason = check_entry(_with(why=why))
+    assert entry is None and "why" in reason
+
+
+def test_advice_true_of_every_finding_is_left_out_and_the_rest_kept():
+    """Live v2 output, after the prompt said not to: the textbook lines go, the entry stays."""
+    entry, reason = check_entry(_with(habits=[
+        "Include a variety of colorful fruits and vegetables in your meals to boost vitamin intake.",
+        "Opt for whole grains over refined grains to support overall health.",
+        "Try to have a balanced meal every few hours to maintain energy levels.",
+        "Have your tea or coffee between meals, not with them, to help iron absorption.",
+    ]))
+    assert reason is None
+    assert entry["habits"] == ["Have your tea or coffee between meals, not with them, to help iron absorption."]
+
+
+def test_specific_habits_are_kept():
+    habits = ["Spend some time in the morning sun to help your body produce Vitamin D.",
+              "Use turmeric and ginger in your cooking for their anti-inflammatory properties.",
+              "Opt for steaming, grilling, or roasting instead of frying."]
+    assert check_entry(_with(habits=habits))[0]["habits"] == habits
+
+
+def test_a_habit_is_short():
+    long_habit = "Sit in the morning sun on the balcony with your tea, " * 4
+    entry, reason = check_entry(_with(habits=[long_habit]))
+    assert entry is None and "habit" in reason
+
+
+def test_the_retry_reason_quotes_what_had_a_digit():
+    """The model is told exactly which text broke the rule, so its one retry can fix it."""
+    _, reason = check_entry(_with(habits=["Eat 3 meals a day."]))
+    assert '"Eat 3 meals a day."' in reason
+
+
+# ---- conflicts reach the dishes and the swaps ----
+
+def _item(**fields):
+    return {"veg_foods": ["Curd"], "non_veg_foods": ["Eggs"], "limit": [], "meals": copy.deepcopy(MEALS),
+            "swaps": [], **fields}
+
+
+def test_a_kidney_result_takes_high_potassium_dishes_and_swaps_out():
+    item = _item(meals=_meals_with(region="north", dishes=[
+        {"meal": "lunch", "dish": "Palak paneer with roti"}, {"meal": "dinner", "dish": "Lauki chana dal with rice"}]),
+        swaps=[{"instead_of": "biscuits", "try": "a banana"}, {"instead_of": "white bread", "try": "whole-wheat roti"}])
+    [cleaned], cautions = apply_conflicts([item], {("Creatinine", "high")})
+    assert [m["dish"] for m in cleaned["meals"]["north"]["veg"]] == ["Lauki chana dal with rice"]
+    assert cleaned["swaps"] == [{"instead_of": "white bread", "try": "whole-wheat roti"}]
+    assert CAUTION_KIDNEY in cautions
+
+
+def test_high_sugar_takes_sweet_dishes_out():
+    item = _item(meals=_meals_with(region="west", dishes=[
+        {"meal": "snack", "dish": "Dates and jaggery laddoo"}, {"meal": "lunch", "dish": "Bajra roti with methi"}]))
+    [cleaned], _ = apply_conflicts([item], {("HbA1c", "high")})
+    assert [m["dish"] for m in cleaned["meals"]["west"]["veg"]] == ["Bajra roti with methi"]
+
+
+def test_high_uric_acid_takes_purine_rich_non_veg_dishes_out_only():
+    meals = copy.deepcopy(MEALS)
+    meals["east"]["non_veg"] = [{"meal": "lunch", "dish": "Prawn malai curry with rice"},
+                                {"meal": "dinner", "dish": "Chicken stew with rice"}]
+    [cleaned], cautions = apply_conflicts([_item(meals=meals)], {("Uric Acid", "high")})
+    assert [m["dish"] for m in cleaned["meals"]["east"]["non_veg"]] == ["Chicken stew with rice"]
+    assert cleaned["meals"]["east"]["veg"] == MEALS["east"]["veg"]
+    assert CAUTION_URIC_ACID in cautions
+
+
+# ---- the heading: what the guidance is for ----
+
+@pytest.mark.parametrize("key, label", [
+    (("finding", "Vitamin D", "low"), "Low Vitamin D"),
+    (("finding", "hs-CRP", "high"), "High hs-CRP"),
+    (("finding", "Blood lipids", "abnormal"), "Abnormal cholesterol & lipids"),
+    (("finding", "Kidney function", "abnormal"), "Abnormal kidney function"),
+    (("symptom", "joint or back pain", "present"), "Joint or back pain"),
+])
+def test_each_topic_is_named_as_a_doctor_would(key, label):
+    assert focus_label(*key) == label
+
+
+def test_findings_come_before_symptoms_in_the_pages_theme_order():
+    keys = [("symptom", "fatigue", "present"), ("finding", "Vitamin D", "low"),
+            ("finding", "hs-CRP", "high"), ("finding", "Blood lipids", "abnormal")]
+    assert focus_labels(keys) == ["High hs-CRP", "Abnormal cholesterol & lipids", "Low Vitamin D", "Fatigue"]

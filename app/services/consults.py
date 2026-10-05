@@ -439,10 +439,25 @@ def set_status(consultation_id: str, status: str) -> None:
         conn.commit()
 
 
+class ConsultSigned(Exception):
+    """The consult's note is signed, so the consult is part of the patient's record and is
+    not discarded. Answered with 409."""
+
+
+SIGNED_CONSULT_MESSAGE = (
+    "This consult has a signed note, which is part of the patient's record, so it can't be "
+    "discarded. To correct the note, add an addendum."
+)
+
+
 def discard_consult(consultation_id: str, doctor_id: str) -> dict:
     """Returns {"row": <consult dict>, "audio_blob_path": <str | None>} — the caller
     (route) is responsible for actually deleting the blob at that path, since blob
-    deletion is async and this function's DB work is not."""
+    deletion is async and this function's DB work is not.
+
+    Raises ConsultSigned when the consult's note is signed. Discarding one used to be
+    allowed: it deleted the transcript and every screen then hid the signed note and the
+    prescription approved with it, as though the visit had no record."""
     audio_blob_path = None
     with connect_db() as conn:
         try:
@@ -460,6 +475,15 @@ def discard_consult(consultation_id: str, doctor_id: str) -> dict:
                 if consult["status"] == "discarded":
                     conn.commit()
                     return {"row": consult, "audio_blob_path": None}
+                # Checked under the consult's row lock taken above, before anything is
+                # deleted. sign_soap_note takes the same lock and refuses a discarded
+                # consult, so a signature landing at the same moment cannot slip past.
+                cur.execute(
+                    "SELECT 1 FROM soap_notes WHERE consultation_id = %s AND status = 'signed'",
+                    (consultation_id,),
+                )
+                if cur.fetchone():
+                    raise ConsultSigned(SIGNED_CONSULT_MESSAGE)
 
                 cur.execute("DELETE FROM transcript_segments WHERE consultation_id = %s", (consultation_id,))
                 cur.execute(

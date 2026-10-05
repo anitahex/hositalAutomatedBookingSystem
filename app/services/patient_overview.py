@@ -53,7 +53,17 @@ logger = logging.getLogger(__name__)
 #   v3: same-date readings of one analyte resolved deterministically (classified first).
 #   v4: abnormal results are no longer phrased into the card's lines; they are shown by
 #       document (overview_documents), with who verified each and what changed.
-OVERVIEW_PROMPT_VERSION = "overview-v4"
+#   v5: a medicine list read off several copies of one prescription is one line.
+#   v6: a summary across every doctor and document — each doctor's latest assessment and
+#       plan (with who and when), each report's findings, and a count of what is older.
+OVERVIEW_PROMPT_VERSION = "overview-v6"
+
+# The summary is bounded; the history below it is not. Whatever does not fit is counted in
+# an "omitted" fact ("2 older assessments … in the history below"), never dropped silently.
+MAX_CONCLUSIONS = 4
+MAX_FINDING_REPORTS = 4
+MAX_VALUES_PER_REPORT = 6
+MAX_CONCLUSION_CHARS = 320
 
 # Enough to show every current abnormal result in a normal panel, bounded so a very long
 # record cannot turn the card into a lab report. Newest first, so any cut loses the oldest.
@@ -64,11 +74,16 @@ MAX_ABNORMAL_FACTS = 12
 # "Rx"); matched loosely here rather than on one spelling that would silently miss the rest.
 _MEDICATION_KEY_PATTERNS = ("%medic%", "%prescri%", "%drug%", "rx%")
 
-# Enough to be a summary, few enough to be read at a glance. The brief asked for 5-8.
-MAX_OVERVIEW_LINES = 8
+# Enough to be a summary, few enough to be read at a glance. The brief asked for 5-8; the
+# summary across every doctor and document (v6) needs up to 10.
+MAX_OVERVIEW_LINES = 10
 
 LABEL_PATIENT_REPORTS = "Patient reports"
 LABEL_REPORTED_UNVERIFIED = "Reported, unverified"
+
+# Kept in `facts` (audited, tested) but never handed to the model to phrase: abnormal results
+# are shown by document, and "omitted" is the page's own count of what is in the history.
+UNPHRASED_KINDS = frozenset({"abnormal", "omitted"})
 
 _NUMBER = re.compile(r"\d+(?:[.,]\d+)?")
 
@@ -83,15 +98,89 @@ def _numbers(text: str | None) -> set[float]:
     return values
 
 
+_SENTENCE_END = re.compile(r"(?<=[.;])\s+|\n+")
+_LIST_MARK = re.compile(r"^\s*(?:[-*•·]|\d+[.)])\s+")
+
+
+def _iso(value):
+    return value.isoformat() if hasattr(value, "isoformat") else (str(value) if value else None)
+
+
+def _clip(text: str, limit: int) -> str:
+    text = " ".join(str(text or "").split())
+    return text if len(text) <= limit else text[:limit].rsplit(" ", 1)[0] + "…"
+
+
+def _first_sentence(text: str | None) -> str:
+    for part in _SENTENCE_END.split(str(text or "")):
+        part = _LIST_MARK.sub("", part).strip()
+        if part:
+            return part
+    return ""
+
+
+def _number(value) -> str:
+    """13.8 → "13.8", 178.0 → "178": a value written as the report wrote it."""
+    try:
+        number = float(value)
+    except (TypeError, ValueError):
+        return str(value or "")
+    return str(int(number)) if number.is_integer() else f"{number:g}"
+
+
+_TYPE_LABELS = {"xray_report": "X-ray report", "other": "Document", "medical_document": "Medical document"}
+_TYPE_ACRONYMS = frozenset({"mri", "ct", "ecg", "ekg", "eeg", "usg", "pet", "cbc", "lft", "kft"})
+
+
+def document_type_label(document_type: str | None) -> str:
+    """"mri_report" → "MRI report", as the page names it (app.js formatDocumentType)."""
+    key = str(document_type or "").strip().lower()
+    if not key:
+        return "Document"
+    if key in _TYPE_LABELS:
+        return _TYPE_LABELS[key]
+    words = [word for word in re.split(r"[_\s]+", key) if word]
+    shaped = [word.upper() if word in _TYPE_ACRONYMS else word for word in words]
+    return " ".join([shaped[0][:1].upper() + shaped[0][1:]] + shaped[1:])
+
+
+def _finding_text(block: dict) -> str:
+    """One report, in one fact: its out-of-range values (a lab report) or its verified
+    summary (a prescription, a scan). Values are the report's own, so the phrasing check
+    has every number it may use."""
+    label = document_type_label(block.get("document_type"))
+    findings = block.get("findings") or []
+    if findings:
+        out = [f for f in findings if f.get("flag") in ("low", "high")]
+        back = [f for f in findings if f.get("flag") not in ("low", "high")]
+        parts = [
+            f"{f['name']} {_number(f.get('value')) if f.get('value') is not None else (f.get('value_text') or '')}"
+            f"{(' ' + f['unit']) if f.get('unit') else ''} {f['flag']}".replace("  ", " ")
+            for f in out[:MAX_VALUES_PER_REPORT]
+        ]
+        if len(out) > MAX_VALUES_PER_REPORT:
+            parts.append(f"and {len(out) - MAX_VALUES_PER_REPORT} more out of range")
+        if back:
+            parts.append("back in range: " + ", ".join(f["name"] for f in back[:3]))
+        return f"{label}: " + "; ".join(parts)
+    return f"{label}: " + " ".join(block.get("summary") or [])[:400]
+
+
 def gather_facts(doctor_id: str, patient_id: str, viewer_department: str | None) -> list[dict]:
     """Everything the card may say, read from the record — never from a model.
 
-    Four queries, not one per section: this runs on every patient open and the application
-    shares one pool of ten connections across all users.
+    Across every doctor and document (v6): each doctor's latest signed assessment and plan,
+    medicines, each report's findings, the patient's own words, and the visits — every fact
+    carrying when it happened (`at`) and who or what it came from (`meta`), which the page
+    shows beside each line in code, not in the model's words. What does not fit the summary
+    is counted in an "omitted" fact, never dropped silently; the history lists all of it.
     """
+    from app.services.overview_documents import HIDDEN_OVER_LIMIT, document_blocks
+
     facts: list[dict] = []
 
-    def add(kind: str, text: str, *, label=None, source_type=None, source_id=None, scanned=False):
+    def add(kind: str, text: str, *, label=None, source_type=None, source_id=None, scanned=False,
+            at=None, added_at=None, meta=None):
         if not str(text or "").strip():
             return
         facts.append({
@@ -104,6 +193,11 @@ def gather_facts(doctor_id: str, patient_id: str, viewer_department: str | None)
             # Read off a photograph or scan rather than a text layer. Kept separate from
             # `label` so the label stays exactly "Reported, unverified" — the UI shows both.
             "scanned": bool(scanned),
+            "at": _iso(at),
+            # When it entered the record (a 2022 report uploaded yesterday is new to the
+            # doctor, though dated 2022): what "New since your last visit" compares.
+            "added_at": _iso(added_at or at),
+            "meta": meta or {},
         })
 
     with connect_db() as conn:
@@ -111,38 +205,52 @@ def gather_facts(doctor_id: str, patient_id: str, viewer_department: str | None)
             # Patient's own words. Never promoted beyond "reports" — nobody clinical has
             # confirmed any of it.
             cur.execute(
-                "SELECT health_issues FROM patient_profiles WHERE user_id = %s", (patient_id,)
+                "SELECT health_issues, updated_at FROM patient_profiles WHERE user_id = %s", (patient_id,)
             )
             row = cur.fetchone()
             if row and row[0]:
-                add("concern", row[0], label=LABEL_PATIENT_REPORTS, source_type="patient_profile")
+                add("concern", row[0], label=LABEL_PATIENT_REPORTS, source_type="patient_profile", at=row[1])
 
-            # Diagnoses from SIGNED notes only, with the department so sensitive ones can
-            # be filtered. A draft is not a diagnosis.
+            # Conclusions from SIGNED notes only — a draft is not a conclusion — with the
+            # department so sensitive ones can be filtered. Every signed note is read so the
+            # ones that do not fit can be counted; each doctor's latest one is shown.
             cur.execute(
                 """
-                SELECT sn.assessment, d.department, sn.signed_at, sn.consultation_id
+                SELECT sn.assessment, sn.plan, d.department, d.name, sn.signed_at,
+                       sn.consultation_id, sn.doctor_id
                 FROM soap_notes sn
                 JOIN consultations c ON c.id = sn.consultation_id
                 JOIN doctors d ON d.doctor_id = sn.doctor_id
-                WHERE sn.patient_id = %s AND sn.status = 'signed' AND sn.assessment <> ''
+                WHERE sn.patient_id = %s AND sn.status = 'signed'
+                  AND (COALESCE(sn.assessment, '') <> '' OR COALESCE(sn.plan, '') <> '')
                 ORDER BY sn.signed_at DESC NULLS LAST
-                LIMIT 6
                 """,
                 (patient_id,),
             )
-            for assessment, department, _signed_at, consultation_id in cur.fetchall():
-                if not may_read_note(viewer_department, department):
-                    # Excluded entirely rather than shown as "restricted": this is a
-                    # summary, and a redaction notice in an at-a-glance card is noise. The
-                    # timeline is where the existence of that encounter is disclosed.
+            readable_notes = [
+                row for row in cur.fetchall()
+                # Excluded entirely rather than shown as "restricted": this is a summary,
+                # and a redaction notice in an at-a-glance card is noise. The history is
+                # where the existence of that encounter is disclosed.
+                if may_read_note(viewer_department, row[2])
+            ]
+            shown_doctors: set[str] = set()
+            for assessment, plan, department, name, signed_at, consultation_id, note_doctor in readable_notes:
+                if str(note_doctor) in shown_doctors or len(shown_doctors) >= MAX_CONCLUSIONS:
                     continue
-                add("diagnosis", assessment, source_type="note", source_id=consultation_id)
+                shown_doctors.add(str(note_doctor))
+                plan_first = _first_sentence(plan)
+                text = _clip(assessment, MAX_CONCLUSION_CHARS) if str(assessment or "").strip() else ""
+                if plan_first:
+                    text = f"{text} Plan: {_clip(plan_first, 200)}".strip()
+                add("conclusion", text, source_type="note", source_id=consultation_id, at=signed_at,
+                    meta={"by": name, "department": department})
+            omitted_notes = len(readable_notes) - len(shown_doctors)
 
             # Medications this hospital actually prescribed: approved clinical items only.
             cur.execute(
                 """
-                SELECT ci.content, ci.consultation_id, d.department
+                SELECT ci.content, ci.consultation_id, d.department, d.name, ci.updated_at
                 FROM consult_clinical_items ci
                 JOIN doctors d ON d.doctor_id = ci.doctor_id
                 WHERE ci.patient_id = %s AND ci.kind = 'prescription' AND ci.status = 'approved'
@@ -151,10 +259,11 @@ def gather_facts(doctor_id: str, patient_id: str, viewer_department: str | None)
                 """,
                 (patient_id,),
             )
-            for content, consultation_id, department in cur.fetchall():
+            for content, consultation_id, department, name, updated_at in cur.fetchall():
                 if not may_read_note(viewer_department, department):
                     continue
-                add("medication", content, source_type="note", source_id=consultation_id)
+                add("medication", content, source_type="note", source_id=consultation_id, at=updated_at,
+                    meta={"by": name, "department": department})
 
             # Medications read off documents the patient uploaded — another clinic's
             # prescription, a discharge summary. Labelled, never hidden.
@@ -169,11 +278,12 @@ def gather_facts(doctor_id: str, patient_id: str, viewer_department: str | None)
             cur.execute(
                 """
                 SELECT DISTINCT ON (df.document_id, df.value_text)
-                       df.value_text, df.document_id, dc.clinical_date,
+                       df.value_text, df.document_id, dc.clinical_date, dc.created_at AS uploaded_at,
                        (dc.original_filename ~* '\\.(png|jpe?g)$'
                         OR EXISTS (SELECT 1 FROM document_pages dp
                                    WHERE dp.document_id = df.document_id
-                                     AND dp.source = 'vision_transcription')) AS scanned
+                                     AND dp.source = 'vision_transcription')) AS scanned,
+                       dc.document_type
                 FROM document_findings df
                 JOIN document_catalog dc ON dc.document_id = df.document_id
                 WHERE df.patient_id = %s
@@ -186,13 +296,22 @@ def gather_facts(doctor_id: str, patient_id: str, viewer_department: str | None)
                 (patient_id, list(_MEDICATION_KEY_PATTERNS), list(_MEDICATION_KEY_PATTERNS),
                  list(_MEDICATION_KEY_PATTERNS)),
             )
-            document_meds = sorted(
-                cur.fetchall(), key=lambda row: str(row[2] or ""), reverse=True
-            )[:3]
-            for value_text, document_id, _clinical_date, scanned in document_meds:
+            # One line per medicine list: the same prescription uploaded twice carried the same
+            # list twice — once "verified", once "unverified" — as if it were two prescriptions.
+            # Its label is the whole report's (apply_review_labels merges every copy).
+            document_meds, seen_meds = [], set()
+            for row in sorted(cur.fetchall(), key=lambda row: str(row[2] or ""), reverse=True):
+                text_key = " ".join(str(row[0]).split()).casefold()
+                if text_key not in seen_meds:
+                    seen_meds.add(text_key)
+                    document_meds.append(row)
+            document_meds = document_meds[:3]
+            for value_text, document_id, clinical_date, uploaded_at, scanned, document_type in document_meds:
                 add("medication", value_text,
                     label=LABEL_REPORTED_UNVERIFIED,
-                    source_type="document", source_id=document_id, scanned=scanned)
+                    source_type="document", source_id=document_id, scanned=scanned, at=clinical_date,
+                    added_at=uploaded_at,
+                    meta={"doc_type": document_type, "doc_date": _iso(clinical_date)})
 
             # Current out-of-range results, computed by code, one per measurement: the latest
             # reading of each, and only if THAT reading is abnormal.
@@ -224,7 +343,7 @@ def gather_facts(doctor_id: str, patient_id: str, viewer_department: str | None)
                 when = f" ({clinical_date.isoformat()})" if clinical_date else ""
                 add("abnormal",
                     f"{name} {flag} at {value}{(' ' + unit) if unit else ''}{when}",
-                    source_type="document", source_id=document_id)
+                    source_type="document", source_id=document_id, at=clinical_date)
 
             # Last visit and next appointment, in one pass over the bookings.
             cur.execute(
@@ -241,16 +360,41 @@ def gather_facts(doctor_id: str, patient_id: str, viewer_department: str | None)
             bookings = cur.fetchall()
         conn.commit()
 
+    # Each report's findings, by the same rules as "Documents and results" (overview_documents)
+    # so the summary and the blocks below it cannot disagree: newest report first, copies of
+    # one report merged, a lab report through its current values, a text report through its
+    # verified summary.
+    explain: list[dict] = []
+    blocks = document_blocks(doctor_id, patient_id, viewer_department, explain=explain)
+    for block in blocks[:MAX_FINDING_REPORTS]:
+        add("finding", _finding_text(block), source_type="document", source_id=block["document_id"],
+            scanned=str(block.get("content_type") or "").startswith("image/"),
+            at=block.get("clinical_date") or block.get("uploaded_at"), added_at=block.get("uploaded_at"),
+            meta={"doc_type": block.get("document_type"), "doc_date": block.get("clinical_date"),
+                  "copies": block.get("copies", 1)})
+    omitted_reports = max(0, len(blocks) - MAX_FINDING_REPORTS) + sum(
+        1 for entry in explain if entry["reason"] == HIDDEN_OVER_LIMIT)
+
     past = [b for b in bookings if not b[4]]
     future = [b for b in bookings if b[4]]
     if past:
         start, name, department, _status, _ = past[0]
         add("visit", f"Last seen {start.strftime('%d %b %Y')} by {name}, {department}",
-            source_type="booking")
+            source_type="booking", at=start, meta={"by": name, "department": department})
     if future:
         start, name, department, _status, _ = future[-1]
         add("visit", f"Next appointment {start.strftime('%d %b %Y')} with {name}, {department}",
-            source_type="booking")
+            source_type="booking", at=start, meta={"by": name, "department": department})
+
+    # What the summary leaves for the history below — said, never silently dropped.
+    if omitted_notes or omitted_reports:
+        parts = []
+        if omitted_notes:
+            parts.append(f"{omitted_notes} older signed note{'s' if omitted_notes != 1 else ''}")
+        if omitted_reports:
+            parts.append(f"{omitted_reports} older report{'s' if omitted_reports != 1 else ''}")
+        add("omitted", f"{' and '.join(parts)} — in the history below", source_type="history",
+            meta={"notes": omitted_notes, "reports": omitted_reports})
 
     return facts
 
@@ -262,11 +406,13 @@ def structured_lines(facts: list[dict]) -> list[dict]:
     and completely faithful, which is the right way round — the prose is a convenience,
     the facts are the point.
     """
-    order = ["concern", "diagnosis", "medication", "abnormal", "visit"]
+    order = ["concern", "conclusion", "diagnosis", "medication", "finding", "abnormal", "visit"]
     headings = {
         "concern": "Active concerns",
+        "conclusion": "Assessments and plans",
         "diagnosis": "Diagnoses",
         "medication": "Medications",
+        "finding": "Findings from documents",
         "abnormal": "Recent abnormal results",
         "visit": "Visits",
     }
@@ -347,7 +493,15 @@ def latest_source_change(patient_id: str):
                     COALESCE((SELECT MAX(updated_at) FROM consult_clinical_items WHERE patient_id = %(p)s), 'epoch'),
                     COALESCE((SELECT MAX(created_at)::timestamp FROM document_catalog WHERE user_id = %(p)s), 'epoch'),
                     COALESCE((SELECT MAX(created_at) FROM appointment_bookings WHERE patient_id = %(p)s), 'epoch'),
-                    COALESCE((SELECT MAX(updated_at) FROM patient_profiles WHERE user_id = %(p)s), 'epoch')
+                    COALESCE((SELECT MAX(updated_at) FROM patient_profiles WHERE user_id = %(p)s), 'epoch'),
+                    -- A document re-summarised or re-extracted changes what the card says
+                    -- about it, though no new document was added.
+                    -- ::timestamp like the others: patient_overviews stores it without a zone.
+                    COALESCE((SELECT MAX(ds.generated_at)::timestamp FROM document_summaries ds
+                              JOIN document_catalog dc ON dc.document_id = ds.document_id
+                              WHERE dc.user_id = %(p)s), 'epoch'),
+                    COALESCE((SELECT MAX(created_at)::timestamp FROM document_findings
+                              WHERE patient_id = %(p)s), 'epoch')
                 )
                 """,
                 {"p": patient_id},
@@ -355,6 +509,21 @@ def latest_source_change(patient_id: str):
             latest = cur.fetchone()[0]
         conn.commit()
     return latest
+
+
+def mark_new_since(overview: dict, doctor_id: str | None, patient_id: str) -> dict:
+    """Marks each fact added since THIS doctor last saw the patient (`is_new`), and says when
+    that was (`new_since`). Applied per request, after the cache: the card is shared by a
+    department, but "since your last visit" is one doctor's. Nothing is marked for a doctor
+    who has never seen the patient — everything would be new, which says nothing."""
+    from app.services.patient_timeline import is_after, viewer_last_seen
+
+    since = viewer_last_seen(doctor_id, patient_id)
+    facts = [
+        {**fact, "is_new": bool(since) and is_after(fact.get("added_at") or fact.get("at"), since)}
+        for fact in overview.get("facts") or []
+    ]
+    return {**overview, "facts": facts, "new_since": since.isoformat() if since else None}
 
 
 # ---- Composition and cache ----
@@ -512,7 +681,8 @@ async def get_overview(doctor_id: str, patient_id: str, viewer_department: str |
     # Abnormal results are shown by document, beside who verified that document and what
     # changed (overview_documents), so they are not phrased into the lines as well. They stay
     # in `facts`: the audit of this read counts them, and the selection rules stay tested here.
-    phrase_facts = [fact for fact in facts if fact["kind"] != "abnormal"]
+    # The "omitted" count is shown by the page under the lines, in code's words.
+    phrase_facts = [fact for fact in facts if fact["kind"] not in UNPHRASED_KINDS]
     mode, reason, lines = "structured", "", structured_lines(phrase_facts)
     if not phrase_facts:
         reason = "only results on record; shown by document"
