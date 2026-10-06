@@ -23,6 +23,7 @@ Claude Standards/
 # itemize specific (including still-open) vulnerabilities and known weak points.
 FULL_SYSTEM_AUDIT.md
 TECH_DEBT.md
+docs/audit/
 
 # OS / editor cruft
 .DS_Store
