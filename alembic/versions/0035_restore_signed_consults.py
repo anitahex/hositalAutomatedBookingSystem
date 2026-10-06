@@ -11,9 +11,15 @@ A consult goes back to 'transcript_ready': the only status a note can be generat
 signed, in (soap_notes.generate). Its transcript was deleted by the discard and cannot come
 back; the note, its sections and its approved items were never touched.
 
-Left alone, and listed in the migration output: a consult whose booking has since had
-another consult started. Restoring it would give that visit two live consults, and which
-one the visit shows is not a guess to make here.
+One per booking: a booking keeps at most one live consult (ux_consultations_active_booking),
+so where several of its consults were signed and then discarded, only the most recently
+signed is restored. Production had such a booking, and restoring all of them made the
+first version of this migration fail on that index and stop the backend from starting.
+
+Left alone, and listed in the migration output:
+  - a consult whose booking has since had another consult started — restoring it would
+    give that visit two live consults, and which one it shows is not a guess to make here;
+  - the older signed consults of a booking where a later one is restored.
 
 Each restore is audited (consult_restored_signed), next to the discard it reverses.
 
@@ -38,18 +44,19 @@ _ANOTHER_LIVE_CONSULT = """
 
 def upgrade() -> None:
     bind = op.get_bind()
-    skipped = bind.exec_driver_sql(
-        f"SELECT c.id::text, c.booking_id::text FROM consultations c "
-        f"WHERE {_SIGNED_AND_DISCARDED} AND {_ANOTHER_LIVE_CONSULT}"
-    ).fetchall()
-    for consult, booking in skipped:
-        print(f"0035: NOT restored — consult {consult} (booking {booking}) has a signed note, "
-              f"but the booking has another consult since")
     restored = bind.exec_driver_sql(
         f"""
-        WITH restored AS (
+        WITH chosen AS (
+            -- At most one per booking: its most recently signed.
+            SELECT DISTINCT ON (c.booking_id) c.id
+            FROM consultations c
+            JOIN soap_notes sn ON sn.consultation_id = c.id AND sn.status = 'signed'
+            WHERE c.status = 'discarded' AND NOT {_ANOTHER_LIVE_CONSULT}
+            ORDER BY c.booking_id, sn.signed_at DESC NULLS LAST, c.created_at DESC, c.id
+        ),
+        restored AS (
             UPDATE consultations c SET status = 'transcript_ready', updated_at = NOW()
-            WHERE {_SIGNED_AND_DISCARDED} AND NOT {_ANOTHER_LIVE_CONSULT}
+            FROM chosen WHERE c.id = chosen.id
             RETURNING c.id, c.doctor_id
         )
         INSERT INTO consult_audit_log (consultation_id, doctor_id, action_type, metadata)
@@ -59,7 +66,14 @@ def upgrade() -> None:
         RETURNING consultation_id::text
         """
     ).fetchall()
-    print(f"0035: restored {len(restored)} consult(s) with a signed note; skipped {len(skipped)}")
+    # Read after the restore: whatever is still signed and discarded was left alone.
+    skipped = bind.exec_driver_sql(
+        f"SELECT c.id::text, c.booking_id::text FROM consultations c WHERE {_SIGNED_AND_DISCARDED}"
+    ).fetchall()
+    for consult, booking in skipped:
+        print(f"0035: NOT restored - consult {consult} (booking {booking}) has a signed note, but "
+              f"the booking has another consult live or restored")
+    print(f"0035: restored {len(restored)} consult(s) with a signed note; left {len(skipped)} as they were")
 
 
 def downgrade() -> None:

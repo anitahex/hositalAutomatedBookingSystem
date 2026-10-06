@@ -52,7 +52,7 @@ def _booking(cur, doctor_id):
     return str(cur.fetchone()[0])
 
 
-def _consult(cur, doctor_id, booking_id, *, status="transcript_ready", note=None):
+def _consult(cur, doctor_id, booking_id, *, status="transcript_ready", note=None, signed_at=None):
     """A consult with one transcript segment and, optionally, a note ('draft' or 'signed')."""
     cur.execute("""INSERT INTO consultations (booking_id, doctor_id, patient_id, status, transcript_source)
                    VALUES (%s, %s, 'patient-signed', %s, 'batch') RETURNING id""", (booking_id, doctor_id, status))
@@ -63,7 +63,7 @@ def _consult(cur, doctor_id, booking_id, *, status="transcript_ready", note=None
         cur.execute("""INSERT INTO soap_notes (consultation_id, doctor_id, patient_id, subjective, objective,
                                                assessment, plan, status, generated_at, signed_at)
                        VALUES (%s, %s, 'patient-signed', 'S', 'O', 'A', 'P', %s, NOW(), %s)""",
-                    (consult, doctor_id, note, datetime.now() if note == "signed" else None))
+                    (consult, doctor_id, note, (signed_at or datetime.now()) if note == "signed" else None))
     return consult
 
 
@@ -176,7 +176,16 @@ def test_the_migration_restores_only_consults_discarded_after_signing():
         restarted_booking = _booking(cur, doctor)
         superseded = _consult(cur, doctor, restarted_booking, status="discarded", note="signed")
         _consult(cur, doctor, restarted_booking, status="not_started")
-        return {"signed": signed, "draft": draft, "bare": bare, "superseded": superseded}
+        # Production's case: one booking with TWO consults, each signed and then discarded.
+        # A booking may hold one live consult, so only the later-signed comes back; restoring
+        # both broke the unique index and stopped the backend from starting.
+        twice = _booking(cur, doctor)
+        earlier = _consult(cur, doctor, twice, status="discarded", note="signed",
+                           signed_at=datetime.now() - timedelta(hours=3))
+        later = _consult(cur, doctor, twice, status="discarded", note="signed",
+                         signed_at=datetime.now() - timedelta(hours=1))
+        return {"signed": signed, "draft": draft, "bare": bare, "superseded": superseded,
+                "twice_earlier": earlier, "twice_later": later}
 
     result = _run_migration_and_read(setup)
     assert result == {
@@ -184,4 +193,6 @@ def test_the_migration_restores_only_consults_discarded_after_signing():
         "draft": ("discarded", False),
         "bare": ("discarded", False),
         "superseded": ("discarded", False),
+        "twice_earlier": ("discarded", False),
+        "twice_later": ("transcript_ready", True),
     }
